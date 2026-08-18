@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Contact Database Checker",
+  "version": "1.1.0",
+  "description": "Checks visible emails against the local contact database.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*"
+  ],
+  "action": {
+    "default_title": "Enable / Disable Contact Checker"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
