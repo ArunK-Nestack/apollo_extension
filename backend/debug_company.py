@@ -1,79 +1,26 @@
 import os
-import re
-import unicodedata
 
 import psycopg
 from dotenv import load_dotenv
 
+from api import (
+    clean_domain_host,
+    company_matches,
+    company_token_list,
+    company_variants,
+    domain_variants,
+    get_domain_brand,
+    get_domain_parts,
+)
+
+
 load_dotenv()
 
 
-def normalize_text(value: str) -> str:
-    value = value.strip().lower()
-
-    value = unicodedata.normalize("NFKD", value)
-
-    value = "".join(
-        c
-        for c in value
-        if not unicodedata.combining(c)
-    )
-
-    return re.sub(
-        r"[^a-z0-9]",
-        "",
-        value,
-    )
-
-
-def get_domain_brand(domain: str) -> str:
-    domain = domain.strip().lower()
-
-    if "@" in domain:
-        domain = domain.split("@", 1)[1]
-
-    parts = domain.split(".")
-
-    if (
-        len(parts) >= 3
-        and len(parts[-1]) == 2
-        and parts[-2] in {
-            "co", "com", "org",
-            "net", "gov", "edu", "ac"
-        }
-    ):
-        return parts[-3]
-
-    if len(parts) >= 2:
-        return parts[-2]
-
-    return parts[0]
-
-
-def tokens(value: str) -> set[str]:
-    value = value.lower()
-
-    value = unicodedata.normalize(
-        "NFKD",
-        value,
-    )
-
-    value = "".join(
-        c
-        for c in value
-        if not unicodedata.combining(c)
-    )
-
-    value = re.sub(
-        r"[^a-z0-9]+",
-        " ",
-        value,
-    )
-
-    return set(value.split())
-
-
+# Change these two values while debugging a real case.
 apollo_company = "WSO Worldwide Security Options"
+normalized_name = "johnnytorres"
+
 
 connection = psycopg.connect(
     host=os.getenv("DB_HOST"),
@@ -97,44 +44,49 @@ cursor.execute(
     FROM contacts
     WHERE normalized_name = %s;
     """,
-    ("johnnytorres",),
+    (normalized_name,),
 )
 
 rows = cursor.fetchall()
 
+print("\n=== APOLLO COMPANY ===")
+print("Company:", apollo_company)
+print("Tokens:", company_token_list(apollo_company))
+print("Variants:", sorted(company_variants(apollo_company)))
+
+
 for row in rows:
-    print("\nCRM ROW:")
+    email_domain = row[4] or ""
+
+    host, brand, suffix = get_domain_parts(
+        email_domain
+    )
+
+    print("\n" + "=" * 60)
+    print("CRM ROW")
+    print("=" * 60)
     print("Email:", row[0])
     print("Name:", row[1], row[2])
     print("Job title:", row[3])
-    print("Stored email_domain:", row[4])
+    print("Stored email_domain:", email_domain)
     print("Stored normalized_domain:", row[5])
 
-    brand = get_domain_brand(row[4] or "")
+    print("\nDOMAIN PARSING")
+    print("Clean host:", clean_domain_host(email_domain))
+    print("Registrable brand:", get_domain_brand(email_domain))
+    print("Suffix:", suffix)
+    print("Domain variants:", sorted(domain_variants(email_domain)))
 
-    print()
-    print("Apollo company:", apollo_company)
-    print("Domain brand:", brand)
-
+    print("\nMATCH RESULT")
     print(
-        "Apollo compact:",
-        normalize_text(apollo_company),
+        "✅ MATCH"
+        if company_matches(
+            apollo_company,
+            email_domain,
+        )
+        else "❌ NO MATCH"
     )
 
-    print(
-        "Brand compact:",
-        normalize_text(brand),
-    )
-
-    print(
-        "Apollo tokens:",
-        tokens(apollo_company),
-    )
-
-    print(
-        "Domain tokens:",
-        tokens(brand),
-    )
 
 cursor.close()
 connection.close()

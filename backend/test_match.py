@@ -1,118 +1,260 @@
-import os
-import re
-import unicodedata
+import argparse
 
-import psycopg
-from dotenv import load_dotenv
+from api import (
+    company_matches,
+    domains_equivalent,
+    resolve_contact_domains,
+)
 
-load_dotenv()
+
+DETERMINISTIC_CASES = [
+    ("Liquid AI", "liquid.ai", True),
+    ("Liquid AI", "liquid.liquid.ai", True),
+    ("VE GROUP", "ve-group.com", True),
+    ("Fito Ag.", "fitoag.com.br", True),
+    (
+        "WSO Worldwide Security Options",
+        "wso-security.com",
+        True,
+    ),
+    (
+        "Simplon Fahrrad GmbH",
+        "simplon.com",
+        True,
+    ),
+    (
+        "Global Technology",
+        "globalconstruction.com",
+        False,
+    ),
+    (
+        "AI Solutions",
+        "aidental.com",
+        False,
+    ),
+]
 
 
-def normalize_text(value: str) -> str:
-    value = value.strip().lower()
+DOMAIN_EQUIVALENCE_CASES = [
+    (
+        "liquid.ai",
+        "liquid.liquid.ai",
+        True,
+    ),
+    (
+        "example.com",
+        "portal.example.com",
+        True,
+    ),
+    (
+        "example.com",
+        "example.org",
+        False,
+    ),
+]
 
-    value = unicodedata.normalize("NFKD", value)
-    value = "".join(
-        char
-        for char in value
-        if not unicodedata.combining(char)
+
+def run_local_tests():
+    failures = 0
+
+    print(
+        "Deterministic company/domain tests"
+    )
+    print("=" * 70)
+
+    for (
+        company,
+        domain,
+        expected,
+    ) in DETERMINISTIC_CASES:
+
+        actual = company_matches(
+            company,
+            domain,
+        )
+
+        status = (
+            "PASS"
+            if actual == expected
+            else "FAIL"
+        )
+
+        print(
+            f"{status:4} | "
+            f"{company!r} <-> "
+            f"{domain!r} "
+            f"=> {actual}"
+        )
+
+        if actual != expected:
+            failures += 1
+
+
+    print()
+    print(
+        "Resolved-domain equivalence tests"
+    )
+    print("=" * 70)
+
+
+    for (
+        left,
+        right,
+        expected,
+    ) in DOMAIN_EQUIVALENCE_CASES:
+
+        actual = domains_equivalent(
+            left,
+            right,
+        )
+
+        status = (
+            "PASS"
+            if actual == expected
+            else "FAIL"
+        )
+
+        print(
+            f"{status:4} | "
+            f"{left!r} <-> "
+            f"{right!r} "
+            f"=> {actual}"
+        )
+
+        if actual != expected:
+            failures += 1
+
+
+    print()
+
+    if failures:
+        raise SystemExit(
+            f"{failures} test(s) failed."
+        )
+
+    print(
+        "All local tests passed."
     )
 
-    value = re.sub(r"[^a-z0-9]", "", value)
 
-    return value
+def run_live_resolver_test():
+    print()
+    print(
+        "Live Name + Company domain resolver"
+    )
+    print("=" * 70)
 
+    name = input(
+        "Person name: "
+    ).strip()
 
-def company_matches(
-    apollo_company: str,
-    crm_domain: str,
-) -> bool:
+    company = input(
+        "Company name: "
+    ).strip()
 
-    company = normalize_text(apollo_company)
-    domain = normalize_text(crm_domain)
-
-    if not company or not domain:
-        return False
-
-    # Exact:
-    # VE Group ↔ ve-group.com
-    if company == domain:
-        return True
-
-    # Brand/domain may be part of a longer legal company name:
-    # Simplon Fahrrad GmbH ↔ simplon.com
-    if len(domain) >= 4 and domain in company:
-        return True
-
-    return False
+    location = input(
+        "Company location (optional): "
+    ).strip()
 
 
-name = input("Apollo name: ").strip()
-job_title = input("Apollo job title: ").strip()
-company = input("Apollo company: ").strip()
-
-normalized_name = normalize_text(name)
-normalized_title = normalize_text(job_title)
-
-
-connection = psycopg.connect(
-    host=os.getenv("DB_HOST"),
-    port=os.getenv("DB_PORT"),
-    dbname=os.getenv("DB_NAME"),
-    user=os.getenv("DB_USER"),
-    password=os.getenv("DB_PASSWORD"),
-)
-
-cursor = connection.cursor()
-
-cursor.execute(
-    """
-    SELECT
-        email,
-        first_name,
-        last_name,
-        job_title,
-        normalized_domain
-    FROM contacts
-    WHERE normalized_name = %s
-      AND normalized_title = %s;
-    """,
-    (
-        normalized_name,
-        normalized_title,
-    ),
-)
-
-rows = cursor.fetchall()
-
-match = None
-
-for row in rows:
-    email = row[0]
-    first_name = row[1]
-    last_name = row[2]
-    stored_title = row[3]
-    stored_domain = row[4]
-
-    if stored_domain and company_matches(
+    result = resolve_contact_domains(
+        name,
         company,
-        stored_domain
+        location,
+    )
+
+
+    print()
+    print("Resolver status:")
+
+    print(
+        "  status:",
+        result.get(
+            "status"
+        ),
+    )
+
+    print(
+        "  method:",
+        result.get(
+            "method"
+        ),
+    )
+
+    print(
+        "  confidence:",
+        result.get(
+            "confidence"
+        ),
+    )
+
+
+    if (
+        "coverage_complete"
+        in result
     ):
-        match = row
-        break
+        print(
+            "  coverage_complete:",
+            result.get(
+                "coverage_complete"
+            ),
+        )
 
 
-print()
-
-if match:
-    print("✅ EXISTING CONTACT")
-    print(f"Name: {match[1]} {match[2]}")
-    print(f"Job title: {match[3]}")
-    print(f"Email: {match[0]}")
-    print(f"Domain/company key: {match[4]}")
-else:
-    print("❌ NO 3-FIELD MATCH")
+    domains = result.get(
+        "domains",
+        [],
+    )
 
 
-cursor.close()
-connection.close()
+    print()
+    print("Resolved domains:")
+
+    if not domains:
+        print("  None")
+    else:
+        for item in domains:
+            print(
+                "  - "
+                f"{item.get('domain')} | "
+                f"{item.get('type')} | "
+                "confidence="
+                f"{item.get('confidence')}"
+            )
+
+
+    evidence_urls = result.get(
+        "evidence_urls",
+        [],
+    )
+
+
+    if evidence_urls:
+        print()
+        print("Web evidence:")
+
+        for url in evidence_urls:
+            print(
+                f"  - {url}"
+            )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--resolve",
+        action="store_true",
+        help=(
+            "Run one live Name + Company "
+            "domain-resolution test after "
+            "the local tests."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    run_local_tests()
+
+    if args.resolve:
+        run_live_resolver_test()
