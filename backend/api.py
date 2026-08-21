@@ -1938,46 +1938,23 @@ def match_apollo(
 
 
     # ========================================================
-    # BUILD UNIQUE NAME + TITLE PAIRS
+    # BUILD UNIQUE NORMALIZED NAMES
     # ========================================================
 
-    pairs = list(
+    unique_names = list(
         {
-            (
-                item[
-                    "normalized_name"
-                ],
-
-                item[
-                    "normalized_title"
-                ],
-            )
-
-            for item
-            in prepared_contacts
+            item["normalized_name"]
+            for item in prepared_contacts
         }
     )
-
-
-    normalized_names = [
-        pair[0]
-        for pair in pairs
-    ]
-
-
-    normalized_titles = [
-        pair[1]
-        for pair in pairs
-    ]
-
 
     append_activity(
         activity,
         "DB_QUERY_START",
-        "Looking up matching normalized Name + Job Title candidates.",
+        "Looking up matching normalized Name candidates.",
         details={
-            "unique_name_title_pairs":
-                len(pairs),
+            "unique_names":
+                len(unique_names),
         },
     )
 
@@ -1992,21 +1969,6 @@ def match_apollo(
 
             cursor.execute(
                 """
-                WITH requested_contacts AS (
-
-                    SELECT *
-
-                    FROM unnest(
-                        %s::text[],
-                        %s::text[]
-                    )
-
-                    AS requested(
-                        normalized_name,
-                        normalized_title
-                    )
-                )
-
                 SELECT
                     c.email,
                     c.first_name,
@@ -2023,22 +1985,10 @@ def match_apollo(
                     c.source_file
 
                 FROM contacts c
-
-                INNER JOIN requested_contacts r
-
-                    ON
-                        c.normalized_name =
-                        r.normalized_name
-
-                    AND
-
-                        c.normalized_title =
-                        r.normalized_title;
+                WHERE c.normalized_name = ANY(%s);
                 """,
-
                 (
-                    normalized_names,
-                    normalized_titles,
+                    unique_names,
                 ),
             )
 
@@ -2059,32 +2009,16 @@ def match_apollo(
 
 
     # ========================================================
-    # GROUP DATABASE CANDIDATES
+    # GROUP DATABASE CANDIDATES BY NORMALIZED NAME
     # ========================================================
 
     candidates = {}
 
-
     for row in database_rows:
-
-        pair = (
-            row[4],
-            row[5],
-        )
-
-
-        if pair not in candidates:
-
-            candidates[
-                pair
-            ] = []
-
-
-        candidates[
-            pair
-        ].append(
-            row
-        )
+        norm_name = row[4]
+        if norm_name not in candidates:
+            candidates[norm_name] = []
+        candidates[norm_name].append(row)
 
 
     # ========================================================
@@ -2136,20 +2070,9 @@ def match_apollo(
         )
 
 
-        pair = (
-            contact[
-                "normalized_name"
-            ],
-
-            contact[
-                "normalized_title"
-            ],
-        )
-
-
         possible_matches = (
             candidates.get(
-                pair,
+                contact["normalized_name"],
                 [],
             )
         )
@@ -2157,7 +2080,7 @@ def match_apollo(
 
         contact_log(
             "DB_CANDIDATES",
-            "Name + Job Title candidate rows loaded.",
+            "Name candidate rows loaded from DB.",
             details={
                 "count":
                     len(

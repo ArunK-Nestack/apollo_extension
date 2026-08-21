@@ -148,6 +148,10 @@ def run_live_resolver_test():
         "Person name: "
     ).strip()
 
+    job_title = input(
+        "Job title (optional): "
+    ).strip()
+
     company = input(
         "Company name: "
     ).strip()
@@ -158,9 +162,10 @@ def run_live_resolver_test():
 
 
     result = resolve_contact_domains(
-        name,
-        company,
-        location,
+        name=name,
+        job_title=job_title,
+        company=company,
+        location=location,
     )
 
 
