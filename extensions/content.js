@@ -1,5 +1,7 @@
 (() => {
   const STATE_KEY = "__contactDatabaseChecker";
+  const REQUIRED_CONTACTS_STORAGE_KEY =
+    "contactCheckerRequiredContactsAll";
 
   // ============================================================
   // TOGGLE OFF
@@ -20,11 +22,18 @@
     timer: null,
     pageTimer: null,
     statusTimer: null,
+    storageSaveTimer: null,
+    settleTimer: null,
+    settleRetryAttempts: 0,
     checkedContacts: new Map(),
     pendingContacts: new Set(),
     currentContacts: new Map(),
-    selectionRun: null,
-    highlightedRows: new Set()
+    requiredContactsAll: new Map(),
+    highlightedRows: new Set(),
+    activityLog: [],
+    activityPanelOpen: false,
+    lastLoggedPageSignature: "",
+    lastBackendSummary: null
   };
 
   globalThis[STATE_KEY] = state;
@@ -88,18 +97,10 @@
       box-shadow: 0 4px 15px rgba(0,0,0,0.25);
     }
 
-    #contact-checker-credit-limit {
-      width: 64px;
-      border: 1px solid #4b5563;
-      border-radius: 6px;
-      background: #fff;
-      color: #111827;
-      padding: 6px;
-      font-size: 12px;
-    }
-
-    #contact-checker-select-required,
-    #contact-checker-stop-selection {
+    #contact-checker-export-required,
+    #contact-checker-clear-required,
+    #contact-checker-activity-toggle,
+    #contact-checker-clear-activity {
       border: 0;
       border-radius: 6px;
       background: #f97316;
@@ -110,15 +111,138 @@
       cursor: pointer;
     }
 
-    #contact-checker-stop-selection {
-      display: none;
-      background: #dc2626;
+    #contact-checker-clear-required {
+      background: #6b7280;
     }
 
-    #contact-checker-select-required:disabled,
-    #contact-checker-stop-selection:disabled {
+    #contact-checker-export-required:disabled,
+    #contact-checker-clear-required:disabled,
+    #contact-checker-activity-toggle:disabled,
+    #contact-checker-clear-activity:disabled {
       cursor: default;
       opacity: 0.5;
+    }
+
+
+    #contact-checker-activity-toggle {
+      background: #2563eb !important;
+    }
+
+    #contact-checker-clear-activity {
+      background: #4b5563 !important;
+      padding: 5px 8px !important;
+      font-size: 11px !important;
+    }
+
+    #contact-checker-activity-panel {
+      position: fixed;
+      right: 20px;
+      bottom: 130px;
+      z-index: 2147483646;
+      width: 460px;
+      max-width: calc(100vw - 40px);
+      max-height: 430px;
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+      background: #0f172a;
+      color: #e5e7eb;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      font-family: Arial, sans-serif;
+      font-size: 12px;
+      box-shadow: 0 10px 35px rgba(0,0,0,0.35);
+    }
+
+    #contact-checker-activity-panel.open {
+      display: flex;
+    }
+
+    .contact-checker-activity-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid #334155;
+      background: #111827;
+    }
+
+    .contact-checker-activity-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .contact-checker-activity-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+      padding: 9px 10px;
+      border-bottom: 1px solid #334155;
+      background: #111827;
+    }
+
+    .contact-checker-activity-metric {
+      padding: 6px;
+      border-radius: 6px;
+      background: #1f2937;
+      text-align: center;
+    }
+
+    .contact-checker-activity-metric strong {
+      display: block;
+      color: #fff;
+      font-size: 13px;
+    }
+
+    .contact-checker-activity-metric span {
+      color: #9ca3af;
+      font-size: 10px;
+    }
+
+    #contact-checker-activity-list {
+      overflow-y: auto;
+      padding: 7px 8px 10px;
+    }
+
+    .contact-checker-activity-row {
+      display: grid;
+      grid-template-columns: 66px 132px 1fr;
+      gap: 7px;
+      align-items: start;
+      padding: 6px;
+      border-bottom: 1px solid rgba(148,163,184,0.12);
+    }
+
+    .contact-checker-activity-row:last-child {
+      border-bottom: 0;
+    }
+
+    .contact-checker-activity-time {
+      color: #94a3b8;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .contact-checker-activity-event {
+      color: #93c5fd;
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .contact-checker-activity-message {
+      color: #e5e7eb;
+      word-break: break-word;
+    }
+
+    .contact-checker-activity-row.warning
+    .contact-checker-activity-event {
+      color: #fbbf24;
+    }
+
+    .contact-checker-activity-row.error
+    .contact-checker-activity-event {
+      color: #f87171;
     }
 
     #contact-checker-status {
@@ -146,6 +270,300 @@
     return (value || "")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function activityClock(timestamp) {
+    const date = timestamp
+      ? new Date(timestamp)
+      : new Date();
+
+    if (
+      Number.isNaN(
+        date.getTime()
+      )
+    ) {
+      return "--:--:--";
+    }
+
+    return date.toLocaleTimeString(
+      [],
+      {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      }
+    );
+  }
+
+  function addActivity(
+    event,
+    message,
+    level = "info",
+    details = {}
+  ) {
+    const entry = {
+      timestamp:
+        new Date().toISOString(),
+      event:
+        event || "EVENT",
+      message:
+        message || "",
+      level:
+        level || "info",
+      details:
+        details || {}
+    };
+
+    state.activityLog.push(entry);
+
+    if (state.activityLog.length > 400) {
+      state.activityLog.splice(
+        0,
+        state.activityLog.length - 400
+      );
+    }
+
+    console.log(
+      `[ContactChecker] ${entry.event}: ${entry.message}`,
+      entry.details
+    );
+
+    renderActivityPanel();
+  }
+
+  function appendBackendActivity(entries) {
+    if (!Array.isArray(entries)) {
+      return;
+    }
+
+    entries.forEach(entry => {
+      state.activityLog.push({
+        timestamp:
+          entry?.timestamp ||
+          new Date().toISOString(),
+
+        event:
+          entry?.event ||
+          "BACKEND_EVENT",
+
+        message:
+          entry?.message ||
+          "",
+
+        level:
+          entry?.level ||
+          "info",
+
+        details:
+          entry?.details ||
+          {}
+      });
+
+      console.log(
+        `[ContactChecker API] ${entry?.event || "EVENT"}: ${entry?.message || ""}`,
+        entry?.details || {}
+      );
+    });
+
+    if (state.activityLog.length > 400) {
+      state.activityLog.splice(
+        0,
+        state.activityLog.length - 400
+      );
+    }
+
+    renderActivityPanel();
+  }
+
+  function renderActivityPanel() {
+    let panel = document.getElementById(
+      "contact-checker-activity-panel"
+    );
+
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id =
+        "contact-checker-activity-panel";
+
+      panel.innerHTML = `
+        <div class="contact-checker-activity-header">
+          <div class="contact-checker-activity-title">
+            Contact Checker Activity
+          </div>
+          <button
+            id="contact-checker-clear-activity"
+            type="button"
+          >Clear</button>
+        </div>
+        <div
+          class="contact-checker-activity-summary"
+          id="contact-checker-activity-summary"
+        ></div>
+        <div
+          id="contact-checker-activity-list"
+        ></div>
+      `;
+
+      panel
+        .querySelector(
+          "#contact-checker-clear-activity"
+        )
+        .addEventListener(
+          "click",
+          () => {
+            state.activityLog = [];
+            state.lastBackendSummary = null;
+            renderActivityPanel();
+          }
+        );
+
+      document.body.appendChild(panel);
+    }
+
+    panel.classList.toggle(
+      "open",
+      state.activityPanelOpen
+    );
+
+    const summary =
+      state.lastBackendSummary || {};
+
+    const summaryElement =
+      panel.querySelector(
+        "#contact-checker-activity-summary"
+      );
+
+    const metrics = [
+      [
+        summary.contacts_processed ?? 0,
+        "Checked"
+      ],
+      [
+        summary.existing ?? 0,
+        "Existing"
+      ],
+      [
+        summary.knowledge_lookups ?? 0,
+        "LLM"
+      ],
+      [
+        summary.web_searches ?? 0,
+        "Web"
+      ]
+    ];
+
+    summaryElement.replaceChildren();
+
+    metrics.forEach(
+      ([value, label]) => {
+        const metric =
+          document.createElement("div");
+
+        metric.className =
+          "contact-checker-activity-metric";
+
+        const strong =
+          document.createElement("strong");
+
+        strong.textContent =
+          String(value);
+
+        const span =
+          document.createElement("span");
+
+        span.textContent =
+          label;
+
+        metric.append(
+          strong,
+          span
+        );
+
+        summaryElement.appendChild(
+          metric
+        );
+      }
+    );
+
+    const list =
+      panel.querySelector(
+        "#contact-checker-activity-list"
+      );
+
+    list.replaceChildren();
+
+    const entries =
+      state.activityLog.slice(-120);
+
+    entries.forEach(entry => {
+      const row =
+        document.createElement("div");
+
+      row.className =
+        `contact-checker-activity-row ${entry.level || "info"}`;
+
+      const time =
+        document.createElement("div");
+
+      time.className =
+        "contact-checker-activity-time";
+
+      time.textContent =
+        activityClock(
+          entry.timestamp
+        );
+
+      const event =
+        document.createElement("div");
+
+      event.className =
+        "contact-checker-activity-event";
+
+      event.textContent =
+        entry.event || "";
+
+      const message =
+        document.createElement("div");
+
+      message.className =
+        "contact-checker-activity-message";
+
+      message.textContent =
+        entry.message || "";
+
+      row.append(
+        time,
+        event,
+        message
+      );
+
+      list.appendChild(row);
+    });
+
+    if (state.activityPanelOpen) {
+      list.scrollTop =
+        list.scrollHeight;
+    }
+  }
+
+  function toggleActivityPanel() {
+    state.activityPanelOpen =
+      !state.activityPanelOpen;
+
+    renderActivityPanel();
+
+    const button =
+      document.getElementById(
+        "contact-checker-activity-toggle"
+      );
+
+    if (button) {
+      button.textContent =
+        state.activityPanelOpen
+          ? "Hide Activity"
+          : "Activity";
+    }
   }
 
   function showStatus(message, duration = 2500) {
@@ -205,6 +623,71 @@
     }
 
     return `apollo-row-${index}`;
+  }
+
+
+  // ============================================================
+  // FIND A ROW CELL BY APOLLO COLUMN HEADER
+  // ============================================================
+
+  function findCellByHeader(
+    row,
+    cells,
+    acceptedHeaders
+  ) {
+    const headers = Array.from(
+      document.querySelectorAll(
+        '[role="columnheader"]'
+      )
+    );
+
+    const accepted = acceptedHeaders.map(
+      value => cleanText(value).toLowerCase()
+    );
+
+    const header = headers.find(item => {
+      const label = cleanText(
+        item.innerText ||
+        item.textContent ||
+        item.getAttribute("aria-label") ||
+        ""
+      ).toLowerCase();
+
+      return accepted.some(
+        expected =>
+          label === expected ||
+          label.includes(expected)
+      );
+    });
+
+    if (!header) {
+      return null;
+    }
+
+    // Prefer ARIA column indices because Apollo can have a
+    // checkbox/actions column before the visible data columns.
+    const ariaColumnIndex =
+      header.getAttribute("aria-colindex");
+
+    if (ariaColumnIndex) {
+      const indexedCell = row.querySelector(
+        `[role="cell"][aria-colindex="${ariaColumnIndex}"]`
+      );
+
+      if (indexedCell) {
+        return indexedCell;
+      }
+    }
+
+    // Fallback: use visible header order.
+    const headerIndex =
+      headers.indexOf(header);
+
+    return (
+      headerIndex >= 0
+        ? cells[headerIndex] || null
+        : null
+    );
   }
 
   // ============================================================
@@ -283,6 +766,26 @@
       companyCell.innerText
     );
 
+    // Location is optional. We find it by header name rather than
+    // hardcoding a fragile cell offset.
+    const locationCell = findCellByHeader(
+      row,
+      cells,
+      [
+        "company location",
+        "location",
+        "headquarters",
+        "headquarters location",
+        "hq location"
+      ]
+    );
+
+    const location = cleanText(
+      locationCell?.innerText ||
+      locationCell?.textContent ||
+      ""
+    );
+
     if (!jobTitle || !company) {
       console.log(
         "Contact Checker: incomplete row",
@@ -306,6 +809,7 @@
       name,
       job_title: jobTitle,
       company,
+      location,
       row,
       link,
       nameCell
@@ -358,7 +862,92 @@
     }
   }
 
+  // ============================================================
+  // PERSIST REQUIRED CONTACTS ACROSS RELOADS
+  //
+  // chrome.storage.local only — never sent anywhere, never touches
+  // Apollo. This just survives a tab refresh or browser restart so
+  // a long session isn't lost.
+  // ============================================================
+
+  function loadStoredRequiredContacts() {
+    if (!chrome?.storage?.local) {
+      return;
+    }
+
+    chrome.storage.local.get(
+      REQUIRED_CONTACTS_STORAGE_KEY,
+      result => {
+        const stored =
+          result?.[REQUIRED_CONTACTS_STORAGE_KEY];
+
+        if (!Array.isArray(stored) || !stored.length) {
+          return;
+        }
+
+        stored.forEach(([key, value]) => {
+          state.requiredContactsAll.set(key, value);
+        });
+
+        renderExportControls();
+
+        showStatus(
+          `Restored ${state.requiredContactsAll.size} required contact(s) from before`,
+          3000
+        );
+      }
+    );
+  }
+
+  function saveRequiredContactsNow() {
+    if (!chrome?.storage?.local) {
+      return;
+    }
+
+    chrome.storage.local.set({
+      [REQUIRED_CONTACTS_STORAGE_KEY]: Array.from(
+        state.requiredContactsAll.entries()
+      )
+    });
+  }
+
+  function scheduleRequiredContactsSave() {
+    clearTimeout(state.storageSaveTimer);
+
+    state.storageSaveTimer = setTimeout(
+      saveRequiredContactsNow,
+      400
+    );
+  }
+
+  // Apollo IDs come from the row's own link href/data-to attribute,
+  // which is already present in the DOM the user is looking at.
+  // Nothing is clicked or navigated to get this value.
+  function getApolloIdFromKey(key) {
+    if (!key || !key.startsWith("apollo-") || key.startsWith("apollo-row-")) {
+      return "";
+    }
+
+    return key.slice("apollo-".length);
+  }
+
+  function recordRequiredContact(contact) {
+    const apolloId = getApolloIdFromKey(contact.key);
+
+    state.requiredContactsAll.set(contact.key, {
+      apollo_id: apolloId,
+      name: contact.name,
+      job_title: contact.job_title,
+      company: contact.company,
+      location: contact.location || ""
+    });
+
+    scheduleRequiredContactsSave();
+  }
+
   function markRequired(contact) {
+    recordRequiredContact(contact);
+
     if (
       contact.nameCell.querySelector(
         ".contact-checker-required-badge"
@@ -396,29 +985,6 @@
     }
   }
 
-  function getRowCheckbox(row) {
-    return Array.from(
-      row.querySelectorAll(
-      `input[type="checkbox"],
-       [role="checkbox"]`
-      )
-    ).find(isCheckboxAvailable) || null;
-  }
-
-  function isCheckboxSelected(checkbox) {
-    return checkbox.checked === true ||
-      checkbox.getAttribute("aria-checked") === "true" ||
-      checkbox.getAttribute("data-state") === "checked";
-  }
-
-  function isCheckboxAvailable(checkbox) {
-    return checkbox &&
-      checkbox.isConnected &&
-      !checkbox.disabled &&
-      checkbox.getAttribute("aria-disabled") !== "true" &&
-      checkbox.getClientRects().length > 0;
-  }
-
   function getRequiredContacts() {
     return Array.from(
       state.currentContacts.values()
@@ -432,336 +998,112 @@
     });
   }
 
-  function getPageSignature() {
-    return Array.from(
-      state.currentContacts.keys()
-    ).join("|");
-  }
+  // ============================================================
+  // EXPORT REQUIRED CONTACTS (CSV) — PASSIVE ONLY
+  //
+  // No Apollo UI element is ever clicked here. This only reads
+  // data already rendered on pages the user has manually visited
+  // and writes it to a file the browser downloads locally.
+  // ============================================================
 
-  function nextFrame() {
-    return new Promise(resolve =>
-      requestAnimationFrame(resolve)
-    );
-  }
+  function csvEscape(value) {
+    const text = String(value ?? "");
 
-  function findNextPageButton() {
-    const selectors = [
-      '[aria-label="Next page"]',
-      '[aria-label="Next"]',
-      '[aria-label*="next" i]',
-      '[title="Next page"]',
-      '[title*="next" i]',
-      '[data-testid*="next" i]',
-      '[data-cy*="next" i]',
-      '[data-test*="next" i]'
-    ];
-
-    const explicitMatch = selectors
-      .flatMap(selector =>
-        Array.from(
-          document.querySelectorAll(selector)
-        )
-      )
-      .find(button => {
-        if (!isCheckboxAvailable(button)) {
-          return false;
-        }
-
-        const label = [
-          button.textContent,
-          button.getAttribute("aria-label"),
-          button.getAttribute("title"),
-          button.getAttribute("data-testid"),
-          button.getAttribute("data-cy"),
-          button.getAttribute("data-test")
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .trim()
-          .toLowerCase();
-
-        return label === "next" ||
-          label.includes("next page") ||
-          label.includes("page next") ||
-          label.includes("pagination next") ||
-          /next.*(page|result)|(page|result).*next/.test(label);
-      });
-
-    if (explicitMatch) {
-      return explicitMatch;
+    if (/[",\n]/.test(text)) {
+      return `"${text.replace(/"/g, '""')}"`;
     }
 
-    const controls = Array.from(
-      document.querySelectorAll(
-        'button, [role="button"]'
-      )
-    ).filter(isCheckboxAvailable);
+    return text;
+  }
 
-    const labeledMatch = controls.find(control => {
-      const label = [
-        control.textContent,
-        control.getAttribute("aria-label"),
-        control.getAttribute("title"),
-        control.getAttribute("data-testid"),
-        control.getAttribute("data-cy")
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .trim()
-        .toLowerCase();
+  function buildRequiredContactsCSV() {
+    const rows = Array.from(
+      state.requiredContactsAll.values()
+    );
 
-      if (
-        label === "next" ||
-        label.includes("next page") ||
-        label.includes("pagination next")
-      ) {
-        return true;
-      }
+    const header = [
+      "apollo_id",
+      "name",
+      "job_title",
+      "company",
+      "location"
+    ];
 
-      const pagination = control.closest(
-        `nav,
-         [role="navigation"],
-         [class*="pagination" i],
-         [data-testid*="pagination" i],
-         [data-cy*="pagination" i]`
-      );
+    const lines = [header.join(",")];
 
-      return Boolean(
-        pagination &&
-        control.querySelector(
-          `[data-icon*="chevron-right" i],
-           [data-icon*="arrow-right" i],
-           [aria-label*="right" i],
-           [class*="chevron-right" i],
-           [class*="arrow-right" i]`
-        )
+    rows.forEach(row => {
+      lines.push(
+        [
+          row.apollo_id,
+          row.name,
+          row.job_title,
+          row.company,
+          row.location
+        ]
+          .map(csvEscape)
+          .join(",")
       );
     });
 
-    if (labeledMatch) {
-      return labeledMatch;
-    }
-
-    const pagination = document.querySelector(
-      `nav[aria-label*="pagination" i],
-       [role="navigation"][aria-label*="page" i],
-       [class*="pagination" i],
-       [data-testid*="pagination" i],
-       [data-cy*="pagination" i]`
-    );
-
-    if (!pagination) {
-      return null;
-    }
-
-    const paginationButtons = Array.from(
-      pagination.querySelectorAll(
-        'button, [role="button"]'
-      )
-    ).filter(isCheckboxAvailable);
-
-    return paginationButtons.at(-1) || null;
+    return lines.join("\n");
   }
 
-  function waitForPageChange(
-    previousSignature,
-    attempts = 0
-  ) {
-    clearTimeout(state.pageTimer);
-
-    state.pageTimer = setTimeout(
-      () => {
-        const run = state.selectionRun;
-
-        if (
-          !run ||
-          run.waitingForPage !== previousSignature
-        ) {
-          return;
-        }
-
-        scanApollo();
-
-        if (
-          getPageSignature() !== previousSignature
-        ) {
-          return;
-        }
-
-        if (attempts >= 15) {
-          stopSelectionRun(
-            "Page change timed out | {selected} selected"
-          );
-          return;
-        }
-
-        waitForPageChange(
-          previousSignature,
-          attempts + 1
-        );
-      },
-      500
-    );
-  }
-
-  function stopSelectionRun(message) {
-    const run = state.selectionRun;
-
-    clearTimeout(state.pageTimer);
-    state.pageTimer = null;
-    state.selectionRun = null;
-    renderSelectionControls();
-
-    if (message) {
-      showStatus(
-        message.replace(
-          "{selected}",
-          String(run?.selected || 0)
-        ),
-        5000
-      );
-    }
-  }
-
-  async function continueSelectionRun() {
-    const run = state.selectionRun;
-
-    if (!run || run.busy) {
+  function exportRequiredContactsCSV() {
+    if (!state.requiredContactsAll.size) {
+      showStatus("No required contacts collected yet");
       return;
     }
 
-    const signature = getPageSignature();
+    const csv = buildRequiredContactsCSV();
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
 
-    if (!signature) {
-      return;
-    }
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `required-contacts-${Date.now()}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
 
-    if (
-      run.waitingForPage &&
-      run.waitingForPage === signature
-    ) {
-      return;
-    }
+    URL.revokeObjectURL(url);
 
-    if (run.waitingForPage) {
-      run.waitingForPage = null;
-      clearTimeout(state.pageTimer);
-      state.pageTimer = null;
-    }
-
-    const unresolved = Array.from(
-      state.currentContacts.keys()
-    ).some(key =>
-      !state.checkedContacts.has(key)
+    addActivity(
+      "REQUIRED_CONTACTS_EXPORTED",
+      `Exported ${state.requiredContactsAll.size} required contact(s) to CSV.`,
+      "info",
+      {
+        count: state.requiredContactsAll.size
+      }
     );
 
-    if (unresolved) {
-      return;
-    }
-
-    if (run.visitedPages.has(signature)) {
-      stopSelectionRun(
-        "Stopped: page repeated | {selected} selected"
-      );
-      return;
-    }
-
-    run.busy = true;
-    run.visitedPages.add(signature);
-
-    const candidates =
-      getRequiredContacts().filter(contact =>
-        !run.processedKeys.has(contact.key)
-      );
-
-    for (let index = 0;
-      index < candidates.length && run.remaining > 0;
-      index++) {
-      const contact = candidates[index];
-      const checkbox = getRowCheckbox(contact.row);
-
-      run.processedKeys.add(contact.key);
-
-      if (!isCheckboxAvailable(checkbox)) {
-        run.skipped++;
-        continue;
-      }
-
-      if (!isCheckboxSelected(checkbox)) {
-        checkbox.click();
-      }
-
-      run.selected++;
-      run.remaining--;
-
-      if (run.selected % 10 === 0) {
-        renderSelectionControls();
-        await nextFrame();
-      }
-    }
-
-    run.busy = false;
-    renderSelectionControls();
-
-    if (!state.selectionRun) {
-      return;
-    }
-
-    if (run.remaining === 0) {
-      stopSelectionRun(
-        "Credit cap reached | {selected} selected"
-      );
-      return;
-    }
-
-    const nextButton = findNextPageButton();
-
-    if (!nextButton) {
-      stopSelectionRun(
-        "No next page | {selected} selected"
-      );
-      return;
-    }
-
-    run.waitingForPage = signature;
-    nextButton.click();
     showStatus(
-      `Moving to next page | ${run.remaining} left`,
-      2000
+      `Exported ${state.requiredContactsAll.size} required contact(s)`,
+      3000
     );
-    waitForPageChange(signature);
   }
 
-  function selectRequiredContacts() {
-    const input = document.getElementById(
-      "contact-checker-credit-limit"
-    );
+  function clearRequiredContactsList() {
+    const count = state.requiredContactsAll.size;
 
-    const limit = Number.parseInt(
-      input?.value,
-      10
-    );
+    state.requiredContactsAll.clear();
 
-    if (!Number.isInteger(limit) || limit < 1) {
-      showStatus("Enter credit limit of at least 1");
-      return;
+    if (chrome?.storage?.local) {
+      chrome.storage.local.remove(
+        REQUIRED_CONTACTS_STORAGE_KEY
+      );
     }
 
-    state.selectionRun = {
-      remaining: limit,
-      selected: 0,
-      skipped: 0,
-      busy: false,
-      waitingForPage: null,
-      processedKeys: new Set(),
-      visitedPages: new Set()
-    };
+    addActivity(
+      "REQUIRED_CONTACTS_CLEARED",
+      `Cleared ${count} collected required contact(s).`,
+      "info"
+    );
 
-    renderSelectionControls();
-    continueSelectionRun();
+    renderExportControls();
+    showStatus("Required contacts list cleared");
   }
 
-  function renderSelectionControls() {
+  function renderExportControls() {
     let controls = document.getElementById(
       "contact-checker-controls"
     );
@@ -771,81 +1113,74 @@
       controls.id = "contact-checker-controls";
       controls.innerHTML = `
         <span id="contact-checker-required-count"></span>
-        <label>
-          Credit cap
-          <input
-            id="contact-checker-credit-limit"
-            type="number"
-            min="1"
-            step="1"
-            value="50"
-          >
-        </label>
         <button
-          id="contact-checker-select-required"
+          id="contact-checker-export-required"
           type="button"
-        >Select Across Pages</button>
+        >Export Required Contacts (CSV)</button>
         <button
-          id="contact-checker-stop-selection"
+          id="contact-checker-clear-required"
           type="button"
-        >Stop</button>
+        >Clear List</button>
+        <button
+          id="contact-checker-activity-toggle"
+          type="button"
+        >Activity</button>
       `;
 
       controls
         .querySelector(
-          "#contact-checker-select-required"
+          "#contact-checker-export-required"
         )
         .addEventListener(
           "click",
-          selectRequiredContacts
+          exportRequiredContactsCSV
         );
 
       controls
         .querySelector(
-          "#contact-checker-stop-selection"
+          "#contact-checker-clear-required"
         )
         .addEventListener(
           "click",
-          () => stopSelectionRun(
-            "Stopped | {selected} selected"
-          )
+          clearRequiredContactsList
+        );
+
+      controls
+        .querySelector(
+          "#contact-checker-activity-toggle"
+        )
+        .addEventListener(
+          "click",
+          toggleActivityPanel
         );
 
       document.body.appendChild(controls);
+
+      renderActivityPanel();
     }
 
-    const requiredCount =
+    const visibleRequiredCount =
       getRequiredContacts().length;
+
+    const totalCollected =
+      state.requiredContactsAll.size;
 
     const countLabel = controls.querySelector(
       "#contact-checker-required-count"
     );
 
     const countText =
-      `Required: ${requiredCount}`;
+      `Required on page: ${visibleRequiredCount} | Collected total: ${totalCollected}`;
 
     if (countLabel.textContent !== countText) {
       countLabel.textContent = countText;
     }
 
-    const run = state.selectionRun;
-    const selectButton = controls.querySelector(
-      "#contact-checker-select-required"
-    );
-    const stopButton = controls.querySelector(
-      "#contact-checker-stop-selection"
-    );
-    const creditInput = controls.querySelector(
-      "#contact-checker-credit-limit"
+    const exportButton = controls.querySelector(
+      "#contact-checker-export-required"
     );
 
-    selectButton.disabled =
-      Boolean(run) || state.currentContacts.size === 0;
-    selectButton.textContent = run
-      ? `${run.selected} selected | ${run.remaining} left`
-      : "Select Across Pages";
-    stopButton.style.display = run ? "block" : "none";
-    creditInput.disabled = Boolean(run);
+    exportButton.disabled = totalCollected === 0;
   }
 
   // ============================================================
@@ -862,7 +1197,7 @@
 
     if (!links.length) {
       state.currentContacts.clear();
-      renderSelectionControls();
+      renderExportControls();
 
       console.log(
         "Contact Checker: no Apollo contacts found."
@@ -940,10 +1275,69 @@
     state.currentContacts =
       currentContacts;
 
-    renderSelectionControls();
+    // ==========================================================
+    // SETTLE RETRY
+    //
+    // Apollo's grid can still be hydrating cell text when a scan
+    // fires, so some rows extract as incomplete on the first pass.
+    // If this scan found fewer contacts than there are contact
+    // links on the page, the page is probably still loading —
+    // schedule one passive re-read a little later to catch the
+    // stragglers, instead of requiring you to leave and come back.
+    // ==========================================================
+
+    const possiblyStillHydrating =
+      links.length > currentContacts.size;
+
+    if (
+      possiblyStillHydrating &&
+      state.settleRetryAttempts < 6
+    ) {
+      state.settleRetryAttempts++;
+
+      clearTimeout(state.settleTimer);
+
+      state.settleTimer = setTimeout(
+        () => {
+          if (state.active) {
+            scanApollo();
+          }
+        },
+        1200
+      );
+    } else {
+      state.settleRetryAttempts = 0;
+    }
+
+    const currentSignature =
+      Array.from(
+        currentContacts.keys()
+      ).join("|");
+
+    if (
+      currentSignature &&
+      currentSignature
+        !== state.lastLoggedPageSignature
+    ) {
+      state.lastLoggedPageSignature =
+        currentSignature;
+
+      addActivity(
+        "PAGE_SCANNED",
+        `Apollo page scanned — ${currentContacts.size} contact(s) visible.`,
+        "info",
+        {
+          visible_contacts:
+            currentContacts.size,
+          new_contacts_to_check:
+            contactsToCheck.length
+        }
+      );
+    }
+
+    renderExportControls();
 
     if (!contactsToCheck.length) {
-      continueSelectionRun();
       return;
     }
 
@@ -953,6 +1347,16 @@
 
     showStatus(
       `Checking ${contactsToCheck.length} contact(s)...`
+    );
+
+    addActivity(
+      "API_BATCH_SENT",
+      `Sending ${contactsToCheck.length} contact(s) to the local matching API.`,
+      "info",
+      {
+        contacts:
+          contactsToCheck.length
+      }
     );
 
     // ==========================================================
@@ -976,7 +1380,10 @@
                 contact.job_title,
 
               company:
-                contact.company
+                contact.company,
+
+              location:
+                contact.location || ""
             })
           )
       },
@@ -994,11 +1401,11 @@
             chrome.runtime.lastError.message
           );
 
-          if (state.selectionRun) {
-            stopSelectionRun(
-              "Selection stopped: extension error | {selected} selected"
-            );
-          }
+          addActivity(
+            "EXTENSION_RUNTIME_ERROR",
+            chrome.runtime.lastError.message,
+            "error"
+          );
 
           return;
         }
@@ -1013,18 +1420,28 @@
             response
           );
 
+          addActivity(
+            "API_ERROR",
+            response?.error ||
+            "Unknown API error",
+            "error"
+          );
+
           showStatus(
             "Database connection error"
           );
 
-          if (state.selectionRun) {
-            stopSelectionRun(
-              "Selection stopped: database error | {selected} selected"
-            );
-          }
-
           return;
         }
+
+        appendBackendActivity(
+          response.activity || []
+        );
+
+        state.lastBackendSummary =
+          response.summary || null;
+
+        renderActivityPanel();
 
         let matches = 0;
 
@@ -1059,8 +1476,18 @@
           }
         );
 
-        renderSelectionControls();
-        continueSelectionRun();
+        addActivity(
+          "BATCH_APPLIED_TO_PAGE",
+          `${matches} existing / ${contactsToCheck.length - matches} required result(s) applied to the current page.`,
+          "info",
+          {
+            existing: matches,
+            required:
+              contactsToCheck.length - matches
+          }
+        );
+
+        renderExportControls();
 
         showStatus(
           `Checker ON — ${matches} existing contact(s) found`
@@ -1082,12 +1509,14 @@
       element?.matches?.(
         `#contact-checker-status,
          #contact-checker-controls,
+         #contact-checker-activity-panel,
          .contact-checker-existing-badge,
          .contact-checker-required-badge`
       ) ||
       element?.closest?.(
         `#contact-checker-status,
-         #contact-checker-controls`
+         #contact-checker-controls,
+         #contact-checker-activity-panel`
       )
     );
   }
@@ -1196,7 +1625,9 @@
 
     clearTimeout(state.pageTimer);
     clearTimeout(state.statusTimer);
-    state.selectionRun = null;
+    clearTimeout(state.storageSaveTimer);
+    clearTimeout(state.settleTimer);
+    saveRequiredContactsNow();
     state.pendingContacts.clear();
 
     state.highlightedRows.forEach(
@@ -1234,6 +1665,14 @@
       )
       ?.remove();
 
+    document
+      .getElementById(
+        "contact-checker-activity-panel"
+      )
+      ?.remove();
+
+    state.activityLog = [];
+    state.lastBackendSummary = null;
     state.highlightedRows.clear();
     state.currentContacts.clear();
 
@@ -1254,10 +1693,16 @@
     "Contact Database Checker enabled — Apollo mode."
   );
 
+  addActivity(
+    "EXTENSION_STARTED",
+    "Contact Database Checker enabled in Apollo mode."
+  );
+
   showStatus(
     "Contact Checker ON"
   );
 
+  loadStoredRequiredContacts();
   scanApollo();
 
 })();

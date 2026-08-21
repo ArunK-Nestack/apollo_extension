@@ -1,19 +1,20 @@
 {
   "manifest_version": 3,
   "name": "Contact Database Checker",
-  "version": "1.1.0",
-  "description": "Checks visible emails against the local contact database.",
+  "version": "1.8.0",
+  "description": "User-triggered Apollo contact duplicate checker with local PostgreSQL matching and Required-contact CSV export.",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
     "http://127.0.0.1:8000/*"
   ],
-  "action": {
-    "default_title": "Enable / Disable Contact Checker"
-  },
   "background": {
     "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Toggle Contact Database Checker"
   }
 }
