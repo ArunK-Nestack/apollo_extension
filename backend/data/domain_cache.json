@@ -1,0 +1,1939 @@
+{
+  "brandnewuniqueailabs9999::sanfranciscous": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "deloitte::newyorkus": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "anotherbrandnewaistartupxyz::sanfranciscous": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "gammasystems::austinus": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "alphaai::sanfranciscous": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "betacorp::seattleus": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "fernandestradingxyz99::singapore": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "sheikhenterprisesxyz99::dubaiuae": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "sharmatechxyz99::mumbaiin": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "raosolutionsxyz99::hyderabadin": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "dsouzalogisticsxyz99::goain": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "mukherjeeaixyz99::kolkatain": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "chenroboticsxyz99::sanfranciscous": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "lincreativexyz99::sanfranciscous": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "patelcloudxyz99::bangalorein": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "millerdataxyz99::londonuk": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "unlock::singaporesingapore": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.85,
+    "method": "web",
+    "evidence_urls": [
+      "([sg.linkedin.com](https://sg.linkedin.com/company/unlock-partners?utm_source=openai))",
+      "([fintechjapan.org](https://fintechjapan.org/en/board-members/patrick-cao/?utm_source=openai))"
+    ]
+  },
+  "seatrium::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "seatrium.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://seatrium.com/"
+    ]
+  },
+  "ministryofsustainabilityandtheenvironmentsingapore::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "mse.gov.sg",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([sgdi.gov.sg](https://www.sgdi.gov.sg/ministries/mse?utm_source=openai))"
+    ]
+  },
+  "antler::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "antler.co",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "htjtaxadvancedamericantaxamemberofmooresrowlandinternational::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "htj.tax",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "mooresrowland.net",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "derrenjoseph.com",
+        "type": "person_professional",
+        "confidence": 0.8
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://htj.tax/",
+      "https://mooresrowland.net/en/"
+    ]
+  },
+  "xcelindustrialsuppliespteltd::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "xcelindustrial.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://xcelindustrial.com/",
+      "https://xcelindustrial.com/pages/about-us"
+    ]
+  },
+  "medpathai::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "medpath.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "medpath.com",
+        "type": "company_brand",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([medpath.com](https://medpath.com/?utm_source=openai))",
+      "([lab.medpath.com](https://lab.medpath.com/?utm_source=openai))"
+    ]
+  },
+  "panasonicasiapacific::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "panasonic.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.panasonic.com/"
+    ]
+  },
+  "jtccorporation::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "jtc.gov.sg",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([jtc.gov.sg](https://www.jtc.gov.sg/?utm_source=openai))"
+    ]
+  },
+  "blackmarketingtheworldsmostrecommendedpersonalbrandingfirmpartofprominenceglobal::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "blackmarketing.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "chrisjreed.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([blackmarketing.com](https://blackmarketing.com/?utm_source=openai))",
+      "([chrisjreed.com](https://www.chrisjreed.com/?utm_source=openai))"
+    ]
+  },
+  "kodekloud::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "kodekloud.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "mumshad.com",
+        "type": "person_professional",
+        "confidence": 0.9
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://kodekloud.com/instructor/mumshad-mannambeth",
+      "https://sg.linkedin.com/in/mmumshad"
+    ]
+  },
+  "gurinenergy::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "gurinenergy.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://gurinenergy.com/",
+      "https://gurinenergy.com/our-people/"
+    ]
+  },
+  "peoplesactionparty::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "pap.org.sg",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "haileckholdingslimited::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "haileck.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.haileck.com/"
+    ]
+  },
+  "aslantlegal::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "aslantlegal.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://aslantlegal.com/",
+      "https://aslantlegal.com/our-team/shulin-lee/"
+    ]
+  },
+  "sgxgroup::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "sgx.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "sgxgroup.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.sgx.com/",
+      "https://www.sgxgroup.com/"
+    ]
+  },
+  "therunwayventures::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "therunway.ventures",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "runway.sg",
+        "type": "company_brand",
+        "confidence": 0.8
+      },
+      {
+        "domain": "admondlee.com",
+        "type": "person_professional",
+        "confidence": 0.9
+      }
+    ],
+    "confidence": 0.9,
+    "method": "web",
+    "evidence_urls": [
+      "([therunway.ventures](https://www.therunway.ventures/?utm_source=openai))",
+      "([runway.sg](https://runway.sg/?utm_source=openai))",
+      "([sg.linkedin.com](https://sg.linkedin.com/in/admond1994?utm_source=openai))"
+    ]
+  },
+  "speakin::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "speakin.co",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([speakin.co](https://www.speakin.co/?utm_source=openai))"
+    ]
+  },
+  "ksugaikubesmartaiusergroup::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "ksug.ai",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "linktr.ee",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://ksug.ai/",
+      "https://linktr.ee/ksug.ai"
+    ]
+  },
+  "backscoop::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "backscoop.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "backscoop.com",
+        "type": "company_brand",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.backscoop.com",
+      "https://www.tatlerasia.com/people/amanda-cua"
+    ]
+  },
+  "upliftingserviceronkaufman::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "ronkaufman.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "ronkaufman.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([ronkaufman.com](https://www.ronkaufman.com/?utm_source=openai))",
+      "([sg.linkedin.com](https://sg.linkedin.com/in/ronkaufman?utm_source=openai))"
+    ]
+  },
+  "nanyangtechnologicaluniversitysingapore::singaporesingapore": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "nationaluniversityofsingapore::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "nus.edu.sg",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "leepohseng.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([esi.nus.edu.sg](https://esi.nus.edu.sg/about-us/our-people/details?id=5b5e069a-bb2f-475b-b38e-b1c8287ed15c&utm_source=openai))",
+      "([cde.nus.edu.sg](https://cde.nus.edu.sg/me/staff/lee-poh-seng/?utm_source=openai))"
+    ]
+  },
+  "cloud4cservices::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "cloud4c.com",
+        "type": "company_official",
+        "confidence": 0.9
+      }
+    ],
+    "confidence": 0.9,
+    "method": "web",
+    "evidence_urls": [
+      "([cloud4c.com](https://www.cloud4c.com/?utm_source=openai))",
+      "([cloud4c.com](https://www.cloud4c.com/about-us?utm_source=openai))"
+    ]
+  },
+  "questglobal::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "quest-global.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([questglobal.com](https://www.questglobal.com/?utm_source=openai))"
+    ]
+  },
+  "emurgo::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "emurgo.io",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([emurgo.io](https://www.emurgo.io/about/?utm_source=openai))"
+    ]
+  },
+  "nextbillionai::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "nextbillion.ai",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://nextbillion.ai/",
+      "https://www.crunchbase.com/organization/nextbillion-ai"
+    ]
+  },
+  "dbsbank::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "dbs.com",
+        "type": "company_official",
+        "confidence": 0.95
+      },
+      {
+        "domain": "dbsbank.com",
+        "type": "company_brand",
+        "confidence": 0.85
+      }
+    ],
+    "confidence": 0.95,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.dbs.com/dbs-heritage/ceos.html",
+      "https://www.dbs.com/newsroom/Tan_Su_Shan_appointed_as_Deputy_CEO?pid=sg-group-pweb-about-hero-dbs-ceo-piyush-gupta-to-retire-next-year",
+      "https://www.dbs.com//Bod/bod-tan-su-shan"
+    ]
+  },
+  "insigniaventurespartners::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "insignia.vc",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "yinglantan.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([insignia.vc](https://www.insignia.vc/?utm_source=openai))",
+      "([insignia.academy](https://www.insignia.academy/about?utm_source=openai))"
+    ]
+  },
+  "acesenceagileleadership::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "acesence.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "essecasiapacific::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "essec.edu",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([essec.edu](https://www.essec.edu/en/campus/singapore/?utm_source=openai))",
+      "([faculty.essec.edu](https://faculty.essec.edu/en/cv/lim-jamus/?pagenum=1&utm_source=openai))"
+    ]
+  },
+  "lovebonito::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "lovebonito.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([lovebonito.com](https://www.lovebonito.com/sg?utm_source=openai))"
+    ]
+  },
+  "aarnaprotocol::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "aarna.ai",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "aarna.finance",
+        "type": "company_brand",
+        "confidence": 1.0
+      },
+      {
+        "domain": "srimisra.com",
+        "type": "person_professional",
+        "confidence": 0.9
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.aarna.ai",
+      "https://www.aarna.finance",
+      "https://www.linkedin.com/in/srimisra"
+    ]
+  },
+  "manochi::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "manochi.co",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "kepios.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "datareportal.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://manochi.co",
+      "https://kepios.com",
+      "https://datareportal.com"
+    ]
+  },
+  "calmcollectiveasia::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "calmcollective.asia",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "sabrinaooi.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.calmcollective.asia/about-us",
+      "https://www.sabrinaooi.com/"
+    ]
+  },
+  "fofty::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "fofty.net",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "manuscript.fofty.net",
+        "type": "company_brand",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([manuscript.fofty.net](https://manuscript.fofty.net/about?utm_source=openai))",
+      "([sg.linkedin.com](https://sg.linkedin.com/in/sangyshin?utm_source=openai))"
+    ]
+  },
+  "internationaltaxbytesbystevetowers::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "itbstevetowers.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "stevetowers.tax",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.itbstevetowers.com/",
+      "https://www.stevetowers.tax/"
+    ]
+  },
+  "connectenergy::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "connect-energy.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.connect-energy.com/"
+    ]
+  },
+  "ofi::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "ofi.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "shop.ofi.com",
+        "type": "company_brand",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.ofi.com/en-us/about",
+      "https://shop.ofi.com/about-us"
+    ]
+  },
+  "zorahealth::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "zorahealth.co",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://zorahealth.co/"
+    ]
+  },
+  "jgcconstructioninternational::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "jci.sg",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.jci.sg/"
+    ]
+  },
+  "stashaway::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "stashaway.sg",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "stashaway.ae",
+        "type": "company_brand",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([stashaway.sg](https://www.stashaway.sg/?utm_source=openai))",
+      "([stashaway.ae](https://www.stashaway.ae/about-us?utm_source=openai))"
+    ]
+  },
+  "globalcentreformaritimedecarbonisationgcmd::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "gcformd.org",
+        "type": "company_official",
+        "confidence": 0.95
+      },
+      {
+        "domain": "gcmd.sg",
+        "type": "company_official",
+        "confidence": 0.9
+      }
+    ],
+    "confidence": 0.95,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.gcformd.org/",
+      "https://sg.linkedin.com/company/global-centre-for-maritime-decarbonisation"
+    ]
+  },
+  "bvarta::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "bvarta.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://bvarta.com/bvt-successfully-launches-latest-version-of-lokasi-intelligence-at-bvt-tech-summit-2025/",
+      "https://www.scamadviser.com/check-website/bvarta.com",
+      "https://www.linkedin.com/company/bvarta"
+    ]
+  },
+  "web3capital::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "web3.capital",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "web3.ventures",
+        "type": "company_brand",
+        "confidence": 1.0
+      },
+      {
+        "domain": "web3accelerator.org",
+        "type": "company_brand",
+        "confidence": 1.0
+      },
+      {
+        "domain": "stephenyang.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([web3.capital](https://web3.capital/?utm_source=openai))",
+      "([sg.linkedin.com](https://sg.linkedin.com/company/web3-capital?utm_source=openai))",
+      "([sg.linkedin.com](https://sg.linkedin.com/in/web3stephen?utm_source=openai))"
+    ]
+  },
+  "tabglobal::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "tab.global",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "theasianbanker.com",
+        "type": "company_brand",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([tab.global](https://tab.global/?utm_source=openai))",
+      "([dnb.com](https://www.dnb.com/business-directory/company-profiles.tab_global_pte_ltd.63ebe490e5cc1c60a16fdac3ec105cce.html?utm_source=openai))"
+    ]
+  },
+  "limitlessexecutivesolutions::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "nickjonsson.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.nickjonsson.com/",
+      "https://sg.linkedin.com/in/nick-jonsson"
+    ]
+  },
+  "easlo::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "easlo.co",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.easlo.co/",
+      "https://sg.linkedin.com/in/jason-chin-a82b05193"
+    ]
+  },
+  "directsearchglobal::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "directsearch.global",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "directsearch.global",
+        "type": "company_brand",
+        "confidence": 1.0
+      },
+      {
+        "domain": "ryankumar.com",
+        "type": "person_professional",
+        "confidence": 0.8
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([sg.linkedin.com](https://sg.linkedin.com/company/direct-search-asia?utm_source=openai))",
+      "([sg.linkedin.com](https://sg.linkedin.com/in/ryan-kumar-0a782837?utm_source=openai))"
+    ]
+  },
+  "goldengateventures::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "goldengate.vc",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "jeffreypaine.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.goldengate.vc/about",
+      "https://jeffreypaine.com/bio"
+    ]
+  },
+  "singtel::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "singtel.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([singtel.com](https://www.singtel.com/?utm_source=openai))"
+    ]
+  },
+  "pro5ai::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "pro5.ai",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.pro5.ai/"
+    ]
+  },
+  "unisongroup::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "unisongroup.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://unisongroup.com/locations/singapore",
+      "https://unisongroup.com/locations",
+      "https://unisongroup.com/career/jobs/3D6337E775",
+      "https://unisongroup.com/career/jobs/666045EC47",
+      "https://unisongroup.com/career/jobs/4499B68B7B",
+      "https://unisongroup.com/about"
+    ]
+  },
+  "tyai::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "tianyuxu.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      },
+      {
+        "domain": "tianyuxu.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://tianyuxu.com/",
+      "https://sg.linkedin.com/company/tyai",
+      "https://sg.linkedin.com/in/tianyuxu"
+    ]
+  },
+  "bipo::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "biposervice.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.biposervice.com/",
+      "https://sg.linkedin.com/in/virender-aggarwal"
+    ]
+  },
+  "axentiaglobal::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "axentiaglobal.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "axentiaglobal.com",
+        "type": "company_brand",
+        "confidence": 1.0
+      },
+      {
+        "domain": "rushitshah.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([axentiaglobal.com](https://axentiaglobal.com/leadership?utm_source=openai))",
+      "([sg.linkedin.com](https://sg.linkedin.com/in/rushitshah?utm_source=openai))"
+    ]
+  },
+  "agrocorpinternational::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "agrocorp.com.sg",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([agrocorp.com.sg](https://agrocorp.com.sg/?utm_source=openai))"
+    ]
+  },
+  "redalphacybersecurity::singaporesingapore": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "redalphacyber.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([redalphacyber.com](https://www.redalphacyber.com/?utm_source=openai))",
+      "([sg.linkedin.com](https://sg.linkedin.com/company/redalphacyber?utm_source=openai))"
+    ]
+  },
+  "skydio::sanfranciscocalifornia": {
+    "status": "known",
+    "coverage_complete": true,
+    "domains": [
+      {
+        "domain": "skydio.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "abraham-b.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "knowledge"
+  },
+  "laurel::sanfranciscocalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "laurel.ai",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "jasonli.ai",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([linkedin.com](https://www.linkedin.com/in/jasonhli?utm_source=openai))",
+      "([linkedin.com](https://www.linkedin.com/posts/laurel-ai_were-thrilled-to-have-jason-li-as-our-cto-activity-7435738071624732672-E1gQ?utm_source=openai))"
+    ]
+  },
+  "afresh::arvadacolorado": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "afresh.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([afresh.com](https://www.afresh.com/company/about?utm_source=openai))"
+    ]
+  },
+  "harvey::sanfranciscocalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "harvey.ai",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([harvey.ai](https://www.harvey.ai/blog/author/siva-gurumurthy?utm_source=openai))",
+      "([harvey.ai](https://www.harvey.ai/blog/5-questions-with-siva-gurumurthy?utm_source=openai))"
+    ]
+  },
+  "cartcom::irvingtexas": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "cart.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([cart.com](https://cart.com/?utm_source=openai))"
+    ]
+  },
+  "concertai::mountainviewcalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "concertai.com",
+        "type": "company_official",
+        "confidence": 0.95
+      }
+    ],
+    "confidence": 0.95,
+    "method": "web",
+    "evidence_urls": [
+      "([concertai.com](https://www.concertai.com/?utm_source=openai))"
+    ]
+  },
+  "pipefy::seattlewashington": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "pipefy.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.pipefy.com/"
+    ]
+  },
+  "togetherai::sanfranciscocalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "together.ai",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([together.ai](https://www.together.ai/?utm_source=openai))"
+    ]
+  },
+  "hydrosat::carlsbadcalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "hydrosat.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([hydrosat.com](https://hydrosat.com/?utm_source=openai))"
+    ]
+  },
+  "vi::seattlewashington": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "vi.co",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([vi.co](https://vi.co/?utm_source=openai))"
+    ]
+  },
+  "akasa::sanfranciscocalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "akasa.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([akasa.com](https://akasa.com/?utm_source=openai))",
+      "([akasa.com](https://akasa.com/leadership?utm_source=openai))"
+    ]
+  },
+  "everlaw::berkeleycalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "everlaw.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([everlaw.com](https://www.everlaw.com/press/release/everlaw-appoints-max-christoff-as-chief-technology-officer/?utm_source=openai))",
+      "([everlaw.com](https://www.everlaw.com/blog/everlaw/meet-everlaws-new-cto-max-christoff/?utm_source=openai))"
+    ]
+  },
+  "obsidiansecurity::sunnyvalecalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "obsidiansecurity.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.obsidiansecurity.com/"
+    ]
+  },
+  "arizeai::berkeleycalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "arize.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "arizeai.com",
+        "type": "company_brand",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([arize.com](https://arize.com/?utm_source=openai))",
+      "([arize.com](https://arize.com/about-company/?utm_source=openai))"
+    ]
+  },
+  "humanworkplace::newyorknewyork": {
+    "status": "known",
+    "coverage_complete": true,
+    "domains": [
+      {
+        "domain": "humanworkplace.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "lizryan.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "knowledge"
+  },
+  "tekioncorp::losaltoscalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "tekion.com",
+        "type": "company_official",
+        "confidence": 0.9
+      }
+    ],
+    "confidence": 0.9,
+    "method": "web",
+    "evidence_urls": [
+      "https://tekion.com/about-us/",
+      "https://tekion.com/blog/tekion-appoints-binu-mathew-chief-technology-officer"
+    ]
+  },
+  "sardine::berkeleycalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "sardine.ai",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.sardine.ai/",
+      "https://sardinecdn.com/about"
+    ]
+  },
+  "abnormalai::atlantageorgia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "abnormal.ai",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://abnormal.ai/",
+      "https://abnormal.ai/about/team/abhi-bagri"
+    ]
+  },
+  "marena::alpharettageorgia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "marena.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://marena.com/pages/our-leadership-team-jennifer-montoro",
+      "https://marena.com/pages/our-leadership-team"
+    ]
+  },
+  "corelight::sanfranciscocalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "corelight.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([corelight.com](https://corelight.com/?utm_source=openai))"
+    ]
+  },
+  "gretchenrubinmedia::newyorknewyork": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "gretchenrubin.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://gretchenrubin.com/"
+    ]
+  },
+  "vendella::rangioranewzealand": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "vendella.co.nz",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.vendella.co.nz/",
+      "https://nz.linkedin.com/in/crawford-how"
+    ]
+  },
+  "bloomberg::newyorknewyork": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "bloomberg.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "bloomberg.com",
+        "type": "company_brand",
+        "confidence": 1.0
+      },
+      {
+        "domain": "mikebloomberg.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.bloomberg.com/",
+      "https://bloomberg.com/professional",
+      "https://www.mikebloomberg.com/about/"
+    ]
+  },
+  "blackrock::newyorknewyork": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "blackrock.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.blackrock.com/corporate/about-us/who-we-are/leadership/larry-fink"
+    ]
+  },
+  "globalinfrastructurepartnersgip::washingtondistrictofcolumbia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "global-infra.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([global-infra.com](https://www.global-infra.com/?utm_source=openai))"
+    ]
+  },
+  "bradsugars::lasvegasnevada": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "bradsugars.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      },
+      {
+        "domain": "actioncoach.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([bradsugars.com](https://bradsugars.com/?utm_source=openai))",
+      "([linkedin.com](https://www.linkedin.com/in/bradsugars?utm_source=openai))"
+    ]
+  },
+  "morstarinc::unitedstates": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "morstar.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.morstar.com/"
+    ]
+  },
+  "gatesfoundation::seattlewashington": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "gatesfoundation.org",
+        "type": "company_official",
+        "confidence": 0.9
+      }
+    ],
+    "confidence": 0.9,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.gatesfoundation.org/"
+    ]
+  },
+  "mercuryinsurance::burlingamecalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "mercuryinsurance.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.mercuryinsurance.com/",
+      "https://newsroom.mercuryinsurance.com/mercury-appoints-new-chief-data-analytics-officer-simon-zhang"
+    ]
+  },
+  "timtebowfoundation::fortmyersflorida": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "timtebowfoundation.org",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "timtebow.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([store.timtebowfoundation.org](https://store.timtebowfoundation.org/pages/about-us?utm_source=openai))",
+      "([timtebow.com](https://timtebow.com/?utm_source=openai))"
+    ]
+  },
+  "holderconstruction::phoenixarizona": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "holderconstruction.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.holderconstruction.com/"
+    ]
+  },
+  "texasmccombsschoolofbusiness::houstontexas": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "brenebrown.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      },
+      {
+        "domain": "mccombs.utexas.edu",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://brenebrown.com/",
+      "https://www.mccombs.utexas.edu/"
+    ]
+  },
+  "wsoworldwidesecurityoptions::newyorknewyork": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "wso-security.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://wso-security.com/"
+    ]
+  },
+  "microsoft::redmondwashington": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "microsoft.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "satyanadella.com",
+        "type": "person_professional",
+        "confidence": 0.9
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "highspring::nashvilletennessee": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "highspring.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.highspring.com/",
+      "https://www.linkedin.com/in/daniellelmason"
+    ]
+  },
+  "kendigkeastcollaborative::sugarlandtexas": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "kendigkeast.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([kendigkeast.com](https://www.kendigkeast.com/?utm_source=openai))"
+    ]
+  },
+  "thecurve::newyorknewyork": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "simonsinek.com",
+        "type": "person_professional",
+        "confidence": 0.95
+      },
+      {
+        "domain": "thecurve.com",
+        "type": "company_official",
+        "confidence": 0.85
+      }
+    ],
+    "confidence": 0.95,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "thethirddoor::losangelescalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "alexbanayan.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      },
+      {
+        "domain": "thethirddoor.net",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "thriveglobal::newyorknewyork": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "thriveglobal.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "ariannahuffington.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([thriveglobal.com](https://thriveglobal.com/about?utm_source=openai))",
+      "([ariannahuffington.com](https://www.ariannahuffington.com/?utm_source=openai))"
+    ]
+  },
+  "deepakchoprallc::newyorknewyork": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "deepakchopra.com",
+        "type": "person_professional",
+        "confidence": 0.9
+      },
+      {
+        "domain": "chopra.com",
+        "type": "company_official",
+        "confidence": 0.8
+      }
+    ],
+    "confidence": 0.9,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.deepakchopra.com/home",
+      "https://www.chopra.com"
+    ]
+  },
+  "endurance::tampaflorida": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "endurancewarranty.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([craft.co](https://craft.co/endurance/executives?utm_source=openai))",
+      "([craft.co](https://craft.co/endurance?utm_source=openai))"
+    ]
+  },
+  "nextplayventures::unitedstates": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "nextplay.vc",
+        "type": "company_official",
+        "confidence": 0.9
+      },
+      {
+        "domain": "jeffweiner.com",
+        "type": "person_professional",
+        "confidence": 0.8
+      }
+    ],
+    "confidence": 0.9,
+    "method": "web",
+    "evidence_urls": [
+      "([nextplayventures.com](https://www.nextplayventures.com/?utm_source=openai))",
+      "([nextplayventures.com](https://www.nextplayventures.com/team/jeff-weiner?utm_source=openai))"
+    ]
+  },
+  "intempohealth::spotsylvaniacourthousevirginia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "intempohealth.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([intempohealth.com](https://www.intempohealth.com/?utm_source=openai))",
+      "([intempohealth.com](https://www.intempohealth.com/about?utm_source=openai))",
+      "([linkedin.com](https://www.linkedin.com/in/mikebraham?utm_source=openai))"
+    ]
+  },
+  "robbinsresearchinternational::sandiegocalifornia": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "tonyrobbins.com",
+        "type": "person_professional",
+        "confidence": 0.95
+      },
+      {
+        "domain": "robbinsresearch.com",
+        "type": "company_official",
+        "confidence": 0.95
+      }
+    ],
+    "confidence": 0.95,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "trinityconsultingservices::sydneyaustralia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.8,
+    "method": "web",
+    "evidence_urls": [
+      "([au.linkedin.com](https://au.linkedin.com/in/ajjames?utm_source=openai))",
+      "([au.linkedin.com](https://au.linkedin.com/company/trinity-consulting-services?utm_source=openai))"
+    ]
+  }
+}

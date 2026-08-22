@@ -74,7 +74,9 @@ chrome.runtime.onMessage.addListener(
       endpoint = "/match-apollo";
 
       body = {
-        contacts: message.contacts
+        contacts: message.contacts,
+        title_guardrail_enabled: message.title_guardrail_enabled === true,
+        indian_name_guardrail_enabled: message.indian_name_guardrail_enabled === true
       };
     }
 

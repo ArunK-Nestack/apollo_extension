@@ -2,6 +2,10 @@
   const STATE_KEY = "__contactDatabaseChecker";
   const REQUIRED_CONTACTS_STORAGE_KEY =
     "contactCheckerRequiredContactsAll";
+  const TITLE_GUARDRAIL_STORAGE_KEY =
+    "contactCheckerTitleGuardrailEnabled";
+  const INDIAN_GUARDRAIL_STORAGE_KEY =
+    "contactCheckerIndianGuardrailEnabled";
 
   // ============================================================
   // TOGGLE OFF
@@ -18,6 +22,8 @@
 
   const state = {
     active: true,
+    titleGuardrailEnabled: false,
+    indianGuardrailEnabled: false,
     observer: null,
     timer: null,
     pageTimer: null,
@@ -80,6 +86,20 @@
       white-space: nowrap !important;
     }
 
+    .contact-checker-ignored-badge {
+      display: inline-flex !important;
+      align-items: center !important;
+      margin-left: 8px !important;
+      padding: 2px 6px !important;
+      border-radius: 5px !important;
+      background: #64748b !important;
+      color: white !important;
+      font-size: 10px !important;
+      font-weight: 700 !important;
+      line-height: 16px !important;
+      white-space: nowrap !important;
+    }
+
     #contact-checker-controls {
       position: fixed;
       right: 20px;
@@ -99,6 +119,8 @@
 
     #contact-checker-export-required,
     #contact-checker-clear-required,
+    #contact-checker-guardrail-toggle,
+    #contact-checker-indian-toggle,
     #contact-checker-activity-toggle,
     #contact-checker-clear-activity {
       border: 0;
@@ -109,6 +131,12 @@
       font-size: 12px;
       font-weight: 700;
       cursor: pointer;
+    }
+
+    #contact-checker-guardrail-toggle,
+    #contact-checker-indian-toggle {
+      background: #374151 !important;
+      transition: background 0.2s ease;
     }
 
     #contact-checker-clear-required {
@@ -245,18 +273,59 @@
       color: #f87171;
     }
 
+    @keyframes contact-checker-spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .contact-checker-spinner {
+      display: inline-block;
+      width: 13px;
+      height: 13px;
+      border: 2px solid rgba(255, 255, 255, 0.25);
+      border-top-color: #f97316;
+      border-radius: 50%;
+      animation: contact-checker-spin 0.7s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+      flex-shrink: 0;
+    }
+
     #contact-checker-status {
       position: fixed;
       right: 20px;
       bottom: 20px;
       z-index: 2147483647;
-      background: #111827;
-      color: white;
-      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 9px 14px;
       border-radius: 8px;
-      font-family: Arial, sans-serif;
+      border: 1px solid #334155;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
       font-size: 13px;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.25);
+      font-weight: 500;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+
+    .contact-checker-live-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      background: #1e293b;
+      color: #94a3b8;
+      border: 1px solid #334155;
+    }
+
+    .contact-checker-live-badge.active {
+      background: rgba(249, 115, 22, 0.15);
+      color: #fb923c;
+      border-color: rgba(249, 115, 22, 0.4);
     }
   `;
 
@@ -566,7 +635,7 @@
     }
   }
 
-  function showStatus(message, duration = 2500) {
+  function showStatus(message, duration = 2500, isRunning = false) {
     clearTimeout(state.statusTimer);
 
     let status = document.getElementById(
@@ -579,9 +648,18 @@
       document.body.appendChild(status);
     }
 
-    status.textContent = message;
+    if (isRunning) {
+      status.innerHTML = `
+        <span class="contact-checker-spinner"></span>
+        <span>${message}</span>
+      `;
+    } else {
+      status.innerHTML = `
+        <span>${message}</span>
+      `;
+    }
 
-    if (duration) {
+    if (duration && !isRunning) {
       state.statusTimer = setTimeout(
         () => status?.remove(),
         duration
@@ -786,6 +864,28 @@
       ""
     );
 
+    // Number of Employees is optional.
+    const employeesCell = findCellByHeader(
+      row,
+      cells,
+      [
+        "# employees",
+        "employees",
+        "number of employees",
+        "company size",
+        "num employees"
+      ]
+    );
+
+    let employeeCount = null;
+    if (employeesCell) {
+      const empText = cleanText(employeesCell.innerText || employeesCell.textContent || "");
+      const empMatch = empText.replace(/,/g, "").match(/\d+/);
+      if (empMatch) {
+        employeeCount = parseInt(empMatch[0], 10);
+      }
+    }
+
     if (!jobTitle || !company) {
       console.log(
         "Contact Checker: incomplete row",
@@ -810,6 +910,7 @@
       job_title: jobTitle,
       company,
       location,
+      employee_count: employeeCount,
       row,
       link,
       nameCell
@@ -817,8 +918,20 @@
   }
 
   // ============================================================
-  // HIGHLIGHT MATCH
+  // BADGES & HIGHLIGHTING (MUTUALLY EXCLUSIVE)
   // ============================================================
+
+  function clearContactBadges(contact) {
+    if (!contact?.nameCell) {
+      return;
+    }
+
+    const badges = contact.nameCell.querySelectorAll(
+      ".contact-checker-existing-badge, .contact-checker-required-badge, .contact-checker-ignored-badge"
+    );
+
+    badges.forEach(b => b.remove());
+  }
 
   function highlightContact(
     contact,
@@ -830,36 +943,37 @@
       return;
     }
 
+    clearContactBadges(contact);
+
+    // Remove from required contacts if previously recorded
+    state.requiredContactsAll.delete(contact.key);
+    scheduleRequiredContactsSave();
+    renderExportControls();
+
     row.classList.add(
       "contact-checker-existing"
     );
 
     state.highlightedRows.add(row);
 
-    if (
-      !contact.nameCell.querySelector(
-        ".contact-checker-existing-badge"
-      )
-    ) {
-      const badge =
-        document.createElement("span");
+    const badge =
+      document.createElement("span");
 
-      badge.className =
-        "contact-checker-existing-badge";
+    badge.className =
+      "contact-checker-existing-badge";
 
-      badge.textContent =
-        "✓ Existing";
+    badge.textContent =
+      "✓ Existing";
 
-      if (result.email) {
-        badge.title =
-          `CRM email: ${result.email}`;
-      }
-
-      contact.link.insertAdjacentElement(
-        "afterend",
-        badge
-      );
+    if (result.email) {
+      badge.title =
+        `CRM email: ${result.email}`;
     }
+
+    contact.link.insertAdjacentElement(
+      "afterend",
+      badge
+    );
   }
 
   // ============================================================
@@ -876,25 +990,27 @@
     }
 
     chrome.storage.local.get(
-      REQUIRED_CONTACTS_STORAGE_KEY,
+      [REQUIRED_CONTACTS_STORAGE_KEY, TITLE_GUARDRAIL_STORAGE_KEY, INDIAN_GUARDRAIL_STORAGE_KEY],
       result => {
+        if (result?.[TITLE_GUARDRAIL_STORAGE_KEY] !== undefined) {
+          state.titleGuardrailEnabled =
+            result[TITLE_GUARDRAIL_STORAGE_KEY] === true;
+        }
+        if (result?.[INDIAN_GUARDRAIL_STORAGE_KEY] !== undefined) {
+          state.indianGuardrailEnabled =
+            result[INDIAN_GUARDRAIL_STORAGE_KEY] === true;
+        }
+
         const stored =
           result?.[REQUIRED_CONTACTS_STORAGE_KEY];
 
-        if (!Array.isArray(stored) || !stored.length) {
-          return;
+        if (Array.isArray(stored) && stored.length) {
+          stored.forEach(([key, value]) => {
+            state.requiredContactsAll.set(key, value);
+          });
         }
 
-        stored.forEach(([key, value]) => {
-          state.requiredContactsAll.set(key, value);
-        });
-
         renderExportControls();
-
-        showStatus(
-          `Restored ${state.requiredContactsAll.size} required contact(s) from before`,
-          3000
-        );
       }
     );
   }
@@ -945,16 +1061,17 @@
     scheduleRequiredContactsSave();
   }
 
-  function markRequired(contact) {
-    recordRequiredContact(contact);
+  function markRequired(contact, result) {
+    const row = contact.row;
 
-    if (
-      contact.nameCell.querySelector(
-        ".contact-checker-required-badge"
-      )
-    ) {
-      return;
+    if (row) {
+      row.classList.remove("contact-checker-existing");
     }
+
+    clearContactBadges(contact);
+
+    recordRequiredContact(contact);
+    renderExportControls();
 
     const badge =
       document.createElement("span");
@@ -963,7 +1080,71 @@
       "contact-checker-required-badge";
 
     badge.textContent =
-      "Required";
+      "★ Required Lead";
+
+    if (result?.guardrail_reason) {
+      const roleStr = result.role_type ? ` [${result.role_type}]` : "";
+      badge.title = `Tier ${result.tier || ""}${roleStr}: ${result.guardrail_reason}`;
+    } else {
+      badge.title = "Target Lead: Net-new domain (Ready for CSV export)";
+    }
+
+    contact.link.insertAdjacentElement(
+      "afterend",
+      badge
+    );
+  }
+
+  function markIgnored(contact, result) {
+    const row = contact.row;
+
+    if (row) {
+      row.classList.remove("contact-checker-existing");
+    }
+
+    clearContactBadges(contact);
+
+    // Strictly remove from required contacts if previously added
+    state.requiredContactsAll.delete(contact.key);
+    scheduleRequiredContactsSave();
+    renderExportControls();
+
+    const badge =
+      document.createElement("span");
+
+    badge.className =
+      "contact-checker-ignored-badge";
+
+    if (result?.guardrail_status === "domain_already_in_db") {
+      badge.textContent =
+        "⊘ Existing Domain";
+
+      badge.title =
+        result.guardrail_reason ||
+        "Company domain already exists in CRM database with existing contacts.";
+    } else if (result?.guardrail_status === "indian_name_disqualified") {
+      badge.textContent =
+        "⊘ Indian Origin";
+      badge.style.background = "#ef4444";
+
+      badge.title =
+        result.guardrail_reason ||
+        "Excluded: Pure Indian Name Origin.";
+    } else if (result?.guardrail_status === "disqualified_title") {
+      badge.textContent =
+        "⊘ Excluded: Title";
+
+      badge.title =
+        result.guardrail_reason ||
+        "Excluded by 7-tier job title guardrail.";
+    } else {
+      badge.textContent =
+        "⊘ Ignored";
+
+      badge.title =
+        result?.guardrail_reason ||
+        "Ignored by guardrail rules.";
+    }
 
     contact.link.insertAdjacentElement(
       "afterend",
@@ -980,8 +1161,16 @@
         contact,
         result
       );
+    } else if (result.required && !result.ignored) {
+      markRequired(
+        contact,
+        result
+      );
     } else {
-      markRequired(contact);
+      markIgnored(
+        contact,
+        result
+      );
     }
   }
 
@@ -994,7 +1183,7 @@
           contact.key
         );
 
-      return result?.exists === false;
+      return result?.exists === false && result?.required === true && !result?.ignored;
     });
   }
 
@@ -1103,6 +1292,68 @@
     showStatus("Required contacts list cleared");
   }
 
+  function toggleTitleGuardrail() {
+    state.titleGuardrailEnabled = !state.titleGuardrailEnabled;
+
+    if (chrome?.storage?.local) {
+      chrome.storage.local.set({
+        [TITLE_GUARDRAIL_STORAGE_KEY]: state.titleGuardrailEnabled
+      });
+    }
+
+    renderExportControls();
+
+    showStatus(
+      `AI Title Filter ${state.titleGuardrailEnabled ? "ENABLED (Tiers 1–6)" : "DISABLED (New domains auto-qualified)"}`,
+      3500
+    );
+
+    addActivity(
+      "GUARDRAIL_TOGGLED",
+      `AI Title Filter toggled ${state.titleGuardrailEnabled ? "ON" : "OFF"}. Rescanning active contacts...`,
+      "info",
+      {
+        title_guardrail_enabled: state.titleGuardrailEnabled
+      }
+    );
+
+    // Clear evaluated contact cache so active page is re-evaluated with the new setting
+    state.checkedContacts.clear();
+    state.currentContacts.clear();
+    scanApollo();
+  }
+
+  function toggleIndianGuardrail() {
+    state.indianGuardrailEnabled = !state.indianGuardrailEnabled;
+
+    if (chrome?.storage?.local) {
+      chrome.storage.local.set({
+        [INDIAN_GUARDRAIL_STORAGE_KEY]: state.indianGuardrailEnabled
+      });
+    }
+
+    renderExportControls();
+
+    showStatus(
+      `Indian Name Filter ${state.indianGuardrailEnabled ? "ENABLED (Pure Indian excluded)" : "DISABLED"}`,
+      3500
+    );
+
+    addActivity(
+      "GUARDRAIL_TOGGLED",
+      `Indian Name Filter toggled ${state.indianGuardrailEnabled ? "ON" : "OFF"}. Rescanning active contacts...`,
+      "info",
+      {
+        indian_name_guardrail_enabled: state.indianGuardrailEnabled
+      }
+    );
+
+    // Clear evaluated contact cache so active page is re-evaluated with the new setting
+    state.checkedContacts.clear();
+    state.currentContacts.clear();
+    scanApollo();
+  }
+
   function renderExportControls() {
     let controls = document.getElementById(
       "contact-checker-controls"
@@ -1112,11 +1363,20 @@
       controls = document.createElement("div");
       controls.id = "contact-checker-controls";
       controls.innerHTML = `
+        <span id="contact-checker-live-status" class="contact-checker-live-badge">✓ Ready</span>
         <span id="contact-checker-required-count"></span>
         <button
           id="contact-checker-export-required"
           type="button"
         >Export Required Contacts (CSV)</button>
+        <button
+          id="contact-checker-guardrail-toggle"
+          type="button"
+        >AI Title Filter: OFF</button>
+        <button
+          id="contact-checker-indian-toggle"
+          type="button"
+        >Indian Name Filter: OFF</button>
         <button
           id="contact-checker-clear-required"
           type="button"
@@ -1134,6 +1394,24 @@
         .addEventListener(
           "click",
           exportRequiredContactsCSV
+        );
+
+      controls
+        .querySelector(
+          "#contact-checker-guardrail-toggle"
+        )
+        .addEventListener(
+          "click",
+          toggleTitleGuardrail
+        );
+
+      controls
+        .querySelector(
+          "#contact-checker-indian-toggle"
+        )
+        .addEventListener(
+          "click",
+          toggleIndianGuardrail
         );
 
       controls
@@ -1159,6 +1437,42 @@
       renderActivityPanel();
     }
 
+    const guardrailButton = controls.querySelector(
+      "#contact-checker-guardrail-toggle"
+    );
+
+    if (guardrailButton) {
+      if (state.titleGuardrailEnabled) {
+        guardrailButton.textContent = "AI Title Filter: ON";
+        guardrailButton.style.background = "#8b5cf6";
+        guardrailButton.title =
+          "Guardrail 2 Active: Filtering contacts by 7-tier seniority & functional relevance";
+      } else {
+        guardrailButton.textContent = "AI Title Filter: OFF";
+        guardrailButton.style.background = "#374151";
+        guardrailButton.title =
+          "Guardrail 2 Inactive: All net-new domains are auto-qualified as Required";
+      }
+    }
+
+    const indianButton = controls.querySelector(
+      "#contact-checker-indian-toggle"
+    );
+
+    if (indianButton) {
+      if (state.indianGuardrailEnabled) {
+        indianButton.textContent = "Indian Name Filter: ON";
+        indianButton.style.background = "#ef4444";
+        indianButton.title =
+          "Guardrail 3 Active: Excluding unambiguous pure Indian names";
+      } else {
+        indianButton.textContent = "Indian Name Filter: OFF";
+        indianButton.style.background = "#374151";
+        indianButton.title =
+          "Guardrail 3 Inactive: Demographic name filter is disabled";
+      }
+    }
+
     const visibleRequiredCount =
       getRequiredContacts().length;
 
@@ -1172,7 +1486,7 @@
     const countText =
       `Required on page: ${visibleRequiredCount} | Collected total: ${totalCollected}`;
 
-    if (countLabel.textContent !== countText) {
+    if (countLabel && countLabel.textContent !== countText) {
       countLabel.textContent = countText;
     }
 
@@ -1180,7 +1494,9 @@
       "#contact-checker-export-required"
     );
 
-    exportButton.disabled = totalCollected === 0;
+    if (exportButton) {
+      exportButton.disabled = totalCollected === 0;
+    }
   }
 
   // ============================================================
@@ -1258,6 +1574,7 @@
           return;
         }
 
+        // Currently in flight
         if (
           state.pendingContacts.has(
             contact.key
@@ -1275,34 +1592,22 @@
     state.currentContacts =
       currentContacts;
 
-    // ==========================================================
-    // SETTLE RETRY
-    //
-    // Apollo's grid can still be hydrating cell text when a scan
-    // fires, so some rows extract as incomplete on the first pass.
-    // If this scan found fewer contacts than there are contact
-    // links on the page, the page is probably still loading —
-    // schedule one passive re-read a little later to catch the
-    // stragglers, instead of requiring you to leave and come back.
-    // ==========================================================
-
-    const possiblyStillHydrating =
-      links.length > currentContacts.size;
-
+    // Settle retry engine
     if (
-      possiblyStillHydrating &&
-      state.settleRetryAttempts < 6
+      contactsToCheck.some(
+        contact =>
+          contact.needsSettling
+      )
+      && state.settleRetryAttempts < 6
     ) {
-      state.settleRetryAttempts++;
+      state.settleRetryAttempts += 1;
 
-      clearTimeout(state.settleTimer);
+      clearTimeout(
+        state.settleTimer
+      );
 
       state.settleTimer = setTimeout(
-        () => {
-          if (state.active) {
-            scanApollo();
-          }
-        },
+        scanApollo,
         1200
       );
     } else {
@@ -1346,8 +1651,16 @@
     );
 
     showStatus(
-      `Checking ${contactsToCheck.length} contact(s)...`
+      `Checking ${contactsToCheck.length} contact(s)...`,
+      0,
+      true
     );
+
+    const liveStatus = document.getElementById("contact-checker-live-status");
+    if (liveStatus) {
+      liveStatus.className = "contact-checker-live-badge active";
+      liveStatus.innerHTML = `<span class="contact-checker-spinner" style="width:10px;height:10px;margin-right:5px;border-width:1.5px;"></span> Checking ${contactsToCheck.length}...`;
+    }
 
     addActivity(
       "API_BATCH_SENT",
@@ -1366,6 +1679,10 @@
     chrome.runtime.sendMessage(
       {
         type: "MATCH_APOLLO",
+        title_guardrail_enabled:
+          state.titleGuardrailEnabled === true,
+        indian_name_guardrail_enabled:
+          state.indianGuardrailEnabled === true,
 
         contacts:
           contactsToCheck.map(
@@ -1407,6 +1724,18 @@
             "error"
           );
 
+          const liveStatusErr = document.getElementById("contact-checker-live-status");
+          if (liveStatusErr) {
+            liveStatusErr.className = "contact-checker-live-badge";
+            liveStatusErr.textContent = "⚠ Runtime Error";
+          }
+
+          showStatus(
+            "Extension runtime error",
+            3000,
+            false
+          );
+
           return;
         }
 
@@ -1427,8 +1756,16 @@
             "error"
           );
 
+          const liveStatusErr = document.getElementById("contact-checker-live-status");
+          if (liveStatusErr) {
+            liveStatusErr.className = "contact-checker-live-badge";
+            liveStatusErr.textContent = "⚠ API Error";
+          }
+
           showStatus(
-            "Database connection error"
+            "Database connection error",
+            3000,
+            false
           );
 
           return;
@@ -1444,6 +1781,8 @@
         renderActivityPanel();
 
         let matches = 0;
+        let requiredCount = 0;
+        let ignoredCount = 0;
 
         contactsToCheck.forEach(
           contact => {
@@ -1467,6 +1806,10 @@
 
             if (result.exists) {
               matches++;
+            } else if (result.required && !result.ignored) {
+              requiredCount++;
+            } else {
+              ignoredCount++;
             }
 
             applyContactResult(
@@ -1478,19 +1821,28 @@
 
         addActivity(
           "BATCH_APPLIED_TO_PAGE",
-          `${matches} existing / ${contactsToCheck.length - matches} required result(s) applied to the current page.`,
+          `Batch complete: ${matches} existing, ${requiredCount} required lead(s), ${ignoredCount} ignored.`,
           "info",
           {
             existing: matches,
-            required:
-              contactsToCheck.length - matches
+            required: requiredCount,
+            ignored: ignoredCount,
+            total: contactsToCheck.length
           }
         );
+
+        const liveStatusDone = document.getElementById("contact-checker-live-status");
+        if (liveStatusDone) {
+          liveStatusDone.className = "contact-checker-live-badge";
+          liveStatusDone.textContent = `✓ Checked (${matches} existing, ${requiredCount} req, ${ignoredCount} ign)`;
+        }
 
         renderExportControls();
 
         showStatus(
-          `Checker ON — ${matches} existing contact(s) found`
+          `✓ Checked ${contactsToCheck.length} contact(s) — ${matches} existing, ${requiredCount} required lead(s)`,
+          3500,
+          false
         );
       }
     );
