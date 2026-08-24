@@ -1,0 +1,17 @@
+# FastAPI & ASGI Server
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.10.0
+python-multipart>=0.0.12
+
+# Database Drivers (MySQL RDS & PostgreSQL)
+PyMySQL>=1.1.1
+cryptography>=43.0.0
+psycopg[binary]>=3.2.0
+
+# AI & LLM Clients (OpenAI & OpenRouter)
+openai>=1.50.0
+httpx>=0.27.0
+
+# Environment Configuration & Utilities
+python-dotenv>=1.0.1
