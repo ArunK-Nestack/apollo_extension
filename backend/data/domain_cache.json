@@ -1935,5 +1935,435 @@
       "([au.linkedin.com](https://au.linkedin.com/in/ajjames?utm_source=openai))",
       "([au.linkedin.com](https://au.linkedin.com/company/trinity-consulting-services?utm_source=openai))"
     ]
+  },
+  "brandnewuniqueailabs999::newyorkus": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "mavericsystems::india": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "maveric-systems.com",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "([thecompanycheck.com](https://www.thecompanycheck.com/company/maveric-systems-limited/U74140TN2000PLC045197?utm_source=openai))"
+    ]
+  },
+  "liquidai::sanfranciscous": {
+    "status": "verified",
+    "domains": [
+      {
+        "domain": "liquid.ai",
+        "type": "company_official",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "web",
+    "evidence_urls": [
+      "https://www.liquid.ai/"
+    ]
+  },
+  "brandnewroboticsai999::seattleus": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "oconnortechnologiesinc::sanfranciscous": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "brandnewaiorg999::austinus": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web",
+    "evidence_urls": []
+  },
+  "hubspot::bostonmassachusetts": {
+    "status": "known",
+    "coverage_complete": true,
+    "domains": [
+      {
+        "domain": "hubspot.com",
+        "type": "company_official",
+        "confidence": 1.0
+      },
+      {
+        "domain": "dharmesh.com",
+        "type": "person_professional",
+        "confidence": 1.0
+      }
+    ],
+    "confidence": 1.0,
+    "method": "knowledge"
+  },
+  "danielabrahams::sydneyaustralia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "razorpay::bengaluruindia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "netpositive::italy": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "briefcasecoachexecutiveresumewritingjobsearchstrategiesandinterviewcoaching::northcarolinaus": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "thegeorgewashingtonuniversity::washingtondistrictofcolumbia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "blackbirdmedia::virginiabeachvirginia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "theexecutivebrand::sydneyaustralia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "finocontrol::gurugramindia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "canadiansolarinc::madridspain": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "thefounderceoacceleratorbyericpartaker::londonunitedkingdom": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "universityofcaliforniaberkeley::sanfranciscocalifornia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "cybeleenergyltd::southafrica": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "storeylineresumes::pittsburghpennsylvania": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "capricornlogisticspvtltd::dubaiunitedarabemirates": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "villedangers::angersfrance": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "hcltech::noidaindia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "spencerstuart::norwalkconnecticut": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "amiadvancedmachineintelligence::newyorknewyork": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "dukeuniversity::durhamnorthcarolina": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "superhumanai::torontocanada": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "beyondunity::harrogateunitedkingdom": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "craignewmarkphilanthropies::newyorknewyork": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "inc42media::india": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "bytebytego::sanfranciscocalifornia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "walmart::mexicocitymexico": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "thejoshbersincompany::oaklandcalifornia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "puregeniusprotein::bostonmassachusetts": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "xpinc::saopaulobrazil": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "biocongroup::bengaluruindia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "dietid::hamdenconnecticut": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "endeavourconsultingfornonprofits::canada": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "aspirecoronationtrustfoundation::lagosnigeria": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "lenskartcom::newdelhiindia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "dynamictransitionspsychologicalconsultingllp::newyorknewyork": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "theuniversityofmanchesterdubai::dubaiunitedarabemirates": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "homebrew::sanfranciscocalifornia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "unaids::switzerland": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "securesave::santamonicacalifornia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "relentlessgroup::manchesterunitedkingdom": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "exl::noidaindia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "feneducacao::saopaulobrazil": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "thechinaglobalsouthproject::unitedstates": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "kasanoffcom::bendoregon": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "elmstreet::ashburnvirginia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "tataconsultancyservices::bengaluruindia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "58com::beijingchina": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "prohygiene::guayaquilecuador": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "sanjosesharks::mountainviewcalifornia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "grupoprimo::saopaulobrazil": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "cfoaccelerator::melbourneaustralia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "onixuniversidadeexecutiva::saopaulobrazil": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "tellytv::losangelescalifornia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "apextreasurycorporation::newyorknewyork": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "transformhealth::heythuysennetherlands": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "shayrowbottommarketing::miamiflorida": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "rachanaranadeandassociates::pimprichinchwadindia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "bri::torontocanada": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "takeuforward::bengaluruindia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
+  },
+  "levarburtonentertainment::losangelescalifornia": {
+    "status": "unresolved",
+    "domains": [],
+    "confidence": 0.0,
+    "method": "web_error"
   }
 }

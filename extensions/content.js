@@ -904,12 +904,16 @@
       index
     );
 
+    const linkedinLink = row.querySelector('a[href*="linkedin.com/in/"]');
+    const linkedinUrl = linkedinLink ? (linkedinLink.getAttribute("href") || "") : "";
+
     return {
       key,
       name,
       job_title: jobTitle,
       company,
       location,
+      linkedin_url: linkedinUrl,
       employee_count: employeeCount,
       row,
       link,
@@ -1047,15 +1051,25 @@
     return key.slice("apollo-".length);
   }
 
-  function recordRequiredContact(contact) {
+  function recordRequiredContact(contact, result) {
     const apolloId = getApolloIdFromKey(contact.key);
+    const nameParts = (contact.name || "").trim().split(/\s+/);
+    const firstName = nameParts[0] || "";
+    const lastName = nameParts.slice(1).join(" ") || "";
+    const domain = result?.matched_domain || contact.domain || "";
+    const apolloUrl = apolloId ? `https://app.apollo.io/#/people/${apolloId}` : "";
 
     state.requiredContactsAll.set(contact.key, {
       apollo_id: apolloId,
+      first_name: firstName,
+      last_name: lastName,
       name: contact.name,
       job_title: contact.job_title,
       company: contact.company,
-      location: contact.location || ""
+      domain: domain,
+      location: contact.location || "",
+      linkedin_url: contact.linkedin_url || "",
+      apollo_profile_url: apolloUrl
     });
 
     scheduleRequiredContactsSave();
@@ -1070,7 +1084,7 @@
 
     clearContactBadges(contact);
 
-    recordRequiredContact(contact);
+    recordRequiredContact(contact, result);
     renderExportControls();
 
     const badge =
@@ -1190,9 +1204,8 @@
   // ============================================================
   // EXPORT REQUIRED CONTACTS (CSV) — PASSIVE ONLY
   //
-  // No Apollo UI element is ever clicked here. This only reads
-  // data already rendered on pages the user has manually visited
-  // and writes it to a file the browser downloads locally.
+  // Formatted with standard Apollo-compliant column names:
+  // First Name, Last Name, Title, Company, Company Domain, Location, Person Linkedin Url
   // ============================================================
 
   function csvEscape(value) {
@@ -1211,11 +1224,14 @@
     );
 
     const header = [
-      "apollo_id",
-      "name",
-      "job_title",
-      "company",
-      "location"
+      "First Name",
+      "Last Name",
+      "Title",
+      "Company",
+      "Company Domain",
+      "Location",
+      "Person Linkedin Url",
+      "Apollo Profile Url"
     ];
 
     const lines = [header.join(",")];
@@ -1223,11 +1239,14 @@
     rows.forEach(row => {
       lines.push(
         [
-          row.apollo_id,
-          row.name,
-          row.job_title,
-          row.company,
-          row.location
+          row.first_name || "",
+          row.last_name || "",
+          row.job_title || "",
+          row.company || "",
+          row.domain || "",
+          row.location || "",
+          row.linkedin_url || "",
+          row.apollo_profile_url || ""
         ]
           .map(csvEscape)
           .join(",")

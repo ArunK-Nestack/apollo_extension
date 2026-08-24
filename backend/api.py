@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 import psycopg
+import pymysql
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -56,6 +57,52 @@ def get_cached_domain_resolution(company: str, location: str = "") -> dict | Non
         return cache[key_with_loc]
     if key_comp_only in cache:
         return cache[key_comp_only]
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT domain, domain_type, source, confidence, evidence_urls
+                    FROM company_domains
+                    WHERE normalized_company = %s
+                      AND (normalized_location = %s OR normalized_location = '')
+                    ORDER BY id ASC;
+                """, (norm_comp, norm_loc))
+                rows = cur.fetchall()
+                if rows:
+                    domains = []
+                    sources = set()
+                    ev_urls = []
+                    max_conf = 0.0
+                    for r in rows:
+                        dom, dom_type, src, conf, urls = r
+                        domains.append({"domain": dom, "type": dom_type, "confidence": float(conf or 1.0)})
+                        if src:
+                            sources.add(src)
+                        if urls:
+                            if isinstance(urls, list):
+                                ev_urls.extend(urls)
+                            elif isinstance(urls, str):
+                                try:
+                                    ev_urls.extend(json.loads(urls))
+                                except Exception:
+                                    pass
+                        max_conf = max(max_conf, float(conf or 1.0))
+                    res_method = "web" if "web_search" in sources else "knowledge"
+                    res_data = {
+                        "status": "known" if res_method == "knowledge" else "verified",
+                        "coverage_complete": True,
+                        "domains": domains,
+                        "confidence": max_conf,
+                        "method": res_method,
+                        "evidence_urls": ev_urls,
+                    }
+                    with _domain_cache_lock:
+                        _global_domain_cache[key_with_loc] = res_data
+                    return res_data
+    except Exception:
+        pass
+
     return None
 
 
@@ -73,6 +120,58 @@ def save_domain_cache_entry(company: str, location: str, resolution_data: dict):
                 json.dump(_global_domain_cache, f, indent=2)
         except Exception as err:
             print(f"[ContactChecker] Warning: Failed to save domain cache: {err}")
+
+    # Write to company_domains table in DB (only for internal knowledge or web search resolutions)
+    domains = resolution_data.get("domains", [])
+    method = resolution_data.get("method", "")
+    if domains and ("knowledge" in method or "web" in method):
+        source_name = "web_search" if "web" in method else "internal_knowledge"
+        conf = float(resolution_data.get("confidence", 1.0))
+        ev_urls = json.dumps(resolution_data.get("evidence_urls", []))
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    for d in domains:
+                        if is_mysql_conn(conn):
+                            cur.execute("""
+                                INSERT INTO `company_domains` (
+                                    `company_name`, `normalized_company`, `location`, `normalized_location`,
+                                    `domain`, `domain_type`, `source`, `confidence`, `evidence_urls`
+                                )
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON DUPLICATE KEY UPDATE
+                                    `domain_type` = VALUES(`domain_type`),
+                                    `source` = VALUES(`source`),
+                                    `confidence` = VALUES(`confidence`),
+                                    `evidence_urls` = VALUES(`evidence_urls`),
+                                    `resolved_at` = NOW();
+                            """, (
+                                company, norm_comp, location, norm_loc,
+                                d.get("domain", ""), d.get("type", "company_official"),
+                                source_name, conf, ev_urls
+                            ))
+                        else:
+                            cur.execute("""
+                                INSERT INTO company_domains (
+                                    company_name, normalized_company, location, normalized_location,
+                                    domain, domain_type, source, confidence, evidence_urls, resolved_at
+                                )
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+                                ON CONFLICT (normalized_company, normalized_location, domain)
+                                DO UPDATE SET
+                                    domain_type = EXCLUDED.domain_type,
+                                    source = EXCLUDED.source,
+                                    confidence = EXCLUDED.confidence,
+                                    evidence_urls = EXCLUDED.evidence_urls,
+                                    resolved_at = NOW();
+                            """, (
+                                company, norm_comp, location, norm_loc,
+                                d.get("domain", ""), d.get("type", "company_official"),
+                                source_name, conf, ev_urls
+                            ))
+                            conn.commit()
+        except Exception as db_err:
+            print(f"[ContactChecker] Notice: DB domain cache insert skipped/deferred: {db_err}")
 
 
 # ============================================================
@@ -137,26 +236,36 @@ _openai_client = None
 
 def get_openai_client():
     """
-    Create the OpenAI client lazily.
-
-    This keeps the API server usable for deterministic matching even
-    when the resolver is disabled.
+    Create the OpenAI / OpenRouter client lazily.
+    Automatically detects OpenRouter API keys (e.g. sk-or-v1-...) or OPENROUTER_API_KEY.
     """
-
     global _openai_client
 
     if _openai_client is None:
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        api_key = (
+            os.getenv("OPENROUTER_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        )
 
         if not api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY is missing. "
-                "Add it to .env or disable DOMAIN_RESOLVER_ENABLED."
+                "API key is missing. Add OPENROUTER_API_KEY or OPENAI_API_KEY to .env."
             )
 
-        _openai_client = OpenAI(
-            api_key=api_key
-        )
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+        if not base_url:
+            if api_key.startswith("sk-or-") or os.getenv("OPENROUTER_API_KEY"):
+                base_url = "https://openrouter.ai/api/v1"
+
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+            client_kwargs["default_headers"] = {
+                "HTTP-Referer": "https://apollo.io",
+                "X-Title": "Apollo Contact Checker",
+            }
+
+        _openai_client = OpenAI(**client_kwargs)
 
     return _openai_client
 
@@ -182,17 +291,242 @@ app.add_middleware(
 
 
 # ============================================================
-# DATABASE CONNECTION
+# DATABASE CONNECTION & DYNAMIC TABLE SCHEMA (MySQL & Postgres)
 # ============================================================
 
+DB_TABLE = os.getenv("DB_TABLE", "emails").strip()
+_schema_cache: dict[str, Any] = {}
+_schema_cache_lock = threading.Lock()
+
+
+def is_mysql_conn(conn) -> bool:
+    return isinstance(conn, pymysql.Connection) if "pymysql" in globals() else False
+
+
 def get_connection():
+    db_host = os.getenv("DB_HOST", "localhost").strip()
+    db_port_str = os.getenv("DB_PORT", "").strip()
+    if db_port_str:
+        db_port = int(db_port_str)
+    elif "rds.amazonaws.com" in db_host or "mysql" in db_host:
+        db_port = 3306
+    else:
+        db_port = 5432
+
+    db_name = os.getenv("DB_NAME", "apollo_scrapers").strip()
+    db_user = os.getenv("DB_USER", "nestack").strip()
+    db_password = os.getenv("DB_PASSWORD", "").strip()
+
+    if db_port == 3306 or "rds.amazonaws.com" in db_host:
+        return pymysql.connect(
+            host=db_host,
+            port=db_port,
+            user=db_user,
+            password=db_password,
+            database=db_name,
+            autocommit=True,
+            connect_timeout=15,
+        )
+
     return psycopg.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-        dbname=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
+        host=db_host,
+        port=db_port,
+        dbname=db_name,
+        user=db_user,
+        password=db_password,
     )
+
+
+def get_target_table_schema(conn) -> dict[str, Any]:
+    """
+    Dynamically discover the table name and map column names.
+    Supports 'emails', 'Emails', 'contacts', etc., across MySQL and PostgreSQL.
+    """
+    global _schema_cache
+    if _schema_cache:
+        return _schema_cache
+
+    with _schema_cache_lock:
+        if _schema_cache:
+            return _schema_cache
+
+        with conn.cursor() as cur:
+            if is_mysql_conn(conn):
+                cur.execute("SHOW TABLES;")
+                tables = [row[0] for row in cur.fetchall()]
+            else:
+                cur.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';"
+                )
+                tables = [row[0] for row in cur.fetchall()]
+
+            target_table = None
+            # 1. Exact match on DB_TABLE
+            for t in tables:
+                if t.lower() == DB_TABLE.lower():
+                    target_table = t
+                    break
+            # 2. Match emails or contacts
+            if not target_table:
+                for cand in ["emails", "contacts", "email", "leads"]:
+                    for t in tables:
+                        if t.lower() == cand:
+                            target_table = t
+                            break
+                    if target_table:
+                        break
+            # 3. Fallback to first table or DB_TABLE
+            if not target_table:
+                target_table = tables[0] if tables else DB_TABLE
+
+            if is_mysql_conn(conn):
+                cur.execute(f"DESCRIBE `{target_table}`;")
+                cols = [row[0] for row in cur.fetchall()]
+            else:
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name = %s;",
+                    (target_table,),
+                )
+                cols = [row[0] for row in cur.fetchall()]
+
+            cols_lower = {c.lower(): c for c in cols}
+
+            def find_col(candidates: list[str]) -> str | None:
+                for cand in candidates:
+                    if cand.lower() in cols_lower:
+                        return cols_lower[cand.lower()]
+                return None
+
+            email_col = find_col(["email", "email_address", "email address", "work_email", "contact_email"]) or "email"
+            first_name_col = find_col(["first_name", "first name", "firstname", "first", "fname"])
+            last_name_col = find_col(["last_name", "last name", "lastname", "last", "lname"])
+            name_col = find_col(["full_name", "name", "full name", "contact_name"]) or "full_name"
+            job_title_col = find_col(["job_title", "job title", "title", "jobtitle", "position", "role"]) or "job_title"
+            company_col = find_col(["company", "company_name", "company name", "organization", "account_name"])
+            email_domain_col = find_col(["domain", "email_domain", "email domain", "company_domain"]) or "domain"
+            norm_name_col = find_col(["normalized_name", "norm_name"])
+            norm_title_col = find_col(["normalized_title", "norm_title"])
+            norm_domain_col = find_col(["normalized_domain", "norm_domain"])
+            source_login_col = find_col(["source_login", "source login", "login"])
+            source_file_col = find_col(["source_file", "source file", "file", "sheet"])
+
+            _schema_cache = {
+                "table_name": target_table,
+                "columns": cols,
+                "email": email_col,
+                "first_name": first_name_col,
+                "last_name": last_name_col,
+                "name": name_col,
+                "job_title": job_title_col,
+                "company": company_col,
+                "email_domain": email_domain_col,
+                "normalized_name": norm_name_col,
+                "normalized_title": norm_title_col,
+                "normalized_domain": norm_domain_col,
+                "source_login": source_login_col,
+                "source_file": source_file_col,
+            }
+            print(f"[ContactChecker] Initialized DB Schema for table '{target_table}': {_schema_cache}", flush=True)
+            init_db_cache_tables(conn)
+            return _schema_cache
+
+
+def init_db_cache_tables(conn=None):
+    """
+    Ensure the persistent cache tables exist in the database (MySQL or PostgreSQL):
+    1. company_domains: stores all AI-resolved & web-scraped company domains
+    2. evaluated_job_titles: stores all AI-evaluated job titles (required vs not required)
+    """
+    def do_create(c):
+        with c.cursor() as cur:
+            if is_mysql_conn(c):
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS `company_domains` (
+                        `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                        `company_name` VARCHAR(255) NOT NULL,
+                        `normalized_company` VARCHAR(255) NOT NULL,
+                        `location` VARCHAR(255) DEFAULT '',
+                        `normalized_location` VARCHAR(255) DEFAULT '',
+                        `domain` VARCHAR(255) NOT NULL,
+                        `domain_type` VARCHAR(64) DEFAULT 'company_official',
+                        `source` VARCHAR(64) NOT NULL,
+                        `confidence` DECIMAL(5,4) DEFAULT 1.0000,
+                        `evidence_urls` JSON,
+                        `resolved_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY `uq_company_domains` (`normalized_company`, `normalized_location`, `domain`),
+                        INDEX `idx_comp_norm` (`normalized_company`, `normalized_location`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS `evaluated_job_titles` (
+                        `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                        `job_title` VARCHAR(255) NOT NULL,
+                        `normalized_title` VARCHAR(255) NOT NULL,
+                        `is_required` TINYINT(1) NOT NULL,
+                        `tier` INT NOT NULL,
+                        `role_type` VARCHAR(64) NOT NULL,
+                        `function_relevant` TINYINT(1) NOT NULL,
+                        `regional_synonym` VARCHAR(255) DEFAULT NULL,
+                        `confidence` VARCHAR(32) DEFAULT 'high',
+                        `reason` TEXT,
+                        `company_name` VARCHAR(255) DEFAULT '',
+                        `normalized_company` VARCHAR(255) DEFAULT '',
+                        `employee_count` INT DEFAULT NULL,
+                        `region` VARCHAR(32) DEFAULT '',
+                        `evaluated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY `uq_job_title_eval` (`normalized_title`, `normalized_company`, `region`),
+                        INDEX `idx_job_title_norm` (`normalized_title`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
+            else:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS company_domains (
+                        id SERIAL PRIMARY KEY,
+                        company_name TEXT NOT NULL,
+                        normalized_company TEXT NOT NULL,
+                        location TEXT DEFAULT '',
+                        normalized_location TEXT DEFAULT '',
+                        domain TEXT NOT NULL,
+                        domain_type TEXT DEFAULT 'company_official',
+                        source TEXT NOT NULL,
+                        confidence NUMERIC DEFAULT 1.0,
+                        evidence_urls JSONB DEFAULT '[]'::jsonb,
+                        resolved_at TIMESTAMPTZ DEFAULT NOW(),
+                        CONSTRAINT uq_company_domains UNIQUE (normalized_company, normalized_location, domain)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_company_domains_norm ON company_domains(normalized_company, normalized_location);
+
+                    CREATE TABLE IF NOT EXISTS evaluated_job_titles (
+                        id SERIAL PRIMARY KEY,
+                        job_title TEXT NOT NULL,
+                        normalized_title TEXT NOT NULL,
+                        is_required BOOLEAN NOT NULL,
+                        tier INT NOT NULL,
+                        role_type TEXT NOT NULL,
+                        function_relevant BOOLEAN NOT NULL,
+                        regional_synonym TEXT,
+                        confidence TEXT DEFAULT 'high',
+                        reason TEXT,
+                        company_name TEXT DEFAULT '',
+                        normalized_company TEXT DEFAULT '',
+                        employee_count INT,
+                        region TEXT DEFAULT '',
+                        evaluated_at TIMESTAMPTZ DEFAULT NOW(),
+                        CONSTRAINT uq_job_title_eval UNIQUE (normalized_title, normalized_company, region)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_evaluated_job_titles_norm ON evaluated_job_titles(normalized_title);
+                """)
+                c.commit()
+            print("[ContactChecker] Persistent database cache tables (company_domains, evaluated_job_titles) ready.", flush=True)
+
+    try:
+        if conn:
+            do_create(conn)
+        else:
+            with get_connection() as c:
+                do_create(c)
+    except Exception as err:
+        print(f"[ContactChecker] Notice: init_db_cache_tables deferred or error: {err}", flush=True)
 
 
 # ============================================================
@@ -1898,33 +2232,34 @@ def check_company_domain_exists_in_db(
                 if norm_brand:
                     candidate_normalized.add(norm_brand)
 
-    query = """
-        SELECT email_domain, normalized_domain
-        FROM contacts
-        WHERE normalized_domain = ANY(%s)
-           OR email_domain = ANY(%s)
-        LIMIT 1;
-    """
+    def do_query(conn):
+        schema = get_target_table_schema(conn)
+        tbl_name = schema["table_name"]
+        domain_col = schema["email_domain"] or "domain"
+        email_col = schema["email"] or "email"
 
-    if connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                query,
-                (list(candidate_normalized), list(candidate_domains)),
-            )
+        candidate_list = list(candidate_domains)
+        if not candidate_list:
+            return False, ""
+
+        with conn.cursor() as cursor:
+            if is_mysql_conn(conn):
+                placeholders = ", ".join(["%s"] * len(candidate_list))
+                query = f"SELECT `{domain_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({placeholders}) LIMIT 1;"
+                cursor.execute(query, tuple(candidate_list))
+            else:
+                query = f"SELECT {domain_col} FROM \"{tbl_name}\" WHERE {domain_col} = ANY(%s) LIMIT 1;"
+                cursor.execute(query, (candidate_list,))
             row = cursor.fetchone()
             if row:
-                return True, row[0] or row[1] or ""
+                return True, row[0] or ""
+        return False, ""
+
+    if connection:
+        return do_query(connection)
     else:
         with get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    query,
-                    (list(candidate_normalized), list(candidate_domains)),
-                )
-                row = cursor.fetchone()
-                if row:
-                    return True, row[0] or row[1] or ""
+            return do_query(conn)
 
     return False, ""
 
@@ -1970,6 +2305,34 @@ def evaluate_job_title_with_ai(
 
     if cache_key in _title_guardrail_cache:
         return _title_guardrail_cache[cache_key]
+
+    # Check DB cache for previously evaluated job title
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT tier, is_required, role_type, function_relevant, regional_synonym, confidence, reason
+                    FROM evaluated_job_titles
+                    WHERE normalized_title = %s
+                      AND (normalized_company = %s OR normalized_company = '')
+                      AND (region = %s OR region = '')
+                    LIMIT 1;
+                """, (normalize_text(job_title_clean), normalize_text(company_clean), normalize_text(region_clean)))
+                row = cur.fetchone()
+                if row:
+                    db_res = {
+                        "tier": row[0],
+                        "required": row[1],
+                        "role_type": row[2],
+                        "function_relevant": row[3],
+                        "regional_synonym_applied": row[4],
+                        "confidence": row[5],
+                        "reason": row[6],
+                    }
+                    _title_guardrail_cache[cache_key] = db_res
+                    return db_res
+    except Exception:
+        pass
 
     client = get_openai_client()
 
@@ -2164,6 +2527,40 @@ def evaluate_job_title_with_ai(
             "reason": f"Fallback due to evaluation error: {error}",
         }
 
+    # Persist evaluation to DB table evaluated_job_titles
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO evaluated_job_titles (
+                        job_title, normalized_title, is_required, tier, role_type,
+                        function_relevant, regional_synonym, confidence, reason,
+                        company_name, normalized_company, employee_count, region, evaluated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (normalized_title, normalized_company, region)
+                    DO UPDATE SET
+                        is_required = EXCLUDED.is_required,
+                        tier = EXCLUDED.tier,
+                        role_type = EXCLUDED.role_type,
+                        function_relevant = EXCLUDED.function_relevant,
+                        regional_synonym = EXCLUDED.regional_synonym,
+                        confidence = EXCLUDED.confidence,
+                        reason = EXCLUDED.reason,
+                        employee_count = EXCLUDED.employee_count,
+                        evaluated_at = NOW();
+                """, (
+                    job_title_clean, normalize_text(job_title_clean),
+                    bool(res.get("required")), int(res.get("tier", 4)),
+                    str(res.get("role_type", "decision_maker")), bool(res.get("function_relevant", True)),
+                    res.get("regional_synonym_applied"), str(res.get("confidence", "high")),
+                    str(res.get("reason", "")), company_clean, normalize_text(company_clean),
+                    employee_count, region_clean
+                ))
+                conn.commit()
+    except Exception as db_err:
+        pass
+
     _title_guardrail_cache[cache_key] = res
     return res
 
@@ -2341,20 +2738,22 @@ def check_emails(
     )
 
     with get_connection() as connection:
+        schema = get_target_table_schema(connection)
+        tbl_name = schema["table_name"]
+        email_col = schema["email"] or "email"
 
         with connection.cursor() as cursor:
-
-            cursor.execute(
-                """
-                SELECT DISTINCT LOWER(email)
-                FROM contacts
-                WHERE LOWER(email) = ANY(%s);
-                """,
-                (
-                    email_list,
-                ),
-            )
-
+            if is_mysql_conn(connection):
+                placeholders = ", ".join(["%s"] * len(email_list))
+                cursor.execute(
+                    f"SELECT DISTINCT LOWER(`{email_col}`) FROM `{tbl_name}` WHERE LOWER(`{email_col}`) IN ({placeholders});",
+                    tuple(email_list),
+                )
+            else:
+                cursor.execute(
+                    f"SELECT DISTINCT LOWER({email_col}) FROM \"{tbl_name}\" WHERE LOWER({email_col}) = ANY(%s);",
+                    (email_list,),
+                )
             rows = cursor.fetchall()
 
 
@@ -2569,37 +2968,102 @@ def match_apollo(
     print("=" * 90, flush=True)
 
     with get_connection() as connection:
+        schema = get_target_table_schema(connection)
+        tbl_name = schema["table_name"]
+        email_col = schema["email"] or "email"
+        name_col = schema["name"] or "full_name"
+        domain_col = schema["email_domain"] or "domain"
+        fname_col = schema["first_name"]
+        lname_col = schema["last_name"]
+        title_col = schema["job_title"]
+        src_log_col = schema["source_login"]
+        src_file_col = schema["source_file"]
+
+        database_rows = []
 
         with connection.cursor() as cursor:
+            if is_mysql_conn(connection):
+                if unique_names:
+                    placeholders = ", ".join(["%s"] * len(unique_names))
+                    # In MySQL emails table, match by LOWER(REPLACE(full_name, ' ', ''))
+                    query = f"""
+                        SELECT `{email_col}`, `{name_col}`, `{domain_col}`
+                        FROM `{tbl_name}`
+                        WHERE LOWER(REPLACE(`{name_col}`, ' ', '')) IN ({placeholders});
+                    """
+                    cursor.execute(query, tuple(unique_names))
+                    raw_rows = cursor.fetchall()
+                    for r in raw_rows:
+                        em, fn, dom = r[0] or "", r[1] or "", r[2] or ""
+                        norm_nm = normalize_text(fn)
+                        norm_dm = normalize_text(dom.split(".")[0] if dom else "")
+                        # uniform tuple shape:
+                        # (email, first_name, last_name, job_title, normalized_name, normalized_title, email_domain, normalized_domain, source_login, source_file)
+                        database_rows.append((em, fn, "", "", norm_nm, "", dom, norm_dm, "", ""))
+            else:
+                # PostgreSQL
+                tbl = f'"{tbl_name}"'
+                ec = f'"{email_col}"'
+                fc = f'"{fname_col}"' if fname_col else "''"
+                lc = f'"{lname_col}"' if lname_col else "''"
+                tc = f'"{title_col}"' if title_col else "''"
+                slc = f'"{src_log_col}"' if src_log_col else "''"
+                sfc = f'"{src_file_col}"' if src_file_col else "''"
 
-            cursor.execute(
+                if schema["normalized_name"]:
+                    norm_name_expr = f'c."{schema["normalized_name"]}"'
+                    where_clause = f'{norm_name_expr} = ANY(%s)'
+                    params = (unique_names,)
+                elif fname_col and lname_col:
+                    norm_name_expr = f"LOWER(REGEXP_REPLACE(COALESCE(c.{fc}, '') || COALESCE(c.{lc}, ''), '[^a-zA-Z0-9]', '', 'g'))"
+                    where_clause = f'{norm_name_expr} = ANY(%s)'
+                    params = (unique_names,)
+                elif name_col:
+                    nc = f'"{name_col}"'
+                    norm_name_expr = f"LOWER(REGEXP_REPLACE(COALESCE(c.{nc}, ''), '[^a-zA-Z0-9]', '', 'g'))"
+                    where_clause = f'{norm_name_expr} = ANY(%s)'
+                    params = (unique_names,)
+                else:
+                    norm_name_expr = f"LOWER(REGEXP_REPLACE(SPLIT_PART(c.{ec}, '@', 1), '[^a-zA-Z0-9]', '', 'g'))"
+                    where_clause = f'{norm_name_expr} = ANY(%s)'
+                    params = (unique_names,)
+
+                if schema["normalized_title"]:
+                    norm_title_expr = f'c."{schema["normalized_title"]}"'
+                else:
+                    norm_title_expr = f"LOWER(REGEXP_REPLACE(COALESCE(c.{tc}, ''), '[^a-zA-Z0-9]', '', 'g'))"
+
+                if schema["email_domain"]:
+                    email_domain_expr = f'c."{schema["email_domain"]}"'
+                else:
+                    email_domain_expr = f"SPLIT_PART(c.{ec}, '@', 2)"
+
+                if schema["normalized_domain"]:
+                    norm_domain_expr = f'c."{schema["normalized_domain"]}"'
+                else:
+                    norm_domain_expr = f"LOWER(REGEXP_REPLACE(SPLIT_PART({email_domain_expr}, '.', 1), '[^a-zA-Z0-9]', '', 'g'))"
+
+                query = f"""
+                    SELECT
+                        c.{ec} AS email,
+                        c.{fc} AS first_name,
+                        c.{lc} AS last_name,
+                        c.{tc} AS job_title,
+
+                        {norm_name_expr} AS normalized_name,
+                        {norm_title_expr} AS normalized_title,
+
+                        {email_domain_expr} AS email_domain,
+                        {norm_domain_expr} AS normalized_domain,
+
+                        c.{slc} AS source_login,
+                        c.{sfc} AS source_file
+
+                    FROM {tbl} c
+                    WHERE {where_clause};
                 """
-                SELECT
-                    c.email,
-                    c.first_name,
-                    c.last_name,
-                    c.job_title,
-
-                    c.normalized_name,
-                    c.normalized_title,
-
-                    c.email_domain,
-                    c.normalized_domain,
-
-                    c.source_login,
-                    c.source_file
-
-                FROM contacts c
-                WHERE c.normalized_name = ANY(%s);
-                """,
-                (
-                    unique_names,
-                ),
-            )
-
-            database_rows = (
-                cursor.fetchall()
-            )
+                cursor.execute(query, params)
+                database_rows = cursor.fetchall()
 
 
         append_activity(
@@ -3229,6 +3693,7 @@ def match_apollo(
                             f"Contact qualified as REQUIRED (Tier {guardrail_res.get('tier')}, role_type={guardrail_res.get('role_type')}): {guardrail_res.get('reason')}",
                             details=guardrail_res,
                         )
+                        resolved_dom = (resolution.get("domains", [{}])[0].get("domain") if resolution and resolution.get("domains") else "")
                         results[contact["key"]] = {
                             "exists": False,
                             "required": True,
@@ -3240,6 +3705,7 @@ def match_apollo(
                             "regional_synonym_applied": guardrail_res.get("regional_synonym_applied"),
                             "confidence": guardrail_res.get("confidence"),
                             "guardrail_reason": guardrail_res.get("reason"),
+                            "matched_domain": resolved_dom,
                             "domain_resolution_status": (
                                 resolution.get("status") if resolution else "not_needed"
                             ),
@@ -3272,6 +3738,7 @@ def match_apollo(
                             level="warning",
                             details=guardrail_res,
                         )
+                        resolved_dom = (resolution.get("domains", [{}])[0].get("domain") if resolution and resolution.get("domains") else "")
                         results[contact["key"]] = {
                             "exists": False,
                             "required": False,
@@ -3283,6 +3750,7 @@ def match_apollo(
                             "regional_synonym_applied": guardrail_res.get("regional_synonym_applied"),
                             "confidence": guardrail_res.get("confidence"),
                             "guardrail_reason": guardrail_res.get("reason"),
+                            "matched_domain": resolved_dom,
                             "domain_resolution_status": (
                                 resolution.get("status") if resolution else "not_needed"
                             ),
@@ -3310,12 +3778,14 @@ def match_apollo(
 
                 else:
                     # Guardrails 2 & 3 are OFF (or passed): Qualified directly based on Guardrail 1
+                    resolved_dom = (resolution.get("domains", [{}])[0].get("domain") if resolution and resolution.get("domains") else "")
                     results[contact["key"]] = {
                         "exists": False,
                         "required": True,
                         "ignored": False,
                         "guardrail_status": "qualified",
                         "guardrail_reason": "New target domain qualified.",
+                        "matched_domain": resolved_dom,
                         "domain_resolution_status": (
                             resolution.get("status") if resolution else "not_needed"
                         ),
@@ -3474,3 +3944,11 @@ def match_apollo(
         "summary":
             summary,
     }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    print("\n" + "=" * 70, flush=True)
+    print(">>> [ContactChecker API] Server starting on http://localhost:8000", flush=True)
+    print("=" * 70 + "\n", flush=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
