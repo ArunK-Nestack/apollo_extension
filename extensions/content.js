@@ -672,14 +672,28 @@
   // ============================================================
 
   function getApolloContactLinks() {
-    return Array.from(
-      document.querySelectorAll(`
-        a[href*="/contacts/"],
-        a[data-to*="/contacts/"],
-        a[href*="/people/"],
-        a[data-to*="/people/"]
-      `)
+    const selectors = [
+      'a[href*="/contacts/"]',
+      'a[data-to*="/contacts/"]',
+      'a[href*="/people/"]',
+      'a[data-to*="/people/"]',
+      'a[href*="#/people/"]',
+      'a[href*="#/contacts/"]'
+    ];
+
+    const found = Array.from(
+      document.querySelectorAll(selectors.join(","))
     );
+
+    return found.filter(link => {
+      const href = link.getAttribute("href") || link.getAttribute("data-to") || "";
+      // Exclude navigation tabs or search filters
+      if (href.endsWith("/people") || href.endsWith("/contacts") || href.includes("?")) {
+        // Only accept if inside an actual data row
+        return Boolean(link.closest('[role="row"]'));
+      }
+      return Boolean(link.closest('[role="row"]'));
+    });
   }
 
   // ============================================================
@@ -769,18 +783,13 @@
   }
 
   // ============================================================
-  // EXTRACT APOLLO ROW
+  // EXTRACT APOLLO ROW (Flexible & Resilient to Custom Column Layouts)
   // ============================================================
 
   function extractContact(link, index) {
     const row = link.closest('[role="row"]');
 
     if (!row) {
-      console.log(
-        "Contact Checker: no row found for",
-        cleanText(link.innerText)
-      );
-
       return null;
     }
 
@@ -800,52 +809,56 @@
       row.querySelectorAll('[role="cell"]')
     );
 
-    // Find which cell contains the person's name
     const nameCellIndex = cells.findIndex(
       cell => cell.contains(link)
     );
 
-    if (nameCellIndex === -1) {
-      console.log(
-        "Contact Checker: name cell not found",
-        name
-      );
+    const nameCell = nameCellIndex !== -1
+      ? cells[nameCellIndex]
+      : (link.closest('[role="cell"]') || link.parentElement);
 
-      return null;
+    // 1. Dynamic Title Detection (by header or next cell)
+    let titleCell = findCellByHeader(
+      row,
+      cells,
+      ["title", "job title", "position", "role"]
+    );
+    if (!titleCell && nameCellIndex !== -1 && nameCellIndex + 1 < cells.length) {
+      titleCell = cells[nameCellIndex + 1];
     }
 
-    const nameCell =
-      cells[nameCellIndex];
-
-    const titleCell =
-      cells[nameCellIndex + 1];
-
-    const companyCell =
-      cells[nameCellIndex + 2];
-
-    if (!titleCell || !companyCell) {
-      console.log(
-        "Contact Checker: missing adjacent cells",
-        {
-          name,
-          cellCount: cells.length,
-          nameCellIndex
-        }
-      );
-
-      return null;
+    // 2. Dynamic Company Detection (by header, company link, or adjacent cell)
+    let companyCell = findCellByHeader(
+      row,
+      cells,
+      ["company", "company name", "organization", "account"]
+    );
+    if (!companyCell) {
+      const compLink = row.querySelector('a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]');
+      if (compLink) {
+        companyCell = compLink.closest('[role="cell"]') || compLink.parentElement;
+      }
+    }
+    if (!companyCell && nameCellIndex !== -1 && nameCellIndex + 2 < cells.length) {
+      companyCell = cells[nameCellIndex + 2];
     }
 
-    const jobTitle = cleanText(
-      titleCell.innerText
+    let jobTitle = cleanText(
+      titleCell?.innerText || titleCell?.textContent || ""
     );
 
-    const company = cleanText(
-      companyCell.innerText
+    let company = cleanText(
+      companyCell?.innerText || companyCell?.textContent || ""
     );
 
-    // Location is optional. We find it by header name rather than
-    // hardcoding a fragile cell offset.
+    if (!company) {
+      const compLink = row.querySelector('a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]');
+      if (compLink) {
+        company = cleanText(compLink.innerText || compLink.textContent);
+      }
+    }
+
+    // Location is optional
     const locationCell = findCellByHeader(
       row,
       cells,
@@ -1151,6 +1164,14 @@
       badge.title =
         result.guardrail_reason ||
         "Excluded by 7-tier job title guardrail.";
+    } else if (result?.guardrail_status === "company_limit_reached") {
+      badge.textContent =
+        "⊘ 1/Company Max";
+      badge.style.background = "#6b7280";
+
+      badge.title =
+        result.guardrail_reason ||
+        "Only 1 contact per company is allowed.";
     } else {
       badge.textContent =
         "⊘ Ignored";
@@ -1385,6 +1406,11 @@
         <span id="contact-checker-live-status" class="contact-checker-live-badge">✓ Ready</span>
         <span id="contact-checker-required-count"></span>
         <button
+          id="contact-checker-rescan-btn"
+          type="button"
+          style="background: #0284c7;"
+        >⟳ Rescan Page</button>
+        <button
           id="contact-checker-export-required"
           type="button"
         >Export Required Contacts (CSV)</button>
@@ -1405,6 +1431,20 @@
           type="button"
         >Activity</button>
       `;
+
+      controls
+        .querySelector(
+          "#contact-checker-rescan-btn"
+        )
+        .addEventListener(
+          "click",
+          () => {
+            state.checkedContacts.clear();
+            state.currentContacts.clear();
+            showStatus("Rescanning page...", 1500, true);
+            scanApollo();
+          }
+        );
 
       controls
         .querySelector(
