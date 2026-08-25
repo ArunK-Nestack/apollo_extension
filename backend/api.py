@@ -560,14 +560,14 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
 
 
 # ============================================================
-# 2-LAYER JOB TITLE EVALUATOR (SUBSTRINGS + DATABASE LOOKUP)
+# 2-LAYER JOB TITLE EVALUATOR (DATABASE LOOKUP + SUBSTRINGS)
 # ============================================================
 
 def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
     """
-    2-Layer Job Title Evaluation (Zero AI):
-    Layer 1: Top-tier executive substring check (Chief, CEO, President, Owner, Founder, Partner, Managing Director, VP, Director, Head of, GM).
-    Layer 2: Database table lookup against 'job_title_guardrails' (64,612 titles across Segments).
+    2-Layer Job Title Evaluation (Deterministic):
+    Layer 1: Database table lookup against 'job_title_guardrails' (64,800+ titles across Segments).
+    Layer 2: Top-tier executive substring fallback (Chief, CEO, President, VP, Director, etc.).
     """
     if not job_title:
         return {"required": False, "status": "disqualified_title", "segment": "Unspecified", "reason": "No title specified"}
@@ -578,38 +578,16 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
         if norm_title in _title_cache:
             return _title_cache[norm_title]
 
-    # --- LAYER 1: PRIORITY SUBSTRING CHECK ---
-    layer1_match = match_priority_substrings(job_title)
-    if layer1_match:
-        is_req, prio, sub = layer1_match
-        res = {
-            "required": True,
-            "status": "qualified",
-            "segment": f"Prio_{prio.replace(' ', '_')}_{sub.title()}",
-            "reason": f"Layer 1 Substring Match: '{sub}' ({prio} Priority)",
-        }
-        with _title_cache_lock:
-            _title_cache[norm_title] = res
-        return res
-
-    # --- LAYER 2: DATABASE TABLE LOOKUP ---
+    # --- LAYER 1: DATABASE TABLE LOOKUP (EXACT MATCH & EXPLICIT OVERRIDES) ---
     def do_query(conn):
         try:
             with conn.cursor() as cur:
-                if is_mysql_conn(conn):
-                    cur.execute("""
-                        SELECT is_required, segment
-                        FROM job_title_guardrails
-                        WHERE normalized_title = %s
-                        LIMIT 1;
-                    """, (norm_title,))
-                else:
-                    cur.execute("""
-                        SELECT is_required, segment
-                        FROM job_title_guardrails
-                        WHERE normalized_title = %s
-                        LIMIT 1;
-                    """, (norm_title,))
+                cur.execute("""
+                    SELECT is_required, segment
+                    FROM job_title_guardrails
+                    WHERE normalized_title = %s
+                    LIMIT 1;
+                """, (norm_title,))
 
                 row = cur.fetchone()
                 if row:
@@ -619,7 +597,7 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
                         "required": is_req,
                         "status": "qualified" if is_req else "disqualified_title",
                         "segment": seg_name,
-                        "reason": f"Layer 2 DB Segment: {seg_name} ({'Required' if is_req else 'Excluded'})",
+                        "reason": f"Layer 1 DB Segment: {seg_name} ({'Required' if is_req else 'Excluded'})",
                     }
                     with _title_cache_lock:
                         _title_cache[norm_title] = res
@@ -627,7 +605,21 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
         except Exception:
             pass
 
-        # Title not found in Layer 1 or DB: Not Recognized
+        # --- LAYER 2: PRIORITY SUBSTRING FALLBACK ---
+        layer2_match = match_priority_substrings(job_title)
+        if layer2_match:
+            is_req, prio, sub = layer2_match
+            res = {
+                "required": True,
+                "status": "qualified",
+                "segment": f"Prio_{prio.replace(' ', '_')}_{sub.title()}",
+                "reason": f"Layer 2 Substring Match: '{sub}' ({prio} Priority)",
+            }
+            with _title_cache_lock:
+                _title_cache[norm_title] = res
+            return res
+
+        # Title not found in DB or Substrings: Not Recognized
         fallback = {
             "required": False,
             "status": "not_recognized_title",
