@@ -1807,22 +1807,22 @@
 
         contacts:
           contactsToCheck.map(
-            contact => ({
-              key:
-                contact.key,
-
-              name:
-                contact.name,
-
-              job_title:
-                contact.job_title,
-
-              company:
-                contact.company,
-
-              location:
-                contact.location || ""
-            })
+            contact => {
+              const apolloId = getApolloIdFromKey(contact.key);
+              const nameParts = (contact.name || "").trim().split(/\s+/);
+              return {
+                key: contact.key,
+                apollo_id: apolloId,
+                name: contact.name,
+                first_name: nameParts[0] || "",
+                last_name: nameParts.slice(1).join(" ") || "",
+                job_title: contact.job_title,
+                company: contact.company,
+                location: contact.location || "",
+                linkedin_url: contact.linkedin_url || "",
+                apollo_profile_url: apolloId ? `https://app.apollo.io/#/people/${apolloId}` : ""
+              };
+            }
           )
       },
 

@@ -952,19 +952,26 @@ def match_apollo(request: ApolloMatchRequest):
         for contact in net_new_contacts:
             r = results.get(contact.key)
             if r and r.get("required") is True:
+                apollo_id_val = (contact.apollo_id or (contact.key.replace("apollo-", "") if contact.key.startswith("apollo-") else contact.key) or "")
+                name_parts = (contact.name or "").strip().split(None, 1)
+                first_name_val = contact.first_name or (name_parts[0] if name_parts else "")
+                last_name_val = contact.last_name or (name_parts[1] if len(name_parts) > 1 else "")
+                domain_val = contact_primary_domain.get(contact.key) or contact.company_domain or ""
+                apollo_url_val = contact.apollo_profile_url or (f"https://app.apollo.io/#/people/{apollo_id_val}" if apollo_id_val else "")
+
                 required_leads_to_save.append((
                     batch_tag[:64],
-                    (contact.key or "")[:128],
+                    apollo_id_val[:128],
                     (contact.name or "")[:255],
-                    (contact.first_name or "")[:128],
-                    (contact.last_name or "")[:128],
+                    first_name_val[:128],
+                    last_name_val[:128],
                     (contact.job_title or "")[:255],
                     (contact.company or "")[:255],
-                    (contact_primary_domain.get(contact.key) or contact.company_domain or "")[:255],
+                    domain_val[:255],
                     (contact.location or "")[:255],
                     (contact.linkedin_url or "")[:512],
-                    (contact.apollo_profile_url or "")[:512],
-                    (r.get("segment") or "")[:128]
+                    apollo_url_val[:512],
+                    (r.get("segment") or "Required_Lead")[:128]
                 ))
 
         if required_leads_to_save:
