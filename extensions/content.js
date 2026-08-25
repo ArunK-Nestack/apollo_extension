@@ -22,7 +22,7 @@
 
   const state = {
     active: true,
-    titleGuardrailEnabled: false,
+    titleGuardrailEnabled: true,
     indianGuardrailEnabled: false,
     observer: null,
     timer: null,
@@ -1518,15 +1518,15 @@
 
     if (guardrailButton) {
       if (state.titleGuardrailEnabled) {
-        guardrailButton.textContent = "AI Title Filter: ON";
+        guardrailButton.textContent = "Title Guardrail: ON";
         guardrailButton.style.background = "#8b5cf6";
         guardrailButton.title =
-          "Guardrail 2 Active: Filtering contacts by 7-tier seniority & functional relevance";
+          "Title Guardrail Active: Filtering contacts by 64K database rules & on-demand LLM evaluation";
       } else {
-        guardrailButton.textContent = "AI Title Filter: OFF";
+        guardrailButton.textContent = "Title Guardrail: OFF";
         guardrailButton.style.background = "#374151";
         guardrailButton.title =
-          "Guardrail 2 Inactive: All net-new domains are auto-qualified as Required";
+          "Title Guardrail Inactive: All net-new domains are auto-qualified as Required";
       }
     }
 

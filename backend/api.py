@@ -790,8 +790,10 @@ def match_apollo(request: ApolloMatchRequest):
             else:
                 db_title_hits += 1
 
+        title_filter_active = request.title_guardrail_enabled or GUARDRAILS_ENABLED
+
         # Trigger on-demand LLM batch if any novel titles exist
-        if request.title_guardrail_enabled and novel_titles_to_eval and OPENAI_API_KEY:
+        if title_filter_active and novel_titles_to_eval and OPENAI_API_KEY:
             novel_titles_sent = len(novel_titles_to_eval)
             llm_results, token_stats = classify_novel_titles_compact_llm(list(novel_titles_to_eval.values()), connection=conn)
             # Re-assign contacts with new LLM evaluations
@@ -809,13 +811,13 @@ def match_apollo(request: ApolloMatchRequest):
             prim_d = contact_primary_domain[contact.key]
             comp_key = normalize_text(prim_d) or normalize_text(comp_name)
 
-            t_info = contact_title_eval.get(contact.key, {"required": True, "segment": "Approved", "reason": "Default accepted"})
-            title_ok = t_info.get("required", False) if request.title_guardrail_enabled else True
-            title_status = t_info.get("status", "qualified")
+            t_info = contact_title_eval.get(contact.key, {"required": False, "segment": "Unrecognized", "reason": "Not recognized", "status": "not_recognized_title"})
+            title_ok = t_info.get("required", False) if title_filter_active else True
+            title_status = t_info.get("status", "qualified" if title_ok else "not_recognized_title")
             title_seg = t_info.get("segment", "")
             title_reason = t_info.get("reason", "")
 
-            if request.title_guardrail_enabled and not title_ok:
+            if title_filter_active and not title_ok:
                 ignored_count += 1
                 results[contact.key] = {
                     "exists": False,
