@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import os
 import re
@@ -20,6 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
 import pymysql
 import psycopg
 from dotenv import load_dotenv
+from openai import OpenAI
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -49,15 +52,33 @@ DB_TABLE = os.getenv("DB_TABLE", "emails").strip()
 
 GUARDRAILS_ENABLED = os.getenv("GUARDRAILS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_DOMAIN_MODEL = os.getenv("OPENAI_DOMAIN_MODEL", "gpt-4o-mini").strip()
+
 # Fast in-memory caches to avoid duplicate SQL queries within the same session
 _crm_domain_cache: dict[str, bool] = {}  # domain -> exists_in_crm (bool)
 _crm_domain_cache_lock = threading.Lock()
 
-_title_cache: dict[str, dict] = {}  # normalized_title -> {is_required, tier, role_type}
+_title_cache: dict[str, dict] = {}  # normalized_title -> {is_required, segment, status, reason}
 _title_cache_lock = threading.Lock()
 
 _schema_cache: dict[str, Any] = {}
 _schema_cache_lock = threading.Lock()
+
+BLOCKER_KEYWORDS = ("compliance", "legal", "regulatory", "procurement", "privacy", "gdpr", "grc", "trade", "ethics", "audit")
+
+LLM_SYSTEM_PROMPT = """Classify B2B job titles into sales segments.
+Req (r=1): A1_Signer (C-suite/board), A2_Budget_Holder (VP/SVP/EVP), A3_Approver (Director), B1_Champion / B1_Champion_Technical (Manager/Lead/Architect), B2_Champion_Commercial (Commercial/Sales/RevOps Lead), B3_Technical_Evaluator (Sr Engineer/Dev), B4_Process_Owner (PMO/Prog Mgr), C1_User (Analyst/IC/Specialist), D1_Door_Opener (CoS/EA), D2_Regional_Leader (Regional/Country Dir).
+NotReq (r=0): X1_Procurement, X2_Security_Privacy, X3_Compliance_Quality, C2_Entry (Intern/Junior/Assoc), A0_Board, X_Blocker.
+
+Confidence & Routing:
+- c=H (High) -> a=Auto-Accept
+- c=M (Medium) -> a=Review-Queue
+- c=L (Low) -> a=Unclassified-Exclude
+- Blocker/compliance word without exact rule -> a=Hard-Stop-Manual-Review, r=0, c=L
+
+Output plain CSV lines (no markdown):
+index,segment,is_required(1|0),confidence(H|M|L),routing_action"""
 
 
 # ============================================================
@@ -377,6 +398,168 @@ def match_priority_substrings(job_title: str) -> tuple[bool, str, str] | None:
 
 
 # ============================================================
+# ============================================================
+# ON-DEMAND LLM NOVEL TITLE CLASSIFIER (CAVEMAN + PONYTAIL)
+# ============================================================
+
+def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) -> tuple[dict[str, dict], dict]:
+    """
+    Call gpt-4o-mini for unique unrecognized titles, auto-insert into MySQL job_title_guardrails table.
+    Returns: (results_dict: norm_title -> title_info, token_stats: dict)
+    """
+    if not novel_titles or not OPENAI_API_KEY:
+        return {}, {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "latency_ms": 0.0,
+            "high_conf": 0,
+            "med_conf": 0,
+            "low_conf": 0,
+        }
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    user_prompt = "Classify these titles:\n" + "\n".join(f"{i+1}. {t}" for i, t in enumerate(novel_titles))
+
+    t0 = time.perf_counter()
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_DOMAIN_MODEL,
+            messages=[
+                {"role": "system", "content": LLM_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=1500,
+            temperature=0.0
+        )
+        latency_ms = (time.perf_counter() - t0) * 1000
+        raw_text = response.choices[0].message.content or ""
+        raw_text = raw_text.replace("```csv", "").replace("```", "").strip()
+        usage = response.usage
+        prompt_tokens = usage.prompt_tokens
+        comp_tokens = usage.completion_tokens
+        total_tokens = usage.total_tokens
+    except Exception as e:
+        print(f"[LLM Error] Failed to classify novel titles with {OPENAI_DOMAIN_MODEL}: {e}", flush=True)
+        return {}, {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "latency_ms": 0.0,
+            "high_conf": 0,
+            "med_conf": 0,
+            "low_conf": 0,
+        }
+
+    # Parse CSV response
+    parsed_items = {}
+    import io
+    csv_reader = csv.reader(io.StringIO(raw_text))
+    for row in csv_reader:
+        if not row or len(row) < 3:
+            continue
+        try:
+            idx_str = row[0].strip().rstrip(".")
+            if not idx_str.isdigit():
+                continue
+            idx = int(idx_str)
+            seg = row[1].strip()
+            r_val = int(row[2].strip()) if row[2].strip().isdigit() else 0
+            conf_val = row[3].strip().upper() if len(row) > 3 else "M"
+            action_val = row[4].strip() if len(row) > 4 else ("Auto-Accept" if conf_val == "H" else "Review-Queue")
+            parsed_items[idx] = {
+                "segment": seg,
+                "is_required": bool(r_val),
+                "confidence": conf_val,
+                "action": action_val,
+            }
+        except Exception:
+            continue
+
+    classified_dict = {}
+    db_rows_to_insert = []
+    high_c = 0
+    med_c = 0
+    low_c = 0
+
+    for idx, raw_title in enumerate(novel_titles, 1):
+        norm_title = normalize_text(raw_title)
+        item = parsed_items.get(idx, {})
+
+        seg = item.get("segment", "Unknown")
+        is_req = bool(item.get("is_required", False))
+        conf_code = item.get("confidence", "M")
+        conf_str = "High" if conf_code == "H" else ("Medium" if conf_code == "M" else "Low")
+        route = item.get("action", "Review-Queue")
+        reason = f"LLM Classified: {seg} ({conf_str} Conf)"
+
+        # Hard stop condition for blocker functions
+        norm_key = raw_title.strip().lower()
+        has_blocker_word = any(w in norm_key for w in BLOCKER_KEYWORDS)
+        if has_blocker_word and not seg.startswith("X"):
+            route = "Hard-Stop-Manual-Review"
+            conf_str = "Low"
+            is_req = False
+            reason = "Hard Stop: Blocker/compliance function without explicit rule."
+
+        if conf_str == "High":
+            high_c += 1
+        elif conf_str == "Medium":
+            med_c += 1
+        else:
+            low_c += 1
+
+        status = "qualified" if is_req else "disqualified_title"
+        res_info = {
+            "required": is_req,
+            "status": status,
+            "segment": seg,
+            "confidence": conf_str,
+            "routing_action": route,
+            "reason": reason,
+        }
+
+        classified_dict[norm_title] = res_info
+        with _title_cache_lock:
+            _title_cache[norm_title] = res_info
+
+        # Queue for persistent DB insert
+        db_rows_to_insert.append((
+            raw_title[:255],
+            norm_title[:255],
+            seg[:64],
+            1 if is_req else 0,
+        ))
+
+    # Persist newly classified titles into MySQL database table
+    if db_rows_to_insert and connection:
+        try:
+            with connection.cursor() as cur:
+                sql = """
+                    INSERT INTO `job_title_guardrails` (`job_title`, `normalized_title`, `segment`, `is_required`)
+                    VALUES (%s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        `segment` = VALUES(`segment`),
+                        `is_required` = VALUES(`is_required`);
+                """
+                cur.executemany(sql, db_rows_to_insert)
+        except Exception as e:
+            print(f"[DB Error] Failed to persist LLM titles to DB: {e}", flush=True)
+
+    token_stats = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": comp_tokens,
+        "total_tokens": total_tokens,
+        "latency_ms": round(latency_ms, 1),
+        "high_conf": high_c,
+        "med_conf": med_c,
+        "low_conf": low_c,
+    }
+
+    return classified_dict, token_stats
+
+
+# ============================================================
 # 2-LAYER JOB TITLE EVALUATOR (SUBSTRINGS + DATABASE LOOKUP)
 # ============================================================
 
@@ -384,10 +567,10 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
     """
     2-Layer Job Title Evaluation (Zero AI):
     Layer 1: Top-tier executive substring check (Chief, CEO, President, Owner, Founder, Partner, Managing Director, VP, Director, Head of, GM).
-    Layer 2: Database table lookup against 'job_title_guardrails' (31,385 titles across Segments).
+    Layer 2: Database table lookup against 'job_title_guardrails' (64,612 titles across Segments).
     """
     if not job_title:
-        return {"required": False, "segment": "Unspecified", "reason": "No title specified"}
+        return {"required": False, "status": "disqualified_title", "segment": "Unspecified", "reason": "No title specified"}
 
     norm_title = normalize_text(job_title)
 
@@ -401,6 +584,7 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
         is_req, prio, sub = layer1_match
         res = {
             "required": True,
+            "status": "qualified",
             "segment": f"Prio_{prio.replace(' ', '_')}_{sub.title()}",
             "reason": f"Layer 1 Substring Match: '{sub}' ({prio} Priority)",
         }
@@ -433,8 +617,9 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
                     seg_name = row[1] or ""
                     res = {
                         "required": is_req,
+                        "status": "qualified" if is_req else "disqualified_title",
                         "segment": seg_name,
-                        "reason": f"Layer 2 DB Segment: {seg_name} ({'Required Prio 1/2' if is_req else 'Disqualified Prio 3/4'})",
+                        "reason": f"Layer 2 DB Segment: {seg_name} ({'Required' if is_req else 'Excluded'})",
                     }
                     with _title_cache_lock:
                         _title_cache[norm_title] = res
@@ -442,11 +627,12 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
         except Exception:
             pass
 
-        # Strict Table Whitelist: Not matched in Layer 1 or Layer 2
+        # Title not found in Layer 1 or DB: Not Recognized
         fallback = {
             "required": False,
-            "segment": "Not_In_Approved_List",
-            "reason": f"Title '{job_title}' is not in Layer 1 priority keywords or approved database segments.",
+            "status": "not_recognized_title",
+            "segment": "Not_Recognized",
+            "reason": f"Title '{job_title}' is not recognized in our database.",
         }
 
         with _title_cache_lock:
@@ -485,7 +671,7 @@ class ApolloMatchRequest(BaseModel):
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "engine": "deterministic_v2"}
+    return {"status": "ok", "engine": "deterministic_v2_with_llm_fallback"}
 
 
 @app.post("/match-apollo")
@@ -503,69 +689,75 @@ def match_apollo(request: ApolloMatchRequest):
     required_count = 0
     ignored_count = 0
 
-    print("\n" + "=" * 80, flush=True)
-    print(f">>> [BATCH #{batch_num}] INGESTED {total_received} APOLLO CONTACT(S)", flush=True)
-    print(f"    Engine: 100% Deterministic (Zero AI) | Title Filter: {'ON' if request.title_guardrail_enabled else 'OFF'}", flush=True)
-    print("=" * 80, flush=True)
-
     seen_required_companies: dict[str, list[str]] = {}  # comp_key -> list of selected contact names
     max_contacts_per_comp = int(os.getenv("MAX_CONTACTS_PER_COMPANY", "1"))
+
+    # Track metrics for dashboard
+    unique_domains_seen = set()
+    existing_domain_contacts = 0
+    net_new_domain_contacts = 0
+    db_title_hits = 0
+    novel_titles_sent = 0
+    token_stats = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "latency_ms": 0.0,
+        "high_conf": 0,
+        "med_conf": 0,
+        "low_conf": 0,
+    }
 
     with get_connection() as conn:
         # Pre-initialize table schema
         get_target_table_schema(conn)
 
-        for idx, contact in enumerate(contacts, 1):
-            comp_name = contact.company.strip()
-            title_name = contact.job_title.strip()
+        # --------------------------------------------------------
+        # STEP 1: PRE-GENERATE DOMAINS & BATCH QUERY UNIQUE DOMAINS
+        # --------------------------------------------------------
+        contact_candidates: dict[str, list[str]] = {}
+        contact_primary_domain: dict[str, str] = {}
+        all_candidate_domains = []
 
-            # 1. Deterministic Domain Extraction & Generation
-            candidate_domains = []
+        for contact in contacts:
+            comp_name = contact.company.strip()
+            cand_doms = []
             if contact.company_domain:
                 norm_d = normalize_domain(contact.company_domain)
                 if norm_d:
-                    candidate_domains.append(norm_d)
+                    cand_doms.append(norm_d)
 
             for d in generate_candidate_domains(comp_name):
-                if d not in candidate_domains:
-                    candidate_domains.append(d)
+                if d not in cand_doms:
+                    cand_doms.append(d)
 
-            primary_domain = candidate_domains[0] if candidate_domains else (normalize_text(comp_name) + ".com")
-            comp_key = normalize_text(primary_domain) or normalize_text(comp_name)
+            prim_d = cand_doms[0] if cand_doms else (normalize_text(comp_name) + ".com")
+            contact_candidates[contact.key] = cand_doms
+            contact_primary_domain[contact.key] = prim_d
+            unique_domains_seen.add(prim_d)
 
-            # ----------------------------------------------------
-            # STEP 1: JOB TITLE CHECK (If Title Filter Enabled)
-            # ----------------------------------------------------
-            title_ok = True
-            title_reason = "Net-new company domain"
-            title_segment = "Approved"
+            for d in cand_doms:
+                if d not in all_candidate_domains:
+                    all_candidate_domains.append(d)
 
-            if request.title_guardrail_enabled and title_name:
-                title_info = lookup_job_title_in_db(title_name, connection=conn)
-                title_ok = title_info.get("required", False)
-                title_reason = title_info.get("reason", "")
-                title_segment = title_info.get("segment", "")
+        # Check all unique candidate domains in CRM in 1 single fast indexed query
+        check_domains_in_crm_batch(all_candidate_domains, connection=conn)
 
-                if not title_ok:
-                    ignored_count += 1
-                    results[contact.key] = {
-                        "exists": False,
-                        "required": False,
-                        "ignored": True,
-                        "guardrail_status": "disqualified_title",
-                        "segment": title_segment,
-                        "guardrail_reason": title_reason,
-                        "matched_domain": primary_domain,
-                    }
-                    print(f"[{idx:02d}/{total_received:02d}] {contact.name} @ {comp_name} ({title_name}) -> [DISQUALIFIED TITLE: {title_segment}]", flush=True)
-                    continue
+        # --------------------------------------------------------
+        # STEP 2: GROUP CONTACTS BY EXISTING DOMAIN VS NET-NEW
+        # --------------------------------------------------------
+        net_new_contacts: list[ApolloContact] = []
 
-            # ----------------------------------------------------
-            # STEP 2: CRM DOMAIN LOOKUP (Against 7.28M Database)
-            # ----------------------------------------------------
-            domain_in_crm, matched_crm_domain = check_domains_in_crm_batch(candidate_domains, connection=conn)
+        for idx, contact in enumerate(contacts, 1):
+            cand_doms = contact_candidates[contact.key]
+            prim_d = contact_primary_domain[contact.key]
+            comp_name = contact.company.strip()
+
+            domain_in_crm, matched_crm_domain = check_domains_in_crm_batch(cand_doms, connection=conn)
 
             if domain_in_crm:
+                existing_domain_contacts += 1
+                existing_count += 1
                 ignored_count += 1
                 results[contact.key] = {
                     "exists": True,
@@ -576,42 +768,127 @@ def match_apollo(request: ApolloMatchRequest):
                     "matched_domain": matched_crm_domain,
                     "matched_db_domain": matched_crm_domain,
                 }
-                print(f"[{idx:02d}/{total_received:02d}] {contact.name} @ {comp_name} -> [EXISTING DOMAIN: {matched_crm_domain}]", flush=True)
+            else:
+                net_new_domain_contacts += 1
+                net_new_contacts.append(contact)
+
+        # --------------------------------------------------------
+        # STEP 3: TITLE LOOKUP & ON-DEMAND LLM CLASSIFICATION
+        # --------------------------------------------------------
+        contact_title_eval: dict[str, dict] = {}
+        novel_titles_to_eval: dict[str, str] = {}  # norm_title -> raw_title
+
+        for contact in net_new_contacts:
+            title_name = contact.job_title.strip()
+            if not title_name:
+                contact_title_eval[contact.key] = {
+                    "required": False,
+                    "status": "disqualified_title",
+                    "segment": "Unspecified",
+                    "reason": "No title specified"
+                }
                 continue
 
-            # ----------------------------------------------------
-            # STEP 3: 1 CONTACT PER COMPANY DEDUPLICATION
-            # ----------------------------------------------------
-            already_selected = seen_required_companies.get(comp_key, [])
-            if len(already_selected) >= max_contacts_per_comp:
+            t_info = lookup_job_title_in_db(title_name, connection=conn)
+            contact_title_eval[contact.key] = t_info
+
+            if t_info.get("status") == "not_recognized_title":
+                norm_t = normalize_text(title_name)
+                novel_titles_to_eval[norm_t] = title_name
+            else:
+                db_title_hits += 1
+
+        # Trigger on-demand LLM batch if any novel titles exist
+        if request.title_guardrail_enabled and novel_titles_to_eval and OPENAI_API_KEY:
+            novel_titles_sent = len(novel_titles_to_eval)
+            llm_results, token_stats = classify_novel_titles_compact_llm(list(novel_titles_to_eval.values()), connection=conn)
+            # Re-assign contacts with new LLM evaluations
+            for contact in net_new_contacts:
+                norm_t = normalize_text(contact.job_title)
+                if norm_t in llm_results:
+                    contact_title_eval[contact.key] = llm_results[norm_t]
+
+        # --------------------------------------------------------
+        # STEP 4: DECISION LOGIC & 1 CONTACT PER COMPANY LIMIT
+        # --------------------------------------------------------
+        for idx, contact in enumerate(net_new_contacts, 1):
+            comp_name = contact.company.strip()
+            title_name = contact.job_title.strip()
+            prim_d = contact_primary_domain[contact.key]
+            comp_key = normalize_text(prim_d) or normalize_text(comp_name)
+
+            t_info = contact_title_eval.get(contact.key, {"required": True, "segment": "Approved", "reason": "Default accepted"})
+            title_ok = t_info.get("required", False) if request.title_guardrail_enabled else True
+            title_status = t_info.get("status", "qualified")
+            title_seg = t_info.get("segment", "")
+            title_reason = t_info.get("reason", "")
+
+            if request.title_guardrail_enabled and not title_ok:
                 ignored_count += 1
                 results[contact.key] = {
                     "exists": False,
                     "required": False,
                     "ignored": True,
-                    "guardrail_status": "company_limit_reached",
-                    "guardrail_reason": f"Company '{comp_name}' already has {len(already_selected)} contact(s) selected ({', '.join(already_selected)}). Max {max_contacts_per_comp} per company allowed.",
-                    "matched_domain": primary_domain,
-                    "segment": title_segment,
-                }
-                print(f"[{idx:02d}/{total_received:02d}] {contact.name} @ {comp_name} -> [IGNORED: 1 Contact/Company Limit (already selected {already_selected[0]})]", flush=True)
-            else:
-                seen_required_companies.setdefault(comp_key, []).append(contact.name or f"Contact #{idx}")
-                required_count += 1
-                results[contact.key] = {
-                    "exists": False,
-                    "required": True,
-                    "ignored": False,
-                    "guardrail_status": "qualified",
-                    "segment": title_segment,
+                    "guardrail_status": title_status,
+                    "segment": title_seg,
                     "guardrail_reason": title_reason,
-                    "matched_domain": primary_domain,
+                    "matched_domain": prim_d,
                 }
-                print(f"[{idx:02d}/{total_received:02d}] {contact.name} @ {comp_name} ({title_name}) -> [REQUIRED LEAD: {primary_domain} ({title_segment})]", flush=True)
+            else:
+                # Check 1 Contact per Company Limit
+                already_selected = seen_required_companies.get(comp_key, [])
+                if len(already_selected) >= max_contacts_per_comp:
+                    ignored_count += 1
+                    results[contact.key] = {
+                        "exists": False,
+                        "required": False,
+                        "ignored": True,
+                        "guardrail_status": "company_limit_reached",
+                        "guardrail_reason": f"Company '{comp_name}' already has {len(already_selected)} contact(s) selected ({', '.join(already_selected)}). Max {max_contacts_per_comp} per company allowed.",
+                        "matched_domain": prim_d,
+                        "segment": title_seg,
+                    }
+                else:
+                    seen_required_companies.setdefault(comp_key, []).append(contact.name or f"Contact #{idx}")
+                    required_count += 1
+                    results[contact.key] = {
+                        "exists": False,
+                        "required": True,
+                        "ignored": False,
+                        "guardrail_status": "qualified",
+                        "segment": title_seg,
+                        "guardrail_reason": title_reason,
+                        "matched_domain": prim_d,
+                    }
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
-    print("-" * 80, flush=True)
-    print(f"[SUMMARY] Batch #{batch_num} completed in {elapsed_ms:.1f}ms! (Processed: {total_received}, Required: {required_count}, Existing/Ignored: {ignored_count})", flush=True)
+
+    # Deterministic Time Prediction Model (in ms)
+    # Domain check: ~0.5ms per unique domain + DB Title check: ~0.1ms per title + LLM call: ~400ms base + ~30ms/title (if novel titles exist)
+    pred_dom_ms = len(unique_domains_seen) * 0.5
+    pred_title_ms = len(net_new_contacts) * 0.1
+    pred_llm_ms = (400.0 + novel_titles_sent * 30.0) if novel_titles_sent > 0 else 0.0
+    predicted_latency_ms = round(pred_dom_ms + pred_title_ms + pred_llm_ms + 10.0, 1)
+
+    page_cost_usd = (token_stats["prompt_tokens"] * 0.00000015) + (token_stats["completion_tokens"] * 0.00000060)
+
+    # --------------------------------------------------------
+    # STEP 5: PER-PAGE DASHBOARD LOG
+    # --------------------------------------------------------
+    print("\n" + "=" * 80, flush=True)
+    print(f">>> [APOLLO PAGE #{batch_num} DASHBOARD] Ingested {total_received} Contacts | Title Filter: {'ON' if request.title_guardrail_enabled else 'OFF'}", flush=True)
+    print("=" * 80, flush=True)
+    print(f"Contacts Summary : Total: {total_received} | 🟢 Required: {required_count} | ⚪ Existing/Ignored: {ignored_count}", flush=True)
+    print(f"Domain Breakdown : Unique Domains: {len(unique_domains_seen)} | In CRM: {existing_domain_contacts} | Net-New: {net_new_domain_contacts}", flush=True)
+    print(f"Job Title Engine : DB Cache Hits: {db_title_hits} | Sent to {OPENAI_DOMAIN_MODEL}: {novel_titles_sent}", flush=True)
+    if novel_titles_sent > 0:
+        print(f"Confidence Stats : High (Auto-Accept): {token_stats['high_conf']} | Medium (Review Queue): {token_stats['med_conf']} | Low/Stop: {token_stats['low_conf']}", flush=True)
+        print(f"Token Matrix     : Prompt: {token_stats['prompt_tokens']} | Completion: {token_stats['completion_tokens']} | Total Tokens: {token_stats['total_tokens']}", flush=True)
+        print(f"Estimated Cost   : ${page_cost_usd:.6f} USD ({token_stats['total_tokens']/max(1, total_received):.1f} tokens/contact)", flush=True)
+    else:
+        print("Token Matrix     : 0 tokens consumed ($0.00 USD - 100% Resolved from Database Cache)", flush=True)
+
+    print(f"Execution Latency: Actual: {elapsed_ms:.1f}ms | Predicted: ~{predicted_latency_ms:.1f}ms ({elapsed_ms/max(1, total_received):.1f} ms/contact)", flush=True)
     print("=" * 80 + "\n", flush=True)
 
     return {
@@ -625,6 +902,10 @@ def match_apollo(request: ApolloMatchRequest):
             "required": required_count,
             "ignored": ignored_count,
             "execution_time_ms": round(elapsed_ms, 2),
+            "predicted_time_ms": predicted_latency_ms,
+            "novel_titles_sent_to_llm": novel_titles_sent,
+            "tokens_consumed": token_stats["total_tokens"],
+            "estimated_cost_usd": page_cost_usd,
         },
         "activity": [],
     }

@@ -53,9 +53,31 @@
   style.id = "contact-checker-style";
 
   style.textContent = `
-    .contact-checker-existing {
-      background-color: rgba(34, 197, 94, 0.16) !important;
+    /* EXCLUSIVE GREEN COLORING: Only REQUIRED leads get green highlight and green badge */
+    .contact-checker-required-row {
+      background-color: rgba(34, 197, 94, 0.14) !important;
       box-shadow: inset 4px 0 0 #16a34a !important;
+    }
+
+    .contact-checker-required-badge {
+      display: inline-flex !important;
+      align-items: center !important;
+      margin-left: 8px !important;
+      padding: 2px 7px !important;
+      border-radius: 5px !important;
+      background: #16a34a !important;
+      color: white !important;
+      font-size: 10px !important;
+      font-weight: 700 !important;
+      line-height: 16px !important;
+      white-space: nowrap !important;
+      box-shadow: 0 1px 3px rgba(22, 163, 74, 0.3) !important;
+    }
+
+    /* NEUTRAL STYLING: Existing, Ignored, Excluded, Not Recognized tags (NO green) */
+    .contact-checker-existing {
+      background-color: transparent !important;
+      box-shadow: none !important;
     }
 
     .contact-checker-existing-badge {
@@ -64,21 +86,7 @@
       margin-left: 8px !important;
       padding: 2px 6px !important;
       border-radius: 5px !important;
-      background: #16a34a !important;
-      color: white !important;
-      font-size: 10px !important;
-      font-weight: 700 !important;
-      line-height: 16px !important;
-      white-space: nowrap !important;
-    }
-
-    .contact-checker-required-badge {
-      display: inline-flex !important;
-      align-items: center !important;
-      margin-left: 8px !important;
-      padding: 2px 6px !important;
-      border-radius: 5px !important;
-      background: #f97316 !important;
+      background: #475569 !important;
       color: white !important;
       font-size: 10px !important;
       font-weight: 700 !important;
@@ -967,11 +975,8 @@
     scheduleRequiredContactsSave();
     renderExportControls();
 
-    row.classList.add(
-      "contact-checker-existing"
-    );
-
-    state.highlightedRows.add(row);
+    row.classList.remove("contact-checker-required-row");
+    row.classList.remove("contact-checker-existing");
 
     const badge =
       document.createElement("span");
@@ -1093,6 +1098,8 @@
 
     if (row) {
       row.classList.remove("contact-checker-existing");
+      row.classList.add("contact-checker-required-row");
+      state.highlightedRows.add(row);
     }
 
     clearContactBadges(contact);
@@ -1127,6 +1134,7 @@
 
     if (row) {
       row.classList.remove("contact-checker-existing");
+      row.classList.remove("contact-checker-required-row");
     }
 
     clearContactBadges(contact);
@@ -1157,13 +1165,21 @@
       badge.title =
         result.guardrail_reason ||
         "Excluded: Pure Indian Name Origin.";
+    } else if (result?.guardrail_status === "not_recognized_title" || result?.guardrail_status === "not_recognized") {
+      badge.textContent =
+        "⊘ Not Recognized";
+      badge.style.background = "#64748b";
+
+      badge.title =
+        result.guardrail_reason ||
+        "Title is not recognized in our database.";
     } else if (result?.guardrail_status === "disqualified_title") {
       badge.textContent =
         "⊘ Excluded: Title";
 
       badge.title =
         result.guardrail_reason ||
-        "Excluded by 7-tier job title guardrail.";
+        "Excluded: Title belongs to non-required segment (Prio 3/4).";
     } else if (result?.guardrail_status === "company_limit_reached") {
       badge.textContent =
         "⊘ 1/Company Max";
@@ -2046,13 +2062,17 @@
         row.classList.remove(
           "contact-checker-existing"
         );
+        row.classList.remove(
+          "contact-checker-required-row"
+        );
       }
     );
 
     document
       .querySelectorAll(
         `.contact-checker-existing-badge,
-         .contact-checker-required-badge`
+         .contact-checker-required-badge,
+         .contact-checker-ignored-badge`
       )
       .forEach(
         badge => badge.remove()

@@ -6,22 +6,33 @@ import re
 import pymysql
 from dotenv import load_dotenv
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 load_dotenv(r"c:\Users\test\Desktop\projects\apollo_extension\.env")
 
 CSV_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "job_titles (1) - job_titles (1).csv"
+    "job_titles (2) - job_titles (2).csv"
 )
 
-# Priority 1 & 2 Segments are REQUIRED (1)
-# Priority 3 (C1_User) & Priority 4 (X_Blocker) are NOT REQUIRED (0)
+# Required Segments (Can close, approve, or support):
 REQUIRED_SEGMENTS = {
     "A1_Signer",
     "A2_Budget_Holder",
     "A3_Approver",
     "B1_Champion",
-    "B2_Process_Owner",
+    "B1_Champion_Technical",
+    "B2_Champion_Commercial",
+    "B3_Technical_Evaluator",
+    "B4_Process_Owner",
+    "C1_User",
     "D1_Door_Opener",
+    "D2_Regional_Leader",
 }
 
 def normalize_text(value: str) -> str:
