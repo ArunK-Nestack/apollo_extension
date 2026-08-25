@@ -1036,6 +1036,8 @@
           stored.forEach(([key, value]) => {
             state.requiredContactsAll.set(key, value);
           });
+          // Auto-sync loaded contacts to MySQL table immediately
+          saveRequiredContactsNow();
         }
 
         renderExportControls();
@@ -1048,11 +1050,39 @@
       return;
     }
 
+    const contactsList = Array.from(
+      state.requiredContactsAll.entries()
+    );
+
     chrome.storage.local.set({
-      [REQUIRED_CONTACTS_STORAGE_KEY]: Array.from(
-        state.requiredContactsAll.entries()
-      )
+      [REQUIRED_CONTACTS_STORAGE_KEY]: contactsList
     });
+
+    if (contactsList.length > 0 && chrome?.runtime?.sendMessage) {
+      const payloadContacts = contactsList.map(([key, c]) => ({
+        apollo_id: c.apollo_id || "",
+        name: c.name || "",
+        first_name: c.first_name || "",
+        last_name: c.last_name || "",
+        job_title: c.job_title || "",
+        company: c.company || "",
+        domain: c.domain || "",
+        location: c.location || "",
+        linkedin_url: c.linkedin_url || "",
+        apollo_profile_url: c.apollo_profile_url || "",
+        segment: c.segment || "Required_Lead"
+      }));
+
+      chrome.runtime.sendMessage({
+        type: "SYNC_SAVED_LEADS",
+        batch: `batch_${state.batchNumber || 1}`,
+        contacts: payloadContacts
+      }, (res) => {
+        if (res?.success) {
+          contactCheckerLog(`Synced ${payloadContacts.length} lead(s) to MySQL apollo_saved_leads under batch_${state.batchNumber || 1}`);
+        }
+      });
+    }
   }
 
   function scheduleRequiredContactsSave() {

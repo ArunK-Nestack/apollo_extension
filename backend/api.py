@@ -662,9 +662,71 @@ class ApolloMatchRequest(BaseModel):
     indian_name_guardrail_enabled: bool = False
 
 
+class SyncSavedLeadItem(BaseModel):
+    apollo_id: str | None = ""
+    first_name: str | None = ""
+    last_name: str | None = ""
+    name: str | None = ""
+    job_title: str | None = ""
+    company: str | None = ""
+    domain: str | None = ""
+    location: str | None = ""
+    linkedin_url: str | None = ""
+    apollo_profile_url: str | None = ""
+    segment: str | None = ""
+
+
+class SyncSavedLeadsRequest(BaseModel):
+    batch: str = "batch_1"
+    contacts: list[SyncSavedLeadItem]
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "engine": "deterministic_v2_with_llm_fallback"}
+
+
+@app.post("/sync-saved-leads")
+def sync_saved_leads(request: SyncSavedLeadsRequest):
+    """Direct sync endpoint: immediately persists all collected required leads into MySQL apollo_saved_leads."""
+    if not request.contacts:
+        return {"status": "ok", "synced": 0}
+
+    batch_tag = str(request.batch or "batch_1").strip()[:64]
+    rows_to_insert = []
+    for c in request.contacts:
+        rows_to_insert.append((
+            batch_tag,
+            (c.apollo_id or "")[:128],
+            (c.name or "")[:255],
+            (c.first_name or "")[:128],
+            (c.last_name or "")[:128],
+            (c.job_title or "")[:255],
+            (c.company or "")[:255],
+            (c.domain or "")[:255],
+            (c.location or "")[:255],
+            (c.linkedin_url or "")[:512],
+            (c.apollo_profile_url or "")[:512],
+            (c.segment or "Required_Lead")[:128]
+        ))
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            sql = """
+                INSERT INTO `apollo_saved_leads` (
+                    `batch`, `apollo_id`, `name`, `first_name`, `last_name`,
+                    `job_title`, `company`, `company_domain`, `location`,
+                    `linkedin_url`, `apollo_profile_url`, `segment`
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    `job_title` = VALUES(`job_title`),
+                    `company_domain` = VALUES(`company_domain`),
+                    `segment` = VALUES(`segment`);
+            """
+            cur.executemany(sql, rows_to_insert)
+
+    print(f"\n[ContactChecker] Synced {len(rows_to_insert)} lead(s) into MySQL table `apollo_saved_leads` under '{batch_tag}'.", flush=True)
+    return {"status": "ok", "synced": len(rows_to_insert)}
 
 
 @app.get("/saved-leads-batches")

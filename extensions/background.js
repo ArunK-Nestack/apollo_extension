@@ -66,6 +66,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       title_guardrail_enabled: message.title_guardrail_enabled === true,
       indian_name_guardrail_enabled: message.indian_name_guardrail_enabled === true
     };
+  } else if (message.type === "SYNC_SAVED_LEADS") {
+    endpoint = "/sync-saved-leads";
+    body = {
+      batch: message.batch || "batch_1",
+      contacts: message.contacts || []
+    };
   } else {
     return;
   }
