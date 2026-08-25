@@ -62,6 +62,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     endpoint = "/match-apollo";
     body = {
       contacts: message.contacts,
+      batch: message.batch || "batch_1",
       title_guardrail_enabled: message.title_guardrail_enabled === true,
       indian_name_guardrail_enabled: message.indian_name_guardrail_enabled === true
     };

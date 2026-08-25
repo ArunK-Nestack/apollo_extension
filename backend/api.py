@@ -657,6 +657,7 @@ class ApolloContact(BaseModel):
 
 class ApolloMatchRequest(BaseModel):
     contacts: list[ApolloContact]
+    batch: str = "batch_1"
     title_guardrail_enabled: bool = False
     indian_name_guardrail_enabled: bool = False
 
@@ -664,6 +665,31 @@ class ApolloMatchRequest(BaseModel):
 @app.get("/health")
 def health_check():
     return {"status": "ok", "engine": "deterministic_v2_with_llm_fallback"}
+
+
+@app.get("/saved-leads-batches")
+def get_saved_leads_batches():
+    """Retrieve summary of all saved lead batches from the database."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT `batch`, COUNT(*) as total_leads, MIN(`created_at`) as started_at, MAX(`created_at`) as last_added
+                FROM `apollo_saved_leads`
+                GROUP BY `batch`
+                ORDER BY `id` ASC;
+            """)
+            rows = cur.fetchall()
+            return {
+                "batches": [
+                    {
+                        "batch": r[0],
+                        "total_leads": r[1],
+                        "started_at": str(r[2]),
+                        "last_added": str(r[3]),
+                    }
+                    for r in rows
+                ]
+            }
 
 
 @app.post("/match-apollo")
@@ -854,6 +880,48 @@ def match_apollo(request: ApolloMatchRequest):
                         "guardrail_reason": title_reason,
                         "matched_domain": prim_d,
                     }
+
+        # --------------------------------------------------------
+        # STEP 5: AUTO-PERSIST REQUIRED LEADS TO MYSQL BATCH TABLE
+        # --------------------------------------------------------
+        required_leads_to_save = []
+        batch_tag = str(request.batch or "batch_1").strip()
+
+        for contact in net_new_contacts:
+            r = results.get(contact.key)
+            if r and r.get("required") is True:
+                required_leads_to_save.append((
+                    batch_tag[:64],
+                    (contact.key or "")[:128],
+                    (contact.name or "")[:255],
+                    (contact.first_name or "")[:128],
+                    (contact.last_name or "")[:128],
+                    (contact.job_title or "")[:255],
+                    (contact.company or "")[:255],
+                    (contact_primary_domain.get(contact.key) or contact.company_domain or "")[:255],
+                    (contact.location or "")[:255],
+                    (contact.linkedin_url or "")[:512],
+                    (contact.apollo_profile_url or "")[:512],
+                    (r.get("segment") or "")[:128]
+                ))
+
+        if required_leads_to_save:
+            try:
+                with conn.cursor() as cur:
+                    sql = """
+                        INSERT INTO `apollo_saved_leads` (
+                            `batch`, `apollo_id`, `name`, `first_name`, `last_name`,
+                            `job_title`, `company`, `company_domain`, `location`,
+                            `linkedin_url`, `apollo_profile_url`, `segment`
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            `job_title` = VALUES(`job_title`),
+                            `company_domain` = VALUES(`company_domain`),
+                            `segment` = VALUES(`segment`);
+                    """
+                    cur.executemany(sql, required_leads_to_save)
+            except Exception as e:
+                print(f"[ContactChecker] Notice: Auto-save leads batch error: {e}", flush=True)
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
 

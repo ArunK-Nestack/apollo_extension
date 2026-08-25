@@ -6,6 +6,8 @@
     "contactCheckerTitleGuardrailEnabled";
   const INDIAN_GUARDRAIL_STORAGE_KEY =
     "contactCheckerIndianGuardrailEnabled";
+  const BATCH_NUMBER_STORAGE_KEY =
+    "contactCheckerBatchNumber";
 
   // ============================================================
   // TOGGLE OFF
@@ -22,6 +24,7 @@
 
   const state = {
     active: true,
+    batchNumber: 1,
     titleGuardrailEnabled: true,
     indianGuardrailEnabled: false,
     observer: null,
@@ -1012,8 +1015,11 @@
     }
 
     chrome.storage.local.get(
-      [REQUIRED_CONTACTS_STORAGE_KEY, TITLE_GUARDRAIL_STORAGE_KEY, INDIAN_GUARDRAIL_STORAGE_KEY],
+      [REQUIRED_CONTACTS_STORAGE_KEY, TITLE_GUARDRAIL_STORAGE_KEY, INDIAN_GUARDRAIL_STORAGE_KEY, BATCH_NUMBER_STORAGE_KEY],
       result => {
+        if (result?.[BATCH_NUMBER_STORAGE_KEY]) {
+          state.batchNumber = Number(result[BATCH_NUMBER_STORAGE_KEY]) || 1;
+        }
         if (result?.[TITLE_GUARDRAIL_STORAGE_KEY] !== undefined) {
           state.titleGuardrailEnabled =
             result[TITLE_GUARDRAIL_STORAGE_KEY] === true;
@@ -1329,10 +1335,15 @@
 
   function clearRequiredContactsList() {
     const count = state.requiredContactsAll.size;
+    const prevBatch = state.batchNumber || 1;
+    state.batchNumber = prevBatch + 1;
 
     state.requiredContactsAll.clear();
 
     if (chrome?.storage?.local) {
+      chrome.storage.local.set({
+        [BATCH_NUMBER_STORAGE_KEY]: state.batchNumber
+      });
       chrome.storage.local.remove(
         REQUIRED_CONTACTS_STORAGE_KEY
       );
@@ -1340,12 +1351,16 @@
 
     addActivity(
       "REQUIRED_CONTACTS_CLEARED",
-      `Cleared ${count} collected required contact(s).`,
-      "info"
+      `Cleared ${count} contact(s) from local list. Batch #${prevBatch} preserved in DB. Next scans will save to Batch #${state.batchNumber}.`,
+      "info",
+      {
+        previous_batch: `batch_${prevBatch}`,
+        new_batch: `batch_${state.batchNumber}`
+      }
     );
 
     renderExportControls();
-    showStatus("Required contacts list cleared");
+    showStatus(`List cleared. Next scans will save under Batch #${state.batchNumber} in Database.`, 3000);
   }
 
   function toggleTitleGuardrail() {
@@ -1754,6 +1769,7 @@
     chrome.runtime.sendMessage(
       {
         type: "MATCH_APOLLO",
+        batch: `batch_${state.batchNumber || 1}`,
         title_guardrail_enabled:
           state.titleGuardrailEnabled === true,
         indian_name_guardrail_enabled:
