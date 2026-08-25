@@ -38,6 +38,7 @@
     pendingContacts: new Set(),
     currentContacts: new Map(),
     requiredContactsAll: new Map(),
+    syncedLeadKeys: new Set(),
     highlightedRows: new Set(),
     activityLog: [],
     activityPanelOpen: false,
@@ -1058,8 +1059,10 @@
       [REQUIRED_CONTACTS_STORAGE_KEY]: contactsList
     });
 
-    if (contactsList.length > 0 && chrome?.runtime?.sendMessage) {
-      const payloadContacts = contactsList.map(([key, c]) => ({
+    // Only send contacts that have not been synced yet
+    const unsyncedContacts = contactsList
+      .filter(([key]) => !state.syncedLeadKeys.has(key))
+      .map(([key, c]) => ({
         apollo_id: c.apollo_id || "",
         name: c.name || "",
         first_name: c.first_name || "",
@@ -1070,16 +1073,24 @@
         location: c.location || "",
         linkedin_url: c.linkedin_url || "",
         apollo_profile_url: c.apollo_profile_url || "",
-        segment: c.segment || "Required_Lead"
+        segment: c.segment || "Required_Lead",
+        _key: key
       }));
+
+    if (unsyncedContacts.length > 0 && chrome?.runtime?.sendMessage) {
+      // Mark as synced to prevent redundant repeated calls
+      unsyncedContacts.forEach(c => state.syncedLeadKeys.add(c._key));
 
       chrome.runtime.sendMessage({
         type: "SYNC_SAVED_LEADS",
         batch: `batch_${state.batchNumber || 1}`,
-        contacts: payloadContacts
+        contacts: unsyncedContacts
       }, (res) => {
         if (res?.success) {
-          contactCheckerLog(`Synced ${payloadContacts.length} lead(s) to MySQL apollo_saved_leads under batch_${state.batchNumber || 1}`);
+          contactCheckerLog(`Synced ${unsyncedContacts.length} new lead(s) to MySQL apollo_saved_leads under batch_${state.batchNumber || 1}`);
+        } else {
+          // If error, unmark so it can retry
+          unsyncedContacts.forEach(c => state.syncedLeadKeys.delete(c._key));
         }
       });
     }
@@ -1369,6 +1380,7 @@
     state.batchNumber = prevBatch + 1;
 
     state.requiredContactsAll.clear();
+    state.syncedLeadKeys.clear();
 
     if (chrome?.storage?.local) {
       chrome.storage.local.set({
