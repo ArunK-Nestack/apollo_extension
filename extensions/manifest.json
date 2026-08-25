@@ -17,6 +17,6 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Toggle Contact Database Checker"
+    "default_title": "Toggle Contact Database Checker (ON / OFF)"
   }
 }

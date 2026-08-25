@@ -644,6 +644,7 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
 
 class ApolloContact(BaseModel):
     key: str
+    apollo_id: str | None = ""
     name: str = ""
     first_name: str | None = None
     last_name: str | None = None
