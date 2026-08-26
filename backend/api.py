@@ -560,6 +560,107 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
 
 
 # ============================================================
+# ASYNCHRONOUS BACKGROUND MICRO-BATCH WORKER (NON-BLOCKING)
+# ============================================================
+
+class BackgroundTitleBatchWorker:
+    """
+    Background worker that queues unrecognized/novel job titles in memory.
+    Triggers 1 single batch LLM classification when:
+      1. Queue reaches batch_size (default: 50 titles) OR
+      2. flush_interval_sec passes (default: 15 seconds) and queue has >= 1 title.
+    Classified results are auto-persisted into MySQL table `job_title_guardrails`
+    and loaded into memory `_title_cache` without blocking live page navigation.
+    """
+    def __init__(self, batch_size: int = 50, flush_interval_sec: float = 15.0):
+        self.batch_size = batch_size
+        self.flush_interval_sec = flush_interval_sec
+        self._queue: list[str] = []
+        self._queued_normalized: set[str] = set()
+        self._lock = threading.Lock()
+        self._last_flush_time = time.time()
+        self._processed_batches = 0
+        self._processed_titles = 0
+        self._running = True
+        self._thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self._thread.start()
+
+    def enqueue(self, job_title: str) -> bool:
+        if not job_title or not OPENAI_API_KEY:
+            return False
+        raw_title = job_title.strip()
+        norm_title = normalize_text(raw_title)
+        if not norm_title:
+            return False
+
+        with self._lock:
+            with _title_cache_lock:
+                if norm_title in _title_cache and _title_cache[norm_title].get("status") != "not_recognized_title":
+                    return False
+            if norm_title in self._queued_normalized:
+                return False
+
+            self._queue.append(raw_title)
+            self._queued_normalized.add(norm_title)
+            q_len = len(self._queue)
+
+        if q_len >= self.batch_size:
+            threading.Thread(target=self.flush_batch, daemon=True).start()
+        return True
+
+    def flush_batch(self):
+        titles_to_process = []
+        with self._lock:
+            if not self._queue:
+                return
+            titles_to_process = self._queue[:self.batch_size]
+            self._queue = self._queue[self.batch_size:]
+            for t in titles_to_process:
+                self._queued_normalized.discard(normalize_text(t))
+            self._last_flush_time = time.time()
+
+        if not titles_to_process:
+            return
+
+        try:
+            with get_connection() as conn:
+                res_dict, token_stats = classify_novel_titles_compact_llm(titles_to_process, connection=conn)
+                self._processed_batches += 1
+                self._processed_titles += len(titles_to_process)
+                est_cost = (token_stats['prompt_tokens'] * 0.00000015) + (token_stats['completion_tokens'] * 0.0000006)
+                print(
+                    f"\n[BackgroundBatchWorker] Evaluated {len(titles_to_process)} novel titles in {token_stats['latency_ms']}ms "
+                    f"({token_stats['total_tokens']} tokens, ${est_cost:.6f} USD). Persisted to MySQL `job_title_guardrails`.",
+                    flush=True
+                )
+        except Exception as e:
+            print(f"[BackgroundBatchWorker Error] Failed to process batch of {len(titles_to_process)} titles: {e}", flush=True)
+
+    def _worker_loop(self):
+        while self._running:
+            time.sleep(2.0)
+            now = time.time()
+            with self._lock:
+                should_flush = len(self._queue) >= self.batch_size or (len(self._queue) > 0 and (now - self._last_flush_time >= self.flush_interval_sec))
+            if should_flush:
+                self.flush_batch()
+
+    def get_status(self) -> dict:
+        with self._lock:
+            return {
+                "queued_titles": len(self._queue),
+                "processed_batches": self._processed_batches,
+                "processed_titles": self._processed_titles,
+                "batch_size_threshold": self.batch_size,
+                "flush_interval_sec": self.flush_interval_sec,
+                "seconds_since_last_flush": round(time.time() - self._last_flush_time, 1),
+            }
+
+
+background_batch_worker = BackgroundTitleBatchWorker(batch_size=50, flush_interval_sec=15.0)
+
+
+# ============================================================
 # 2-LAYER JOB TITLE EVALUATOR (DATABASE LOOKUP + SUBSTRINGS)
 # ============================================================
 
@@ -876,20 +977,13 @@ def match_apollo(request: ApolloMatchRequest):
             if t_info.get("status") == "not_recognized_title":
                 norm_t = normalize_text(title_name)
                 novel_titles_to_eval[norm_t] = title_name
+                # Enqueue for asynchronous background batching (zero-lag on UI)
+                background_batch_worker.enqueue(title_name)
+                novel_titles_sent += 1
             else:
                 db_title_hits += 1
 
         title_filter_active = request.title_guardrail_enabled or GUARDRAILS_ENABLED
-
-        # Trigger on-demand LLM batch if any novel titles exist
-        if title_filter_active and novel_titles_to_eval and OPENAI_API_KEY:
-            novel_titles_sent = len(novel_titles_to_eval)
-            llm_results, token_stats = classify_novel_titles_compact_llm(list(novel_titles_to_eval.values()), connection=conn)
-            # Re-assign contacts with new LLM evaluations
-            for contact in net_new_contacts:
-                norm_t = normalize_text(contact.job_title)
-                if norm_t in llm_results:
-                    contact_title_eval[contact.key] = llm_results[norm_t]
 
         # --------------------------------------------------------
         # STEP 4: DECISION LOGIC & 1 CONTACT PER COMPANY LIMIT
@@ -1040,6 +1134,15 @@ def match_apollo(request: ApolloMatchRequest):
             "estimated_cost_usd": page_cost_usd,
         },
         "activity": [],
+    }
+
+
+@app.get("/batch-worker-status")
+def get_batch_worker_status():
+    """Retrieve status of the asynchronous background job title micro-batch worker."""
+    return {
+        "status": "active",
+        "worker": background_batch_worker.get_status()
     }
 
 
