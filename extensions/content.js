@@ -38,6 +38,7 @@
     pendingContacts: new Set(),
     currentContacts: new Map(),
     requiredContactsAll: new Map(),
+    requiredCompanyMap: new Map(),
     syncedLeadKeys: new Set(),
     highlightedRows: new Set(),
     activityLog: [],
@@ -351,6 +352,36 @@
     return (value || "")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function normalizeDomain(value) {
+    if (!value) return "";
+    let dom = String(value).trim().toLowerCase();
+    try {
+      if (!dom.startsWith("http://") && !dom.startsWith("https://") && !dom.startsWith("//")) {
+        dom = "https://" + dom;
+      }
+      const parsed = new URL(dom);
+      dom = parsed.hostname || parsed.pathname;
+    } catch {
+      dom = dom.replace(/^https?:\/\//, "").replace(/^\/\//, "").split("/")[0].split(":")[0];
+    }
+    dom = dom.replace(/^www\./, "").split("/")[0].split(":")[0].trim();
+    return dom;
+  }
+
+  function cleanCompanyName(rawCompany) {
+    if (!rawCompany) return "";
+    let text = String(rawCompany).trim();
+    // Strip employee count suffixes like "· 150 employees" or "• 50 employees"
+    text = text.replace(/[·•|].*?(?:employees|people|workers|emp).*$/i, "");
+    // Strip standalone employee count phrases
+    text = text.replace(/[-–—]\s*\d+[\d,]*\s*(?:employees|people|emp).*$/i, "");
+    // Strip trailing parenthesis metadata like "(YC W21)" or "(formerly XYZ)"
+    text = text.replace(/\s*\((?:formerly|yc|acquired|seed|series\s+[a-z]).*?\)/gi, "");
+    // Strip trailing punctuation
+    text = text.replace(/[·•|–—-]+$/, "").trim();
+    return cleanText(text);
   }
 
   function activityClock(timestamp) {
@@ -859,14 +890,39 @@
       titleCell?.innerText || titleCell?.textContent || ""
     );
 
-    let company = cleanText(
+    let company = cleanCompanyName(
       companyCell?.innerText || companyCell?.textContent || ""
     );
 
     if (!company) {
       const compLink = row.querySelector('a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]');
       if (compLink) {
-        company = cleanText(compLink.innerText || compLink.textContent);
+        company = cleanCompanyName(compLink.innerText || compLink.textContent);
+      }
+    }
+
+    // 3. Direct Website / Domain Extraction from Apollo Company Cell or Row
+    let companyDomain = "";
+    const externalLinks = Array.from(
+      (companyCell || row).querySelectorAll('a[href^="http"], a[href^="//"]')
+    );
+    for (const extLink of externalLinks) {
+      const href = extLink.getAttribute("href") || "";
+      if (
+        !href.includes("apollo.io") &&
+        !href.includes("linkedin.com") &&
+        !href.includes("twitter.com") &&
+        !href.includes("x.com") &&
+        !href.includes("facebook.com") &&
+        !href.includes("instagram.com") &&
+        !href.includes("youtube.com") &&
+        !href.includes("google.com")
+      ) {
+        const norm = normalizeDomain(href);
+        if (norm && norm.includes(".") && !norm.endsWith(".png") && !norm.endsWith(".jpg") && !norm.endsWith(".svg")) {
+          companyDomain = norm;
+          break;
+        }
       }
     }
 
@@ -937,6 +993,8 @@
       name,
       job_title: jobTitle,
       company,
+      domain: companyDomain,
+      company_domain: companyDomain,
       location,
       linkedin_url: linkedinUrl,
       employee_count: employeeCount,
@@ -1010,6 +1068,39 @@
   // a long session isn't lost.
   // ============================================================
 
+  // ============================================================
+  // COMPANY DEDUPLICATION KEY HELPER
+  // ============================================================
+
+  function getCompanyDedupeKey(companyName, domain) {
+    const normDom = (domain || "")
+      .toLowerCase()
+      .replace(/^https?:\/\//, "")
+      .replace(/^www\./, "")
+      .split("/")[0]
+      .split(":")[0]
+      .trim();
+    if (normDom && normDom.includes(".")) {
+      return normDom;
+    }
+    return (companyName || "")
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^\w\s]/g, " ")
+      .replace(/\b(inc|corp|corporation|llc|ltd|limited|pty|gmbh|co|holding|holdings|group)\b/gi, "")
+      .replace(/\s+/g, "")
+      .trim();
+  }
+
+  // ============================================================
+  // PERSIST REQUIRED CONTACTS ACROSS RELOADS
+  //
+  // chrome.storage.local only — never sent anywhere, never touches
+  // Apollo. This just survives a tab refresh or browser restart so
+  // a long session isn't lost.
+  // ============================================================
+
   function loadStoredRequiredContacts() {
     if (!chrome?.storage?.local) {
       return;
@@ -1033,9 +1124,19 @@
         const stored =
           result?.[REQUIRED_CONTACTS_STORAGE_KEY];
 
+        state.requiredCompanyMap.clear();
+
         if (Array.isArray(stored) && stored.length) {
           stored.forEach(([key, value]) => {
             state.requiredContactsAll.set(key, value);
+            const compKey = getCompanyDedupeKey(value.company, value.domain);
+            if (compKey) {
+              state.requiredCompanyMap.set(compKey, {
+                key: value.apollo_id || key,
+                name: value.name || `${value.first_name || ""} ${value.last_name || ""}`.trim(),
+                company: value.company
+              });
+            }
           });
           // Auto-sync loaded contacts to MySQL table immediately
           saveRequiredContactsNow();
@@ -1137,6 +1238,15 @@
       apollo_profile_url: apolloUrl
     });
 
+    const compKey = getCompanyDedupeKey(contact.company, domain);
+    if (compKey) {
+      state.requiredCompanyMap.set(compKey, {
+        key: apolloId || contact.key,
+        name: contact.name,
+        company: contact.company
+      });
+    }
+
     scheduleRequiredContactsSave();
   }
 
@@ -1187,7 +1297,15 @@
     clearContactBadges(contact);
 
     // Strictly remove from required contacts if previously added
-    state.requiredContactsAll.delete(contact.key);
+    const existing = state.requiredContactsAll.get(contact.key);
+    if (existing) {
+      state.requiredContactsAll.delete(contact.key);
+      const compKey = getCompanyDedupeKey(existing.company, existing.domain);
+      if (compKey && state.requiredCompanyMap.get(compKey)?.key === (existing.apollo_id || contact.key)) {
+        state.requiredCompanyMap.delete(compKey);
+      }
+    }
+
     scheduleRequiredContactsSave();
     renderExportControls();
 
@@ -1260,10 +1378,27 @@
         result
       );
     } else if (result.required && !result.ignored) {
-      markRequired(
-        contact,
-        result
-      );
+      // Cross-page Local Storage Deduplication: check if this company is already in local storage from an earlier page
+      const compKey = getCompanyDedupeKey(contact.company, result?.matched_domain || contact.domain);
+      const currentContactKey = getApolloIdFromKey(contact.key) || contact.key;
+      const existingCompanyLead = state.requiredCompanyMap.get(compKey);
+
+      if (existingCompanyLead && existingCompanyLead.key !== currentContactKey) {
+        // Company already marked as required on an earlier page in local storage!
+        result.required = false;
+        result.ignored = true;
+        result.guardrail_status = "company_limit_reached";
+        result.guardrail_reason = `Company '${contact.company}' already has a lead in local storage (${existingCompanyLead.name}). Max 1 contact per company.`;
+        markIgnored(
+          contact,
+          result
+        );
+      } else {
+        markRequired(
+          contact,
+          result
+        );
+      }
     } else {
       markIgnored(
         contact,
@@ -1374,12 +1509,93 @@
     );
   }
 
+  function deduplicateStoredContacts() {
+    const totalBefore = state.requiredContactsAll.size;
+    if (!totalBefore) {
+      showStatus("No stored contacts to deduplicate", 2500);
+      return;
+    }
+
+    const uniqueCompanies = new Map(); // compKey -> key
+    const duplicateKeys = [];
+
+    state.requiredContactsAll.forEach((contact, key) => {
+      const compKey = getCompanyDedupeKey(contact.company, contact.domain);
+      if (!compKey) {
+        uniqueCompanies.set(key, key);
+        return;
+      }
+
+      if (uniqueCompanies.has(compKey)) {
+        duplicateKeys.push(key);
+      } else {
+        uniqueCompanies.set(compKey, key);
+      }
+    });
+
+    if (duplicateKeys.length === 0) {
+      showStatus(`✓ 100% Unique: All ${totalBefore} leads in local storage are already distinct companies!`, 3500);
+      addActivity(
+        "DEDUPLICATION_CHECK",
+        `Checked ${totalBefore} leads in local storage. All are unique companies (0 duplicates found).`,
+        "info"
+      );
+      return;
+    }
+
+    // Delete duplicates from state.requiredContactsAll and state.syncedLeadKeys
+    duplicateKeys.forEach(key => {
+      state.requiredContactsAll.delete(key);
+      state.syncedLeadKeys.delete(key);
+    });
+
+    // Rebuild state.requiredCompanyMap
+    state.requiredCompanyMap.clear();
+    state.requiredContactsAll.forEach((contact, key) => {
+      const compKey = getCompanyDedupeKey(contact.company, contact.domain);
+      if (compKey) {
+        state.requiredCompanyMap.set(compKey, {
+          key: contact.apollo_id || key,
+          name: contact.name || `${contact.first_name || ""} ${contact.last_name || ""}`.trim(),
+          company: contact.company
+        });
+      }
+    });
+
+    // Save cleaned list directly to chrome.storage.local
+    saveRequiredContactsNow();
+
+    const totalAfter = state.requiredContactsAll.size;
+    renderExportControls();
+
+    addActivity(
+      "DEDUPLICATION_COMPLETE",
+      `Removed ${duplicateKeys.length} duplicate company contact(s). ${totalAfter} unique companies remain in local storage.`,
+      "warning",
+      {
+        duplicates_removed: duplicateKeys.length,
+        unique_companies_remaining: totalAfter
+      }
+    );
+
+    showStatus(
+      `⚡ Pruned ${duplicateKeys.length} duplicate company leads! (${totalAfter} unique companies remain)`,
+      4500
+    );
+
+    // Rescan active Apollo page so any duplicate row updates its badge to 1/Company Max
+    state.checkedContacts.clear();
+    state.currentContacts.clear();
+    scanApollo();
+  }
+
   function clearRequiredContactsList() {
     const count = state.requiredContactsAll.size;
     const prevBatch = state.batchNumber || 1;
     state.batchNumber = prevBatch + 1;
 
     state.requiredContactsAll.clear();
+    state.requiredCompanyMap.clear();
     state.syncedLeadKeys.clear();
 
     if (chrome?.storage?.local) {
@@ -1488,6 +1704,12 @@
           type="button"
         >Export Required Contacts (CSV)</button>
         <button
+          id="contact-checker-dedupe-btn"
+          type="button"
+          style="background: #eab308; color: #111827; font-weight: 700;"
+          title="Scan and delete all duplicate contacts from the same company in local storage"
+        >⚡ Deduplicate List</button>
+        <button
           id="contact-checker-guardrail-toggle"
           type="button"
         >AI Title Filter: OFF</button>
@@ -1526,6 +1748,15 @@
         .addEventListener(
           "click",
           exportRequiredContactsCSV
+        );
+
+      controls
+        .querySelector(
+          "#contact-checker-dedupe-btn"
+        )
+        .addEventListener(
+          "click",
+          deduplicateStoredContacts
         );
 
       controls
@@ -1628,6 +1859,14 @@
 
     if (exportButton) {
       exportButton.disabled = totalCollected === 0;
+    }
+
+    const dedupeButton = controls.querySelector(
+      "#contact-checker-dedupe-btn"
+    );
+
+    if (dedupeButton) {
+      dedupeButton.disabled = totalCollected === 0;
     }
   }
 
@@ -1830,6 +2069,7 @@
                 last_name: nameParts.slice(1).join(" ") || "",
                 job_title: contact.job_title,
                 company: contact.company,
+                company_domain: contact.company_domain || contact.domain || "",
                 location: contact.location || "",
                 linkedin_url: contact.linkedin_url || "",
                 apollo_profile_url: apolloId ? `https://app.apollo.io/#/people/${apolloId}` : ""
@@ -2157,6 +2397,7 @@
     state.lastBackendSummary = null;
     state.highlightedRows.clear();
     state.currentContacts.clear();
+    state.requiredCompanyMap.clear();
 
     delete globalThis[
       STATE_KEY

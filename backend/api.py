@@ -65,6 +65,9 @@ _title_cache_lock = threading.Lock()
 _schema_cache: dict[str, Any] = {}
 _schema_cache_lock = threading.Lock()
 
+_batch_seen_companies: dict[str, dict[str, list[str]]] = {}  # batch_tag -> (comp_key -> list of contact names)
+_batch_seen_companies_lock = threading.Lock()
+
 BLOCKER_KEYWORDS = ("compliance", "legal", "regulatory", "procurement", "privacy", "gdpr", "grc", "trade", "ethics", "audit")
 
 LLM_SYSTEM_PROMPT = """Classify B2B job titles into sales segments.
@@ -208,10 +211,15 @@ def normalize_domain(domain: str) -> str:
 
 
 def clean_company_name(company: str) -> str:
-    """Clean company name for heuristic matching (e.g. 'Datadog, Inc.' -> 'Datadog')."""
+    """Clean company name for heuristic matching (e.g. 'Datadog, Inc. · 50 employees' -> 'Datadog')."""
     if not company:
         return ""
-    text = re.sub(r"[^\w\s.-]", " ", str(company)).strip()
+    text = str(company).strip()
+    # Strip employee count suffixes like "· 150 employees" or "• 50 employees"
+    text = re.sub(r"[·•|].*?(?:employees|people|workers|emp).*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[-–—]\s*\d+[\d,]*\s*(?:employees|people|emp).*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\((?:formerly|yc|acquired|seed|series\s+[a-z]).*?\)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[^\w\s.-]", " ", text).strip()
     words = text.split()
     while words and words[-1].lower().rstrip(".") in LEGAL_SUFFIXES:
         words.pop()
@@ -871,7 +879,12 @@ def match_apollo(request: ApolloMatchRequest):
     required_count = 0
     ignored_count = 0
 
-    seen_required_companies: dict[str, list[str]] = {}  # comp_key -> list of selected contact names
+    batch_tag = str(request.batch or "batch_1").strip()
+    with _batch_seen_companies_lock:
+        if batch_tag not in _batch_seen_companies:
+            _batch_seen_companies[batch_tag] = {}
+        seen_required_companies = _batch_seen_companies[batch_tag]
+
     max_contacts_per_comp = int(os.getenv("MAX_CONTACTS_PER_COMPANY", "1"))
 
     # Track metrics for dashboard
@@ -902,16 +915,18 @@ def match_apollo(request: ApolloMatchRequest):
         all_candidate_domains = []
 
         for contact in contacts:
-            comp_name = contact.company.strip()
+            comp_name = clean_company_name(contact.company)
             cand_doms = []
             if contact.company_domain:
                 norm_d = normalize_domain(contact.company_domain)
                 if norm_d:
                     cand_doms.append(norm_d)
 
-            for d in generate_candidate_domains(comp_name):
-                if d not in cand_doms:
-                    cand_doms.append(d)
+            # If no explicit domain was provided from the Apollo DOM, generate safe candidate permutations
+            if not cand_doms:
+                for d in generate_candidate_domains(comp_name):
+                    if d not in cand_doms:
+                        cand_doms.append(d)
 
             prim_d = cand_doms[0] if cand_doms else (normalize_text(comp_name) + ".com")
             contact_candidates[contact.key] = cand_doms
