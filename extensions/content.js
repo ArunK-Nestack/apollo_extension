@@ -908,28 +908,34 @@
       }
     }
 
-    // 3. Direct Website / Domain Extraction from Apollo Company Cell or Row
+    // 3. Direct Website Domain from Apollo Globe Icon
     let companyDomain = "";
-    const externalLinks = Array.from(
-      (companyCell || row).querySelectorAll('a[href], a[data-to]')
-    );
-    for (const extLink of externalLinks) {
-      const href = (extLink.getAttribute("href") || extLink.getAttribute("data-to") || "").trim();
-      if (!href || href.startsWith("#") || href.startsWith("javascript:") || href.startsWith("/")) continue;
-      if (
-        !href.includes("apollo.io") &&
-        !href.includes("linkedin.com") &&
-        !href.includes("twitter.com") &&
-        !href.includes("x.com") &&
-        !href.includes("facebook.com") &&
-        !href.includes("instagram.com") &&
-        !href.includes("youtube.com") &&
-        !href.includes("google.com")
-      ) {
-        const norm = normalizeDomain(href);
-        if (norm && norm.includes(".") && !norm.endsWith(".png") && !norm.endsWith(".jpg") && !norm.endsWith(".svg")) {
-          companyDomain = norm;
-          break;
+
+    // Primary: the globe icon link with aria-label="website link"
+    const websiteLink = row.querySelector('a[aria-label="website link"]');
+    if (websiteLink) {
+      const href = (
+        websiteLink.getAttribute("data-href") ||
+        websiteLink.getAttribute("href") ||
+        ""
+      ).trim();
+      if (href) {
+        companyDomain = normalizeDomain(href);
+      }
+    }
+
+    // Fallback: any <a> with .apollo-icon-link child (globe icon without aria-label)
+    if (!companyDomain) {
+      const globeIcon = row.querySelector('a > .apollo-icon-link');
+      if (globeIcon) {
+        const parentLink = globeIcon.closest("a");
+        const href = (
+          parentLink?.getAttribute("data-href") ||
+          parentLink?.getAttribute("href") ||
+          ""
+        ).trim();
+        if (href && !href.includes("apollo.io")) {
+          companyDomain = normalizeDomain(href);
         }
       }
     }
