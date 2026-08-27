@@ -1740,7 +1740,7 @@
 
       state.settleTimer = setTimeout(
         scanApollo,
-        1200
+        150
       );
     } else {
       state.settleRetryAttempts = 0;
@@ -2054,21 +2054,14 @@
       );
   }
 
-  function scheduleScan() {
+  function scheduleScan(delay = 100) {
     clearTimeout(state.timer);
 
     state.timer = setTimeout(
       () => {
-        if ("requestIdleCallback" in globalThis) {
-          requestIdleCallback(
-            scanApollo,
-            { timeout: 700 }
-          );
-        } else {
-          scanApollo();
-        }
+        scanApollo();
       },
-      300
+      delay
     );
   }
 
