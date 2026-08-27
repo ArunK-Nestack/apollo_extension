@@ -131,6 +131,7 @@
     }
 
     #contact-checker-export-required,
+    #contact-checker-dedupe-btn,
     #contact-checker-clear-required,
     #contact-checker-guardrail-toggle,
     #contact-checker-indian-toggle,
@@ -152,11 +153,17 @@
       transition: background 0.2s ease;
     }
 
+    #contact-checker-dedupe-btn {
+      background: #eab308 !important;
+      color: #111827 !important;
+    }
+
     #contact-checker-clear-required {
       background: #6b7280;
     }
 
     #contact-checker-export-required:disabled,
+    #contact-checker-dedupe-btn:disabled,
     #contact-checker-clear-required:disabled,
     #contact-checker-activity-toggle:disabled,
     #contact-checker-clear-activity:disabled {
