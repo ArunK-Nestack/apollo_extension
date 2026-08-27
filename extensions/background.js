@@ -12,17 +12,21 @@ chrome.action.onClicked.addListener(async (tab) => {
   });
 
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["content.js"]
+    chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_CONTACT_CHECKER" }, async (response) => {
+      if (chrome.runtime.lastError || !response?.success) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ["content.js"]
+          });
+          contactCheckerBackgroundLog("CONTENT_SCRIPT_INJECTED", { tabId: tab.id });
+        } catch (err) {
+          console.error("Could not inject Contact Checker:", err);
+        }
+      }
     });
-
-    contactCheckerBackgroundLog("CONTENT_SCRIPT_INJECTED", { tabId: tab.id });
   } catch (error) {
     console.error("Could not activate Contact Checker:", error);
-    contactCheckerBackgroundLog("CONTENT_SCRIPT_ERROR", {
-      error: error?.message || String(error)
-    });
   }
 });
 

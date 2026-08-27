@@ -911,10 +911,11 @@
     // 3. Direct Website / Domain Extraction from Apollo Company Cell or Row
     let companyDomain = "";
     const externalLinks = Array.from(
-      (companyCell || row).querySelectorAll('a[href^="http"], a[href^="//"]')
+      (companyCell || row).querySelectorAll('a[href], a[data-to]')
     );
     for (const extLink of externalLinks) {
-      const href = extLink.getAttribute("href") || "";
+      const href = (extLink.getAttribute("href") || extLink.getAttribute("data-to") || "").trim();
+      if (!href || href.startsWith("#") || href.startsWith("javascript:") || href.startsWith("/")) continue;
       if (
         !href.includes("apollo.io") &&
         !href.includes("linkedin.com") &&
@@ -2437,6 +2438,19 @@
   showStatus(
     "Contact Checker ON"
   );
+
+  chrome.runtime.onMessage?.addListener((message, sender, sendResponse) => {
+    if (message.type === "TOGGLE_CONTACT_CHECKER") {
+      let controls = document.getElementById("contact-checker-controls");
+      if (!controls) {
+        renderExportControls();
+      } else {
+        controls.style.display = controls.style.display === "none" ? "flex" : "none";
+      }
+      sendResponse({ success: true, active: state.active });
+      return true;
+    }
+  });
 
   loadStoredRequiredContacts();
   scanApollo();
