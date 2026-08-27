@@ -1695,6 +1695,12 @@
       "contact-checker-controls"
     );
 
+    // If an older controls dock exists in DOM without the dedupe button, refresh it
+    if (controls && !controls.querySelector("#contact-checker-dedupe-btn")) {
+      controls.remove();
+      controls = null;
+    }
+
     if (!controls) {
       controls = document.createElement("div");
       controls.id = "contact-checker-controls";

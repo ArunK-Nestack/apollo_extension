@@ -13,6 +13,13 @@
     "http://localhost:8000/*",
     "https://app.apollo.io/*"
   ],
+  "content_scripts": [
+    {
+      "matches": ["https://app.apollo.io/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "background": {
     "service_worker": "background.js"
   },
