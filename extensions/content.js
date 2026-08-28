@@ -1172,7 +1172,8 @@
             const compKey = getCompanyDedupeKey(value.company, value.domain);
             if (compKey) {
               state.requiredCompanyMap.set(compKey, {
-                key: value.apollo_id || key,
+                key: key,
+                apollo_id: value.apollo_id || "",
                 name: value.name || `${value.first_name || ""} ${value.last_name || ""}`.trim(),
                 company: value.company
               });
@@ -1430,11 +1431,15 @@
     } else if (result.required && !result.ignored) {
       // Cross-page Local Storage Deduplication: check if this company is already in local storage from an earlier page
       const compKey = getCompanyDedupeKey(contact.company, result?.matched_domain || contact.domain);
-      const currentContactKey = getApolloIdFromKey(contact.key) || contact.key;
       const existingCompanyLead = state.requiredCompanyMap.get(compKey);
 
-      if (existingCompanyLead && existingCompanyLead.key !== currentContactKey) {
-        // Company already marked as required on an earlier page in local storage!
+      const normCurrentKey = String(contact.key || "").replace(/^apollo-/, "").toLowerCase();
+      const normExistingKey = existingCompanyLead
+        ? String(existingCompanyLead.key || existingCompanyLead.apollo_id || "").replace(/^apollo-/, "").toLowerCase()
+        : "";
+
+      if (existingCompanyLead && normExistingKey && normExistingKey !== normCurrentKey) {
+        // A different contact from this company was already saved as required on an earlier page
         result.required = false;
         result.ignored = true;
         result.guardrail_status = "company_limit_reached";
@@ -1907,8 +1912,13 @@
       "#contact-checker-required-count"
     );
 
+    const isScanning = state.pendingContacts.size > 0;
+    const pageText = isScanning
+      ? `Scanning ${state.pendingContacts.size} contact(s)...`
+      : `Required on page: ${visibleRequiredCount}`;
+
     const countText =
-      `Required on page: ${visibleRequiredCount} | Collected total: ${totalCollected}`;
+      `${pageText} | Collected total: ${totalCollected}`;
 
     if (countLabel && countLabel.textContent !== countText) {
       countLabel.textContent = countText;
