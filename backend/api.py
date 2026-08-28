@@ -945,50 +945,31 @@ background_batch_worker = BackgroundTitleBatchWorker(batch_size=50, flush_interv
 # 2-LAYER JOB TITLE EVALUATOR (DATABASE LOOKUP + SUBSTRINGS)
 # ============================================================
 
-def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
+def lookup_job_titles_batch(job_titles: list[str], connection=None) -> dict[str, dict]:
     """
-    2-Layer Job Title Evaluation:
-    Layer 1: Database table lookup against 'job_title_guardrails' (64,800+ rules).
-    Layer 2: Top-tier executive substring fallback.
+    High-Performance 1-Shot Batch Job Title Evaluator:
+    Bundles all distinct titles into 1 single SQL query instead of 25 sequential roundtrips.
     """
-    if not job_title:
-        return {"required": False, "status": "disqualified_title", "segment": "Unspecified", "reason": "No title specified"}
+    if not job_titles:
+        return {}
 
-    norm_title = normalize_text(job_title)
+    results = {}
+    missing_norm_titles = {}
 
-    with _title_cache_lock:
-        if norm_title in _title_cache:
-            return _title_cache[norm_title]
+    for t in job_titles:
+        raw_t = (t or "").strip()
+        if not raw_t:
+            results[raw_t] = {"required": False, "status": "disqualified_title", "segment": "Unspecified", "reason": "No title specified"}
+            continue
 
-    # --- LAYER 1: DATABASE TABLE LOOKUP ---
-    def do_query(conn):
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT is_required, segment
-                    FROM job_title_guardrails
-                    WHERE normalized_title = %s
-                    LIMIT 1;
-                """, (norm_title,))
+        norm_t = normalize_text(raw_t)
+        with _title_cache_lock:
+            if norm_t in _title_cache:
+                results[raw_t] = _title_cache[norm_t]
+                continue
 
-                row = cur.fetchone()
-                if row:
-                    is_req = bool(row[0])
-                    seg_name = row[1] or ""
-                    res = {
-                        "required": is_req,
-                        "status": "qualified" if is_req else "disqualified_title",
-                        "segment": seg_name,
-                        "reason": f"Layer 1 DB Segment: {seg_name} ({'Required' if is_req else 'Excluded'})",
-                    }
-                    with _title_cache_lock:
-                        _title_cache[norm_title] = res
-                    return res
-        except Exception:
-            pass
-
-        # --- LAYER 2: PRIORITY SUBSTRING FALLBACK ---
-        layer2_match = match_priority_substrings(job_title)
+        # Check Layer 2 Substrings before DB
+        layer2_match = match_priority_substrings(raw_t)
         if layer2_match:
             is_req, prio, sub = layer2_match
             res = {
@@ -998,25 +979,72 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
                 "reason": f"Layer 2 Substring Match: '{sub}' ({prio} Priority)",
             }
             with _title_cache_lock:
-                _title_cache[norm_title] = res
-            return res
+                _title_cache[norm_t] = res
+            results[raw_t] = res
+            continue
 
-        fallback = {
-            "required": False,
-            "status": "not_recognized_title",
-            "segment": "Not_Recognized",
-            "reason": f"Title '{job_title}' is not recognized in our database.",
-        }
+        missing_norm_titles[norm_t] = raw_t
 
-        with _title_cache_lock:
-            _title_cache[norm_title] = fallback
-        return fallback
+    if missing_norm_titles:
+        def do_batch_query(conn):
+            try:
+                with conn.cursor() as cur:
+                    format_strings = ",".join(["%s"] * len(missing_norm_titles))
+                    sql = f"SELECT `normalized_title`, `is_required`, `segment` FROM `job_title_guardrails` WHERE `normalized_title` IN ({format_strings});"
+                    cur.execute(sql, tuple(missing_norm_titles.keys()))
+                    rows = cur.fetchall()
 
-    if connection:
-        return do_query(connection)
-    else:
-        with get_connection() as conn:
-            return do_query(conn)
+                    found_norms = set()
+                    for r in rows:
+                        n_t = str(r[0]).strip().lower()
+                        is_req = bool(r[1])
+                        seg_name = r[2] or ""
+                        found_norms.add(n_t)
+                        res = {
+                            "required": is_req,
+                            "status": "qualified" if is_req else "disqualified_title",
+                            "segment": seg_name,
+                            "reason": f"Layer 1 DB Segment: {seg_name} ({'Required' if is_req else 'Excluded'})",
+                        }
+                        with _title_cache_lock:
+                            _title_cache[n_t] = res
+                        raw_title = missing_norm_titles.get(n_t)
+                        if raw_title:
+                            results[raw_title] = res
+
+                    # For remaining unfound titles
+                    for n_t, raw_title in missing_norm_titles.items():
+                        if n_t not in found_norms:
+                            fallback = {
+                                "required": False,
+                                "status": "not_recognized_title",
+                                "segment": "Not_Recognized",
+                                "reason": f"Title '{raw_title}' is not recognized in our database.",
+                            }
+                            with _title_cache_lock:
+                                _title_cache[n_t] = fallback
+                            results[raw_title] = fallback
+            except Exception as e:
+                print(f"[ContactChecker] Notice: batch title query: {e}", flush=True)
+
+        if connection:
+            do_batch_query(connection)
+        else:
+            with get_connection() as conn:
+                do_batch_query(conn)
+
+    return results
+
+
+def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
+    """Single job title evaluation fallback."""
+    batch_res = lookup_job_titles_batch([job_title], connection=connection)
+    return batch_res.get(job_title.strip()) or {
+        "required": False,
+        "status": "disqualified_title",
+        "segment": "Unspecified",
+        "reason": "No title specified"
+    }
 
 
 # Backwards compatibility helper
@@ -1268,8 +1296,11 @@ def match_apollo(request: ApolloMatchRequest):
                 net_new_contacts.append(contact)
 
         # --------------------------------------------------------
-        # STEP 3: DEMOGRAPHIC & JOB TITLE QUALIFICATION
+        # STEP 3: DEMOGRAPHIC & JOB TITLE QUALIFICATION (1-SHOT BATCH)
         # --------------------------------------------------------
+        titles_to_check = [c.job_title for c in net_new_contacts if c.job_title.strip()]
+        batch_title_results = lookup_job_titles_batch(titles_to_check, connection=conn)
+
         contact_title_eval: dict[str, dict] = {}
         novel_titles_to_eval: dict[str, str] = {}
 
@@ -1284,7 +1315,7 @@ def match_apollo(request: ApolloMatchRequest):
                 }
                 continue
 
-            t_info = lookup_job_title_in_db(title_name, connection=conn)
+            t_info = batch_title_results.get(title_name) or lookup_job_title_in_db(title_name, connection=conn)
             contact_title_eval[contact.key] = t_info
 
             if t_info.get("status") == "not_recognized_title":

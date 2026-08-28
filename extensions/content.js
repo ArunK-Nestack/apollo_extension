@@ -8,6 +8,8 @@
     "contactCheckerIndianGuardrailEnabled";
   const BATCH_NUMBER_STORAGE_KEY =
     "contactCheckerBatchNumber";
+  const BATCH_NAME_STORAGE_KEY =
+    "contactCheckerBatchName";
 
   // ============================================================
   // TOGGLE OFF
@@ -25,6 +27,7 @@
   const state = {
     active: true,
     batchNumber: 1,
+    batchName: "batch_1",
     titleGuardrailEnabled: true,
     indianGuardrailEnabled: false,
     observer: null,
@@ -1147,10 +1150,13 @@
     }
 
     chrome.storage.local.get(
-      [REQUIRED_CONTACTS_STORAGE_KEY, TITLE_GUARDRAIL_STORAGE_KEY, INDIAN_GUARDRAIL_STORAGE_KEY, BATCH_NUMBER_STORAGE_KEY],
+      [REQUIRED_CONTACTS_STORAGE_KEY, TITLE_GUARDRAIL_STORAGE_KEY, INDIAN_GUARDRAIL_STORAGE_KEY, BATCH_NUMBER_STORAGE_KEY, BATCH_NAME_STORAGE_KEY],
       result => {
-        if (result?.[BATCH_NUMBER_STORAGE_KEY]) {
+        if (result?.[BATCH_NAME_STORAGE_KEY]) {
+          state.batchName = String(result[BATCH_NAME_STORAGE_KEY]).trim();
+        } else if (result?.[BATCH_NUMBER_STORAGE_KEY]) {
           state.batchNumber = Number(result[BATCH_NUMBER_STORAGE_KEY]) || 1;
+          state.batchName = `batch_${state.batchNumber}`;
         }
         if (result?.[TITLE_GUARDRAIL_STORAGE_KEY] !== undefined) {
           state.titleGuardrailEnabled =
@@ -1223,13 +1229,14 @@
       // Mark as synced to prevent redundant repeated calls
       unsyncedContacts.forEach(c => state.syncedLeadKeys.add(c._key));
 
+      const activeBatch = state.batchName || `batch_${state.batchNumber || 1}`;
       chrome.runtime.sendMessage({
         type: "SYNC_SAVED_LEADS",
-        batch: `batch_${state.batchNumber || 1}`,
+        batch: activeBatch,
         contacts: unsyncedContacts
       }, (res) => {
         if (res?.success) {
-          contactCheckerLog(`Synced ${unsyncedContacts.length} new lead(s) to MySQL apollo_saved_leads under batch_${state.batchNumber || 1}`);
+          contactCheckerLog(`Synced ${unsyncedContacts.length} new lead(s) to MySQL apollo_saved_leads under ${activeBatch}`);
         } else {
           // If error, unmark so it can retry
           unsyncedContacts.forEach(c => state.syncedLeadKeys.delete(c._key));
@@ -1547,7 +1554,8 @@
 
     const link = document.createElement("a");
     link.href = url;
-    link.download = `required-contacts-${Date.now()}.csv`;
+    const batchTag = (state.batchName || "batch_1").replace(/[^a-zA-Z0-9_-]/g, "_");
+    link.download = `required-contacts-${batchTag}-${Date.now()}.csv`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -1651,8 +1659,18 @@
 
   function clearRequiredContactsList() {
     const count = state.requiredContactsAll.size;
-    const prevBatch = state.batchNumber || 1;
-    state.batchNumber = prevBatch + 1;
+    const prevBatch = state.batchName || `batch_${state.batchNumber || 1}`;
+
+    const matchNum = prevBatch.match(/^(.*?)(\d+)$/);
+    if (matchNum) {
+      const prefix = matchNum[1];
+      const nextNum = parseInt(matchNum[2], 10) + 1;
+      state.batchName = `${prefix}${nextNum}`;
+      state.batchNumber = nextNum;
+    } else {
+      state.batchNumber = (state.batchNumber || 1) + 1;
+      state.batchName = `${prevBatch}_${state.batchNumber}`;
+    }
 
     state.requiredContactsAll.clear();
     state.requiredCompanyMap.clear();
@@ -1660,7 +1678,8 @@
 
     if (chrome?.storage?.local) {
       chrome.storage.local.set({
-        [BATCH_NUMBER_STORAGE_KEY]: state.batchNumber
+        [BATCH_NUMBER_STORAGE_KEY]: state.batchNumber,
+        [BATCH_NAME_STORAGE_KEY]: state.batchName
       });
       chrome.storage.local.remove(
         REQUIRED_CONTACTS_STORAGE_KEY
@@ -1669,16 +1688,16 @@
 
     addActivity(
       "REQUIRED_CONTACTS_CLEARED",
-      `Cleared ${count} contact(s) from local list. Batch #${prevBatch} preserved in DB. Next scans will save to Batch #${state.batchNumber}.`,
+      `Cleared ${count} contact(s) from local list. Leads under '${prevBatch}' preserved in DB. Next scans will save under '${state.batchName}'.`,
       "info",
       {
-        previous_batch: `batch_${prevBatch}`,
-        new_batch: `batch_${state.batchNumber}`
+        previous_batch: prevBatch,
+        new_batch: state.batchName
       }
     );
 
     renderExportControls();
-    showStatus(`List cleared. Next scans will save under Batch #${state.batchNumber} in Database.`, 3000);
+    showStatus(`List cleared. Next scans will save under '${state.batchName}' in Database.`, 3000);
   }
 
   function toggleTitleGuardrail() {
@@ -1759,6 +1778,17 @@
       controls.id = "contact-checker-controls";
       controls.innerHTML = `
         <span id="contact-checker-live-status" class="contact-checker-live-badge">✓ Ready</span>
+        <div class="contact-checker-batch-pill" style="display:inline-flex;align-items:center;background:#1e293b;border:1px solid #334155;border-radius:6px;padding:2px 8px;gap:5px;">
+          <span style="color:#94a3b8;font-size:11px;font-weight:700;">🏷️ Batch:</span>
+          <input
+            id="contact-checker-batch-input"
+            type="text"
+            value="${state.batchName || 'batch_1'}"
+            placeholder="Batch Tag"
+            title="Custom batch name tag for Database saves and CSV downloads"
+            style="background:transparent;border:none;color:#38bdf8;font-weight:700;font-size:12px;width:110px;outline:none;"
+          />
+        </div>
         <span id="contact-checker-required-count"></span>
         <button
           id="contact-checker-rescan-btn"
@@ -1792,6 +1822,20 @@
           type="button"
         >Activity</button>
       `;
+
+      const batchInput = controls.querySelector("#contact-checker-batch-input");
+      if (batchInput) {
+        batchInput.addEventListener("change", (e) => {
+          const val = cleanText(e.target.value).replace(/[^a-zA-Z0-9_-]/g, "_") || "batch_1";
+          state.batchName = val;
+          batchInput.value = val;
+          if (chrome?.storage?.local) {
+            chrome.storage.local.set({ [BATCH_NAME_STORAGE_KEY]: val });
+          }
+          showStatus(`Batch name set to: ${val}`, 2500);
+          addActivity("BATCH_RENAMED", `Batch name updated to '${val}'. Leads will save under this tag in database.`, "info", { batch: val });
+        });
+      }
 
       controls
         .querySelector(
@@ -1864,6 +1908,11 @@
       document.body.appendChild(controls);
 
       renderActivityPanel();
+    }
+
+    const batchInputExisting = controls.querySelector("#contact-checker-batch-input");
+    if (batchInputExisting && document.activeElement !== batchInputExisting && batchInputExisting.value !== (state.batchName || "batch_1")) {
+      batchInputExisting.value = state.batchName || "batch_1";
     }
 
     const guardrailButton = controls.querySelector(
@@ -2121,7 +2170,7 @@
     chrome.runtime.sendMessage(
       {
         type: "MATCH_APOLLO",
-        batch: `batch_${state.batchNumber || 1}`,
+        batch: state.batchName || `batch_${state.batchNumber || 1}`,
         title_guardrail_enabled:
           state.titleGuardrailEnabled === true,
         indian_name_guardrail_enabled:
@@ -2367,7 +2416,7 @@
       );
   }
 
-  function scheduleScan(delay = 100) {
+  function scheduleScan(delay = 35) {
     clearTimeout(state.timer);
 
     state.timer = setTimeout(
@@ -2378,6 +2427,34 @@
     );
   }
 
+  // Instant SPA Navigation Hook (0ms detection when changing pages/sorts)
+  function onPageNavigation() {
+    state.checkedContacts.clear();
+    state.currentContacts.clear();
+    scheduleScan(15);
+  }
+
+  window.addEventListener("popstate", onPageNavigation, { passive: true });
+  window.addEventListener("hashchange", onPageNavigation, { passive: true });
+
+  // Hook pushState and replaceState for instant Apollo SPA navigation detection
+  if (window.history && window.history.pushState) {
+    const originalPushState = window.history.pushState;
+    window.history.pushState = function (...args) {
+      const result = originalPushState.apply(this, args);
+      onPageNavigation();
+      return result;
+    };
+  }
+  if (window.history && window.history.replaceState) {
+    const originalReplaceState = window.history.replaceState;
+    window.history.replaceState = function (...args) {
+      const result = originalReplaceState.apply(this, args);
+      onPageNavigation();
+      return result;
+    };
+  }
+
   state.observer =
     new MutationObserver(
       mutations => {
@@ -2386,7 +2463,7 @@
             mutationNeedsScan
           )
         ) {
-          scheduleScan();
+          scheduleScan(35);
         }
       }
     );
