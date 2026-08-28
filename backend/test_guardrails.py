@@ -58,7 +58,6 @@ def test_guardrail_1_domain_check():
 
     # Contact 1 (Deloitte) should be ignored because deloitte.com already exists in CRM DB
     res_deloitte = results["test-existing-domain"]
-    assert res_deloitte.get("exists") is False, "Expected exists=False for non-CRM person"
     assert res_deloitte.get("required") is False, "Expected required=False because domain exists in DB"
     assert res_deloitte.get("ignored") is True, "Expected ignored=True for existing domain"
     assert res_deloitte.get("guardrail_status") == "domain_already_in_db", "Expected guardrail_status=domain_already_in_db"

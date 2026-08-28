@@ -750,7 +750,7 @@
   // GET TEMPORARY APOLLO KEY
   // ============================================================
 
-  function getContactKey(link, index) {
+  function getContactKey(link, index, name = "", company = "") {
     const value =
       link.getAttribute("data-to") ||
       link.getAttribute("href") ||
@@ -762,6 +762,12 @@
 
     if (match?.[1]) {
       return `apollo-${match[1]}`;
+    }
+
+    const normName = cleanText(name).toLowerCase().replace(/[^a-z0-9]/g, "");
+    const normComp = cleanCompanyName(company).toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (normName && normComp) {
+      return `apollo-${normName}_${normComp}`;
     }
 
     return `apollo-row-${index}`;
@@ -908,8 +914,9 @@
       }
     }
 
-    // 3. Direct Website Domain from Apollo Globe Icon
+    // 3. Direct Website Domain & Link from Apollo Globe Icon
     let companyDomain = "";
+    let websiteUrl = "";
 
     // Primary: the globe icon link with aria-label="website link"
     const websiteLink = row.querySelector('a[aria-label="website link"]');
@@ -920,6 +927,7 @@
         ""
       ).trim();
       if (href) {
+        websiteUrl = href;
         companyDomain = normalizeDomain(href);
       }
     }
@@ -935,8 +943,22 @@
           ""
         ).trim();
         if (href && !href.includes("apollo.io")) {
+          websiteUrl = href;
           companyDomain = normalizeDomain(href);
         }
+      }
+    }
+
+    // 4. Email Detection from row (if revealed / mailto link or email text)
+    let email = "";
+    const mailtoLink = row.querySelector('a[href^="mailto:"]');
+    if (mailtoLink) {
+      email = (mailtoLink.getAttribute("href") || "").replace(/^mailto:/i, "").split("?")[0].trim();
+    }
+    if (!email) {
+      const emailMatch = (row.innerText || "").match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+      if (emailMatch) {
+        email = emailMatch[0].trim();
       }
     }
 
@@ -996,7 +1018,9 @@
 
     const key = getContactKey(
       link,
-      index
+      index,
+      name,
+      company
     );
 
     const linkedinLink = row.querySelector('a[href*="linkedin.com/in/"]');
@@ -1009,6 +1033,8 @@
       company,
       domain: companyDomain,
       company_domain: companyDomain,
+      website_link: websiteUrl,
+      email: email,
       location,
       linkedin_url: linkedinUrl,
       employee_count: employeeCount,
@@ -1238,6 +1264,15 @@
     const lastName = nameParts.slice(1).join(" ") || "";
     const domain = result?.matched_domain || contact.domain || "";
     const apolloUrl = apolloId ? `https://app.apollo.io/#/people/${apolloId}` : "";
+    const compKey = getCompanyDedupeKey(contact.company, domain);
+
+    // Ensure 1 unique lead per company in local storage
+    if (compKey && state.requiredCompanyMap.has(compKey)) {
+      const prevElected = state.requiredCompanyMap.get(compKey);
+      if (prevElected && prevElected.key && prevElected.key !== contact.key) {
+        state.requiredContactsAll.delete(prevElected.key);
+      }
+    }
 
     state.requiredContactsAll.set(contact.key, {
       apollo_id: apolloId,
@@ -1252,10 +1287,9 @@
       apollo_profile_url: apolloUrl
     });
 
-    const compKey = getCompanyDedupeKey(contact.company, domain);
     if (compKey) {
       state.requiredCompanyMap.set(compKey, {
-        key: apolloId || contact.key,
+        key: contact.key,
         name: contact.name,
         company: contact.company
       });
@@ -1310,18 +1344,20 @@
 
     clearContactBadges(contact);
 
-    // Strictly remove from required contacts if previously added
-    const existing = state.requiredContactsAll.get(contact.key);
-    if (existing) {
-      state.requiredContactsAll.delete(contact.key);
-      const compKey = getCompanyDedupeKey(existing.company, existing.domain);
-      if (compKey && state.requiredCompanyMap.get(compKey)?.key === (existing.apollo_id || contact.key)) {
-        state.requiredCompanyMap.delete(compKey);
+    // Only delete from required contacts if disqualified for domain/title/demographic,
+    // NEVER delete an already-saved lead if merely receiving company_limit_reached!
+    if (result?.guardrail_status !== "company_limit_reached") {
+      const existing = state.requiredContactsAll.get(contact.key);
+      if (existing) {
+        state.requiredContactsAll.delete(contact.key);
+        const compKey = getCompanyDedupeKey(existing.company, existing.domain);
+        if (compKey && state.requiredCompanyMap.get(compKey)?.key === contact.key) {
+          state.requiredCompanyMap.delete(compKey);
+        }
+        scheduleRequiredContactsSave();
+        renderExportControls();
       }
     }
-
-    scheduleRequiredContactsSave();
-    renderExportControls();
 
     const badge =
       document.createElement("span");
@@ -1494,6 +1530,11 @@
       showStatus("No required contacts collected yet");
       return;
     }
+
+    // Flush any pending queue items before CSV generation
+    try {
+      chrome.runtime.sendMessage({ type: "FLUSH_QUEUES" }, () => {});
+    } catch (e) {}
 
     const csv = buildRequiredContactsCSV();
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -2090,6 +2131,8 @@
                 job_title: contact.job_title,
                 company: contact.company,
                 company_domain: contact.company_domain || contact.domain || "",
+                website_link: contact.website_link || "",
+                email: contact.email || "",
                 location: contact.location || "",
                 linkedin_url: contact.linkedin_url || "",
                 apollo_profile_url: apolloId ? `https://app.apollo.io/#/people/${apolloId}` : ""

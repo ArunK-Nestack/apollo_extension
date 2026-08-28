@@ -56,11 +56,17 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_DOMAIN_MODEL = os.getenv("OPENAI_DOMAIN_MODEL", "gpt-4o-mini").strip()
 
 # Fast in-memory caches to avoid duplicate SQL queries within the same session
+_company_domain_cache: dict[str, str] = {}  # normalized_company -> domain
+_company_domain_cache_lock = threading.Lock()
+
 _crm_domain_cache: dict[str, bool] = {}  # domain -> exists_in_crm (bool)
 _crm_domain_cache_lock = threading.Lock()
 
 _title_cache: dict[str, dict] = {}  # normalized_title -> {is_required, segment, status, reason}
 _title_cache_lock = threading.Lock()
+
+_indian_name_cache: dict[str, tuple[bool, str]] = {}  # normalized_name -> (is_pure_indian, reason)
+_indian_name_cache_lock = threading.Lock()
 
 _schema_cache: dict[str, Any] = {}
 _schema_cache_lock = threading.Lock()
@@ -89,8 +95,8 @@ index,segment,is_required(1|0),confidence(H|M|L),routing_action"""
 # ============================================================
 
 app = FastAPI(
-    title="Apollo Contact Database Checker (Deterministic)",
-    version="2.0.0",
+    title="Apollo Lead Processing & Resolution Engine",
+    version="3.0.0",
 )
 
 app.add_middleware(
@@ -280,13 +286,181 @@ def generate_candidate_domains(company_name: str) -> list[str]:
 
 
 # ============================================================
+# REFINED DOMAIN LOOKUP CHAIN (detected_companies Table)
+# ============================================================
+
+def ensure_detected_companies_table(conn):
+    """Ensure the detected_companies table exists for storing detected company names, website links, and domains."""
+    try:
+        with conn.cursor() as cur:
+            if is_mysql_conn(conn):
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS `detected_companies` (
+                        `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                        `company_name` VARCHAR(255) NOT NULL DEFAULT '',
+                        `normalized_company` VARCHAR(255) NOT NULL DEFAULT '',
+                        `website_link` VARCHAR(512) DEFAULT '',
+                        `domain` VARCHAR(255) NOT NULL DEFAULT '',
+                        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        INDEX `idx_normalized_company` (`normalized_company`),
+                        INDEX `idx_domain` (`domain`),
+                        UNIQUE KEY `unique_company_domain` (`normalized_company`(128), `domain`(128))
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
+            else:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS detected_companies (
+                        id SERIAL PRIMARY KEY,
+                        company_name VARCHAR(255) NOT NULL DEFAULT '',
+                        normalized_company VARCHAR(255) NOT NULL DEFAULT '',
+                        website_link VARCHAR(512) DEFAULT '',
+                        domain VARCHAR(255) NOT NULL DEFAULT '',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        CONSTRAINT unique_company_domain UNIQUE (normalized_company, domain)
+                    );
+                """)
+    except Exception as e:
+        print(f"[ContactChecker] Notice: ensure detected_companies table error: {e}", flush=True)
+
+
+def resolve_company_domains(contacts: list[Any], connection=None) -> tuple[dict[str, str], dict[str, str]]:
+    """
+    Refined Domain Lookup Chain:
+      1. Query 'detected_companies' table / L1 cache using normalized company name.
+      2. If found in 'detected_companies', reuse preserved domain.
+      3. If NOT found in 'detected_companies', extract domain from Apollo website_link (or candidate generator)
+         and insert (company_name, normalized_company, website_link, domain) into 'detected_companies'.
+    Returns:
+      - contact_primary_domain: dict[contact_key -> domain]
+      - contact_website_link: dict[contact_key -> website_link]
+    """
+    if not contacts:
+        return {}, {}
+
+    contact_primary_domain: dict[str, str] = {}
+    contact_website_link: dict[str, str] = {}
+
+    missing_norm_comps = set()
+    for c in contacts:
+        comp_name = clean_company_name(c.company)
+        norm_comp = normalize_text(comp_name)
+        with _company_domain_cache_lock:
+            if norm_comp in _company_domain_cache:
+                contact_primary_domain[c.key] = _company_domain_cache[norm_comp]
+            else:
+                if norm_comp:
+                    missing_norm_comps.add(norm_comp)
+
+    # Batch query detected_companies DB table for cache misses
+    if missing_norm_comps:
+        def do_comp_query(conn):
+            ensure_detected_companies_table(conn)
+            try:
+                with conn.cursor() as cur:
+                    if is_mysql_conn(conn):
+                        format_strings = ",".join(["%s"] * len(missing_norm_comps))
+                        sql = f"SELECT `normalized_company`, `domain` FROM `detected_companies` WHERE `normalized_company` IN ({format_strings});"
+                        cur.execute(sql, tuple(missing_norm_comps))
+                    else:
+                        sql = 'SELECT normalized_company, domain FROM "detected_companies" WHERE normalized_company = ANY(%s);'
+                        cur.execute(sql, (list(missing_norm_comps),))
+
+                    rows = cur.fetchall()
+                    with _company_domain_cache_lock:
+                        for row in rows:
+                            if row and len(row) >= 2:
+                                n_c = str(row[0]).strip().lower()
+                                d_v = str(row[1]).strip().lower()
+                                if n_c and d_v:
+                                    _company_domain_cache[n_c] = d_v
+            except Exception as e:
+                print(f"[ContactChecker] Notice: detected_companies lookup: {e}", flush=True)
+
+        if connection:
+            do_comp_query(connection)
+        else:
+            with get_connection() as conn:
+                do_comp_query(conn)
+
+    # For contacts without domain, extract from website_link and persist to detected_companies
+    new_records_to_insert = []
+    for c in contacts:
+        comp_name = clean_company_name(c.company)
+        norm_comp = normalize_text(comp_name)
+
+        resolved_domain = _company_domain_cache.get(norm_comp)
+        web_link = (getattr(c, "website_link", None) or "").strip()
+
+        if not resolved_domain:
+            if web_link:
+                resolved_domain = normalize_domain(web_link)
+            elif getattr(c, "company_domain", None):
+                resolved_domain = normalize_domain(c.company_domain)
+
+            if not resolved_domain:
+                cand_doms = generate_candidate_domains(comp_name)
+                resolved_domain = cand_doms[0] if cand_doms else (norm_comp + ".com" if norm_comp else "")
+
+            if resolved_domain and norm_comp:
+                with _company_domain_cache_lock:
+                    _company_domain_cache[norm_comp] = resolved_domain
+
+                new_records_to_insert.append((
+                    comp_name[:255],
+                    norm_comp[:255],
+                    web_link[:512] or (f"https://{resolved_domain}" if resolved_domain else ""),
+                    resolved_domain[:255],
+                ))
+
+        contact_primary_domain[c.key] = resolved_domain or (norm_comp + ".com" if norm_comp else "")
+        contact_website_link[c.key] = web_link or (f"https://{resolved_domain}" if resolved_domain else "")
+
+    if new_records_to_insert:
+        def do_insert_comps(conn):
+            ensure_detected_companies_table(conn)
+            try:
+                with conn.cursor() as cur:
+                    if is_mysql_conn(conn):
+                        sql = """
+                            INSERT INTO `detected_companies` (`company_name`, `normalized_company`, `website_link`, `domain`)
+                            VALUES (%s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                `website_link` = IF(VALUES(`website_link`) != '', VALUES(`website_link`), `website_link`),
+                                `domain` = VALUES(`domain`),
+                                `updated_at` = CURRENT_TIMESTAMP;
+                        """
+                    else:
+                        sql = """
+                            INSERT INTO detected_companies (company_name, normalized_company, website_link, domain)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (normalized_company, domain) DO UPDATE
+                                SET website_link = CASE WHEN EXCLUDED.website_link != '' THEN EXCLUDED.website_link ELSE detected_companies.website_link END,
+                                    updated_at = CURRENT_TIMESTAMP;
+                        """
+                    cur.executemany(sql, new_records_to_insert)
+                    print(f"[ContactChecker] Auto-persisted {len(new_records_to_insert)} new record(s) into `detected_companies`.", flush=True)
+            except Exception as e:
+                print(f"[ContactChecker] Notice: insert detected_companies error: {e}", flush=True)
+
+        if connection:
+            do_insert_comps(connection)
+        else:
+            with get_connection() as conn:
+                do_insert_comps(conn)
+
+    return contact_primary_domain, contact_website_link
+
+
+# ============================================================
 # DETERMINISTIC CRM DOMAIN CHECKER (7.28M Database)
 # ============================================================
 
 def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) -> tuple[bool, str]:
     """
-    Check if any of the candidate domains exist in the CRM 'emails' table.
-    Uses in-memory cache + fast indexed SQL query.
+    Check if any candidate domains exist in the CRM 'emails' table.
+    Uses L1 memory cache + fast indexed SQL query.
     Returns: (exists_in_crm: bool, matched_domain: str)
     """
     if not candidate_domains:
@@ -338,23 +512,28 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
 # LAYER 1: TOP-TIER EXECUTIVE SUBSTRING PATTERNS
 # ============================================================
 
-# Order matters: check more specific multi-word patterns first!
 VERY_HIGH_PRIORITY_SUBSTRINGS = [
     r"\bchief\b",
     r"\bceo\b",
+    r"\bcto\b",
+    r"\bcfo\b",
+    r"\bcoo\b",
+    r"\bcro\b",
+    r"\bcmo\b",
+    r"\bcpo\b",
+    r"\bcio\b",
+    r"\bciso\b",
     r"\bowner\b",
     r"\bfounder\b",
     r"\bco-founder\b",
     r"\bpartner\b",
     r"\bmanaging director\b",
     r"\bexecutive director\b",
-    # Vice President variations
     r"\bexecutive vice president\b",
     r"\bsenior vice president\b",
     r"\bvice president\b",
     r"\bvice-president\b",
     r"\bassistant vice president\b",
-    # VP acronym variations
     r"\bevp\b",
     r"\be\.v\.p\.\b",
     r"\bsvp\b",
@@ -363,7 +542,6 @@ VERY_HIGH_PRIORITY_SUBSTRINGS = [
     r"\ba\.v\.p\.\b",
     r"\bvp\b",
     r"\bv\.p\.\b",
-    # President (checked after Vice President so VP isn't mislabeled)
     r"\bpresident\b",
 ]
 
@@ -379,24 +557,38 @@ HIGH_PRIORITY_SUBSTRINGS = [
 ]
 
 
+EXCLUDED_ENTRY_SUBSTRINGS = [
+    r"\bintern\b",
+    r"\binternship\b",
+    r"\btrainee\b",
+    r"\bapprentice\b",
+    r"\bstudent\b",
+]
+
+
 def match_priority_substrings(job_title: str) -> tuple[bool, str, str] | None:
     """
-    Layer 1: Fast regex/substring match for top-tier executive titles.
+    Fast regex/substring match for executive and excluded titles.
     Returns: (is_required: bool, priority_level: str, matched_substring: str) or None
     """
     if not job_title:
         return None
     t_clean = job_title.strip().lower()
-    # Normalize dotted acronyms (e.g. "V.P." -> "vp", "S.V.P." -> "svp", "G.M." -> "gm")
     t_nodots = re.sub(r"\.", "", t_clean)
 
-    # 1. Very High Priority Substrings (Chief, CEO, VP, Vice President, President, Founder, etc.)
+    # 1. Immediate disqualification for explicit intern/entry-level keywords
+    for pat in EXCLUDED_ENTRY_SUBSTRINGS:
+        if re.search(pat, t_clean) or re.search(pat, t_nodots):
+            sub = pat.replace(r"\b", "").replace(r"\.", "").replace(r"\-", "-").strip()
+            return False, "Excluded", sub
+
+    # 2. Very High Priority Substrings (C-suite, VP, Founder, etc.)
     for pat in VERY_HIGH_PRIORITY_SUBSTRINGS:
         if re.search(pat, t_clean) or re.search(pat, t_nodots):
             sub = pat.replace(r"\b", "").replace(r"\.", "").replace(r"\-", "-").strip()
             return True, "Very High", sub
 
-    # 2. High Priority Substrings (Director, Head of, GM, etc.)
+    # 3. High Priority Substrings (Director, Head of, GM, etc.)
     for pat in HIGH_PRIORITY_SUBSTRINGS:
         if re.search(pat, t_clean) or re.search(pat, t_nodots):
             sub = pat.replace(r"\b", "").replace(r"\.", "").replace(r"\-", "-").strip()
@@ -406,15 +598,108 @@ def match_priority_substrings(job_title: str) -> tuple[bool, str, str] | None:
 
 
 # ============================================================
+# OPTION 2: PURE INDIAN NAME ORIGIN FILTER & EDGE-CASE SAFETY
 # ============================================================
-# ON-DEMAND LLM NOVEL TITLE CLASSIFIER (CAVEMAN + PONYTAIL)
+
+PURE_INDIAN_SURNAMES = {
+    "sharma", "patel", "rao", "mukherjee", "agarwal", "agrawal", "gupta", "singh",
+    "verma", "reddy", "kumar", "iyer", "joshi", "mehta", "shah", "chatterjee",
+    "banerjee", "nair", "menon", "bhattacharya", "mishra", "pandey", "yadav",
+    "chowdhury", "choudhury", "choudhary", "bhatia", "kapoor", "khanna", "malhotra",
+    "bose", "sen", "sengupta", "das", "dasgupta", "saxena", "tiwari", "tripathi",
+    "shukla", "dubey", "chaubey", "narayan", "natarajan", "raman", "krishnan",
+    "subramanian", "venkataraman", "swamy", "naidu", "shetty", "hegde", "pai",
+    "kulkarni", "deshmukh", "patil", "jadhav", "pawar", "shinde", "gaikwad",
+    "prasad", "sinha", "srivastava", "chawla", "arora", "sethi", "sood", "puri",
+    "deshpande", "gokhale", "bhave", "apte", "gadgil", "kelkar", "chawla"
+}
+
+SAFE_EDGE_CASE_SURNAMES = {
+    "dsouza", "d souza", "fernandes", "pinto", "pereira", "lobo", "albuquerque",
+    "coutinho", "braganza", "rodrigues", "silva", "costa", "souza", "dias", "gonsalves",
+    "sheikh", "shaikh", "mistry", "poonawalla", "wadia", "godrej", "tata", "contractor",
+    "merchant", "engineer", "vakil", "al", "alsayed", "altamimi", "khan"
+}
+
+SAFE_GLOBAL_FIRST_NAMES = {
+    "john", "david", "michael", "james", "robert", "william", "richard", "thomas",
+    "charles", "daniel", "matthew", "anthony", "mark", "donald", "steven", "paul",
+    "andrew", "joshua", "kenneth", "kevin", "brian", "george", "edward", "ronald",
+    "timothy", "jason", "jeffrey", "ryan", "jacob", "gary", "nicholas", "eric",
+    "stephen", "jonathan", "larry", "justin", "scott", "brandon", "frank", "benjamin",
+    "gregory", "samuel", "raymond", "patrick", "alexander", "jack", "dennis", "jerry",
+    "alice", "sarah", "emma", "olivia", "sophia", "isabella", "charlotte", "amelia",
+    "mia", "harper", "evelyn", "abigail", "emily", "elizabeth", "mila", "ella",
+    "avery", "sofia", "camila", "aria", "scarlett", "victoria", "madison", "luna",
+    "grace", "chloe", "penelope", "layla", "riley", "zoey", "nora", "lily",
+    "eleanor", "hannah", "lillian", "addison", "aubrey", "ellie", "stella", "natalie",
+    "zoe", "leah", "hazel", "violet", "aurora", "savannah", "audrey", "brooklyn",
+    "pierre", "hans", "jean", "lucas", "mateo", "chen", "lin", "wang", "zhang", "liu",
+    "yang", "huang", "wu", "zhou", "xu", "sun", "ma", "zhu", "hu", "guo", "he", "gao"
+}
+
+
+def is_unambiguous_pure_indian_name(full_name: str, connection=None) -> tuple[bool, str]:
+    """
+    Option 2: Strict Pure Indian Name Origin Evaluation with Edge-Case Protection.
+    Returns: (is_pure_indian: bool, reason: str)
+      - True -> Pure Indian Name Origin (Excluded / Ignored)
+      - False -> Foreign / Anglo / Goan Christian / Parsi / Global (Preserved as Required)
+    """
+    if not full_name:
+        return False, "No name specified"
+
+    norm_name = normalize_text(full_name)
+    if not norm_name:
+        return False, "Empty normalized name"
+
+    with _indian_name_cache_lock:
+        if norm_name in _indian_name_cache:
+            return _indian_name_cache[norm_name]
+
+    name_parts = full_name.strip().lower().split()
+    if not name_parts:
+        return False, "Invalid name"
+
+    first_name = name_parts[0]
+    last_name = name_parts[-1] if len(name_parts) > 1 else ""
+
+    # 1. Check for Goan Christian / Mangalorean / Parsi / Arab / Global safe exceptions
+    for safe_sur in SAFE_EDGE_CASE_SURNAMES:
+        if safe_sur in last_name or safe_sur in full_name.lower():
+            res = (False, f"Safe Edge-Case Origin: '{last_name.title()}' preserved (Goan/Parsi/Global)")
+            with _indian_name_cache_lock:
+                _indian_name_cache[norm_name] = res
+            return res
+
+    # 2. Check for unmistakable Western / Global first names
+    if first_name in SAFE_GLOBAL_FIRST_NAMES and last_name not in PURE_INDIAN_SURNAMES:
+        res = (False, f"Foreign / Global Name: '{full_name}' preserved")
+        with _indian_name_cache_lock:
+            _indian_name_cache[norm_name] = res
+        return res
+
+    # 3. Check for unmistakable Pure Indian surnames
+    for ind_sur in PURE_INDIAN_SURNAMES:
+        if ind_sur == last_name or (len(name_parts) > 1 and ind_sur in [p.lower() for p in name_parts]):
+            res = (True, f"Demographic Filter: Pure Indian Name Origin ('{ind_sur.title()}')")
+            with _indian_name_cache_lock:
+                _indian_name_cache[norm_name] = res
+            return res
+
+    # Default conservative policy: Non-Indian or Ambiguous is PRESERVED
+    res = (False, f"Global Name: '{full_name}' preserved")
+    with _indian_name_cache_lock:
+        _indian_name_cache[norm_name] = res
+    return res
+
+
+# ============================================================
+# NOVEL TITLE CLASSIFIER (CAVEMAN + PONYTAIL COMPACT PROMPTING)
 # ============================================================
 
 def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) -> tuple[dict[str, dict], dict]:
-    """
-    Call gpt-4o-mini for unique unrecognized titles, auto-insert into MySQL job_title_guardrails table.
-    Returns: (results_dict: norm_title -> title_info, token_stats: dict)
-    """
+    """Call gpt-4o-mini for unique unrecognized titles, auto-insert into MySQL job_title_guardrails table."""
     if not novel_titles or not OPENAI_API_KEY:
         return {}, {
             "prompt_tokens": 0,
@@ -459,9 +744,7 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
             "low_conf": 0,
         }
 
-    # Parse CSV response
     parsed_items = {}
-    import io
     csv_reader = csv.reader(io.StringIO(raw_text))
     for row in csv_reader:
         if not row or len(row) < 3:
@@ -501,7 +784,6 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
         route = item.get("action", "Review-Queue")
         reason = f"LLM Classified: {seg} ({conf_str} Conf)"
 
-        # Hard stop condition for blocker functions
         norm_key = raw_title.strip().lower()
         has_blocker_word = any(w in norm_key for w in BLOCKER_KEYWORDS)
         if has_blocker_word and not seg.startswith("X"):
@@ -531,7 +813,6 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
         with _title_cache_lock:
             _title_cache[norm_title] = res_info
 
-        # Queue for persistent DB insert
         db_rows_to_insert.append((
             raw_title[:255],
             norm_title[:255],
@@ -539,7 +820,6 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
             1 if is_req else 0,
         ))
 
-    # Persist newly classified titles into MySQL database table
     if db_rows_to_insert and connection:
         try:
             with connection.cursor() as cur:
@@ -568,18 +848,11 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
 
 
 # ============================================================
-# ASYNCHRONOUS BACKGROUND MICRO-BATCH WORKER (NON-BLOCKING)
+# ASYNCHRONOUS BACKGROUND MICRO-BATCH WORKER (50-ITEM FLUSH)
 # ============================================================
 
 class BackgroundTitleBatchWorker:
-    """
-    Background worker that queues unrecognized/novel job titles in memory.
-    Triggers 1 single batch LLM classification when:
-      1. Queue reaches batch_size (default: 50 titles) OR
-      2. flush_interval_sec passes (default: 15 seconds) and queue has >= 1 title.
-    Classified results are auto-persisted into MySQL table `job_title_guardrails`
-    and loaded into memory `_title_cache` without blocking live page navigation.
-    """
+    """Background worker that micro-batches novel titles up to 50 items (or 15s timeout)."""
     def __init__(self, batch_size: int = 50, flush_interval_sec: float = 15.0):
         self.batch_size = batch_size
         self.flush_interval_sec = flush_interval_sec
@@ -674,9 +947,9 @@ background_batch_worker = BackgroundTitleBatchWorker(batch_size=50, flush_interv
 
 def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
     """
-    2-Layer Job Title Evaluation (Deterministic):
-    Layer 1: Database table lookup against 'job_title_guardrails' (64,800+ titles across Segments).
-    Layer 2: Top-tier executive substring fallback (Chief, CEO, President, VP, Director, etc.).
+    2-Layer Job Title Evaluation:
+    Layer 1: Database table lookup against 'job_title_guardrails' (64,800+ rules).
+    Layer 2: Top-tier executive substring fallback.
     """
     if not job_title:
         return {"required": False, "status": "disqualified_title", "segment": "Unspecified", "reason": "No title specified"}
@@ -687,7 +960,7 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
         if norm_title in _title_cache:
             return _title_cache[norm_title]
 
-    # --- LAYER 1: DATABASE TABLE LOOKUP (EXACT MATCH & EXPLICIT OVERRIDES) ---
+    # --- LAYER 1: DATABASE TABLE LOOKUP ---
     def do_query(conn):
         try:
             with conn.cursor() as cur:
@@ -719,8 +992,8 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
         if layer2_match:
             is_req, prio, sub = layer2_match
             res = {
-                "required": True,
-                "status": "qualified",
+                "required": is_req,
+                "status": "qualified" if is_req else "disqualified_title",
                 "segment": f"Prio_{prio.replace(' ', '_')}_{sub.title()}",
                 "reason": f"Layer 2 Substring Match: '{sub}' ({prio} Priority)",
             }
@@ -728,7 +1001,6 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
                 _title_cache[norm_title] = res
             return res
 
-        # Title not found in DB or Substrings: Not Recognized
         fallback = {
             "required": False,
             "status": "not_recognized_title",
@@ -747,6 +1019,12 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
             return do_query(conn)
 
 
+# Backwards compatibility helper
+def evaluate_job_title_with_ai(title: str = "", name: str = "", company: str = "", location: str = "", employee_count: int | None = None, apollo_id: str = "", connection=None, **kwargs) -> dict:
+    job_t = title or kwargs.get("job_title", "")
+    return lookup_job_title_in_db(job_t, connection=connection)
+
+
 # ============================================================
 # API MODELS & MATCHING ENDPOINT
 # ============================================================
@@ -761,6 +1039,8 @@ class ApolloContact(BaseModel):
     company: str = ""
     location: str | None = ""
     company_domain: str | None = None
+    website_link: str | None = None
+    email: str | None = ""
     linkedin_url: str | None = None
     apollo_profile_url: str | None = None
 
@@ -780,6 +1060,8 @@ class SyncSavedLeadItem(BaseModel):
     job_title: str | None = ""
     company: str | None = ""
     domain: str | None = ""
+    website_link: str | None = ""
+    email: str | None = ""
     location: str | None = ""
     linkedin_url: str | None = ""
     apollo_profile_url: str | None = ""
@@ -793,7 +1075,48 @@ class SyncSavedLeadsRequest(BaseModel):
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "engine": "deterministic_v2_with_llm_fallback"}
+    return {"status": "ok", "engine": "company_domains_lookup_v3"}
+
+
+@app.post("/flush-pending-queues")
+def flush_pending_queues():
+    """Synchronously flush background title micro-batches before CSV export."""
+    background_batch_worker.flush_batch()
+    return {
+        "status": "ok",
+        "flushed_at": datetime.now(timezone.utc).isoformat(),
+        "worker_status": background_batch_worker.get_status()
+    }
+
+
+@app.get("/detected-companies")
+@app.get("/company-domains")
+def get_detected_companies_list(limit: int = 100):
+    """Retrieve the latest company domain resolution records from detected_companies table."""
+    with get_connection() as conn:
+        ensure_detected_companies_table(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT `id`, `company_name`, `normalized_company`, `website_link`, `domain`, `created_at`
+                FROM `detected_companies`
+                ORDER BY `id` DESC
+                LIMIT %s;
+            """, (limit,))
+            rows = cur.fetchall()
+            return {
+                "total": len(rows),
+                "companies": [
+                    {
+                        "id": r[0],
+                        "company_name": r[1],
+                        "normalized_company": r[2],
+                        "website_link": r[3],
+                        "domain": r[4],
+                        "created_at": str(r[5]),
+                    }
+                    for r in rows
+                ]
+            }
 
 
 @app.post("/sync-saved-leads")
@@ -887,7 +1210,6 @@ def match_apollo(request: ApolloMatchRequest):
 
     max_contacts_per_comp = int(os.getenv("MAX_CONTACTS_PER_COMPANY", "1"))
 
-    # Track metrics for dashboard
     unique_domains_seen = set()
     existing_domain_contacts = 0
     net_new_domain_contacts = 0
@@ -908,37 +1230,16 @@ def match_apollo(request: ApolloMatchRequest):
         get_target_table_schema(conn)
 
         # --------------------------------------------------------
-        # STEP 1: PRE-GENERATE DOMAINS & BATCH QUERY UNIQUE DOMAINS
+        # STEP 1: REFINED DOMAIN LOOKUP CHAIN (company_domains)
         # --------------------------------------------------------
-        contact_candidates: dict[str, list[str]] = {}
-        contact_primary_domain: dict[str, str] = {}
-        all_candidate_domains = []
+        contact_primary_domain, contact_website_link = resolve_company_domains(contacts, connection=conn)
 
-        for contact in contacts:
-            comp_name = clean_company_name(contact.company)
-            cand_doms = []
-            if contact.company_domain:
-                norm_d = normalize_domain(contact.company_domain)
-                if norm_d:
-                    cand_doms.append(norm_d)
+        for d in contact_primary_domain.values():
+            if d:
+                unique_domains_seen.add(d)
 
-            # If no explicit domain was provided from the Apollo DOM, generate safe candidate permutations
-            if not cand_doms:
-                for d in generate_candidate_domains(comp_name):
-                    if d not in cand_doms:
-                        cand_doms.append(d)
-
-            prim_d = cand_doms[0] if cand_doms else (normalize_text(comp_name) + ".com")
-            contact_candidates[contact.key] = cand_doms
-            contact_primary_domain[contact.key] = prim_d
-            unique_domains_seen.add(prim_d)
-
-            for d in cand_doms:
-                if d not in all_candidate_domains:
-                    all_candidate_domains.append(d)
-
-        # Check all unique candidate domains in CRM in 1 single fast indexed query
-        check_domains_in_crm_batch(all_candidate_domains, connection=conn)
+        # Check all unique candidate domains in CRM 'emails' table in 1 single fast indexed query
+        check_domains_in_crm_batch(list(unique_domains_seen), connection=conn)
 
         # --------------------------------------------------------
         # STEP 2: GROUP CONTACTS BY EXISTING DOMAIN VS NET-NEW
@@ -946,11 +1247,8 @@ def match_apollo(request: ApolloMatchRequest):
         net_new_contacts: list[ApolloContact] = []
 
         for idx, contact in enumerate(contacts, 1):
-            cand_doms = contact_candidates[contact.key]
-            prim_d = contact_primary_domain[contact.key]
-            comp_name = contact.company.strip()
-
-            domain_in_crm, matched_crm_domain = check_domains_in_crm_batch(cand_doms, connection=conn)
+            prim_d = contact_primary_domain.get(contact.key, "")
+            domain_in_crm, matched_crm_domain = check_domains_in_crm_batch([prim_d], connection=conn)
 
             if domain_in_crm:
                 existing_domain_contacts += 1
@@ -970,10 +1268,10 @@ def match_apollo(request: ApolloMatchRequest):
                 net_new_contacts.append(contact)
 
         # --------------------------------------------------------
-        # STEP 3: TITLE LOOKUP & ON-DEMAND LLM CLASSIFICATION
+        # STEP 3: DEMOGRAPHIC & JOB TITLE QUALIFICATION
         # --------------------------------------------------------
         contact_title_eval: dict[str, dict] = {}
-        novel_titles_to_eval: dict[str, str] = {}  # norm_title -> raw_title
+        novel_titles_to_eval: dict[str, str] = {}
 
         for contact in net_new_contacts:
             title_name = contact.job_title.strip()
@@ -992,23 +1290,38 @@ def match_apollo(request: ApolloMatchRequest):
             if t_info.get("status") == "not_recognized_title":
                 norm_t = normalize_text(title_name)
                 novel_titles_to_eval[norm_t] = title_name
-                # Enqueue for asynchronous background batching (zero-lag on UI)
                 background_batch_worker.enqueue(title_name)
                 novel_titles_sent += 1
             else:
                 db_title_hits += 1
 
-        title_filter_active = request.title_guardrail_enabled or GUARDRAILS_ENABLED
+        title_filter_active = request.title_guardrail_enabled
+        indian_filter_active = request.indian_name_guardrail_enabled
 
         # --------------------------------------------------------
-        # STEP 4: DECISION LOGIC & 1 CONTACT PER COMPANY LIMIT
+        # STEP 4: DECISION LOGIC, DEMOGRAPHIC & 1/COMPANY LIMIT
         # --------------------------------------------------------
         for idx, contact in enumerate(net_new_contacts, 1):
             comp_name = contact.company.strip()
-            title_name = contact.job_title.strip()
-            prim_d = contact_primary_domain[contact.key]
+            prim_d = contact_primary_domain.get(contact.key, "")
             comp_key = normalize_text(prim_d) or normalize_text(comp_name)
 
+            # 4.1 Option 2 Pure Indian Name Demographic Filter
+            if indian_filter_active:
+                is_ind, ind_reason = is_unambiguous_pure_indian_name(contact.name or "", connection=conn)
+                if is_ind:
+                    ignored_count += 1
+                    results[contact.key] = {
+                        "exists": False,
+                        "required": False,
+                        "ignored": True,
+                        "guardrail_status": "indian_name_disqualified",
+                        "guardrail_reason": ind_reason,
+                        "matched_domain": prim_d,
+                    }
+                    continue
+
+            # 4.2 Job Title Hierarchy Check
             t_info = contact_title_eval.get(contact.key, {"required": False, "segment": "Unrecognized", "reason": "Not recognized", "status": "not_recognized_title"})
             title_ok = t_info.get("required", False) if title_filter_active else True
             title_status = t_info.get("status", "qualified" if title_ok else "not_recognized_title")
@@ -1027,21 +1340,39 @@ def match_apollo(request: ApolloMatchRequest):
                     "matched_domain": prim_d,
                 }
             else:
-                # Check 1 Contact per Company Limit
+                # 4.3 Check 1 Contact per Company Limit
                 already_selected = seen_required_companies.get(comp_key, [])
-                if len(already_selected) >= max_contacts_per_comp:
+                is_same_contact = any(isinstance(item, dict) and item.get("key") == contact.key for item in already_selected)
+
+                if is_same_contact:
+                    # Contact is ALREADY the elected lead for this company across page sorts
+                    required_count += 1
+                    results[contact.key] = {
+                        "exists": False,
+                        "required": True,
+                        "ignored": False,
+                        "guardrail_status": "qualified",
+                        "segment": title_seg,
+                        "guardrail_reason": title_reason,
+                        "matched_domain": prim_d,
+                    }
+                elif len(already_selected) >= max_contacts_per_comp:
+                    elected_names = ", ".join(item.get("name", "") if isinstance(item, dict) else str(item) for item in already_selected)
                     ignored_count += 1
                     results[contact.key] = {
                         "exists": False,
                         "required": False,
                         "ignored": True,
                         "guardrail_status": "company_limit_reached",
-                        "guardrail_reason": f"Company '{comp_name}' already has {len(already_selected)} contact(s) selected ({', '.join(already_selected)}). Max {max_contacts_per_comp} per company allowed.",
+                        "guardrail_reason": f"Company '{comp_name}' already has lead selected ({elected_names}). Max {max_contacts_per_comp} per company allowed.",
                         "matched_domain": prim_d,
                         "segment": title_seg,
                     }
                 else:
-                    seen_required_companies.setdefault(comp_key, []).append(contact.name or f"Contact #{idx}")
+                    seen_required_companies.setdefault(comp_key, []).append({
+                        "key": contact.key,
+                        "name": contact.name or f"Contact #{idx}"
+                    })
                     required_count += 1
                     results[contact.key] = {
                         "exists": False,
@@ -1104,8 +1435,6 @@ def match_apollo(request: ApolloMatchRequest):
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
-    # Deterministic Time Prediction Model (in ms)
-    # Domain check: ~0.5ms per unique domain + DB Title check: ~0.1ms per title + LLM call: ~400ms base + ~30ms/title (if novel titles exist)
     pred_dom_ms = len(unique_domains_seen) * 0.5
     pred_title_ms = len(net_new_contacts) * 0.1
     pred_llm_ms = (400.0 + novel_titles_sent * 30.0) if novel_titles_sent > 0 else 0.0
@@ -1114,10 +1443,10 @@ def match_apollo(request: ApolloMatchRequest):
     page_cost_usd = (token_stats["prompt_tokens"] * 0.00000015) + (token_stats["completion_tokens"] * 0.00000060)
 
     # --------------------------------------------------------
-    # STEP 5: PER-PAGE DASHBOARD LOG
+    # STEP 6: PER-PAGE DASHBOARD LOG
     # --------------------------------------------------------
     print("\n" + "=" * 80, flush=True)
-    print(f">>> [APOLLO PAGE #{batch_num} DASHBOARD] Ingested {total_received} Contacts | Title Filter: {'ON' if request.title_guardrail_enabled else 'OFF'}", flush=True)
+    print(f">>> [APOLLO PAGE #{batch_num} DASHBOARD] Ingested {total_received} Contacts | Title Filter: {'ON' if request.title_guardrail_enabled else 'OFF'} | Indian Filter: {'ON' if request.indian_name_guardrail_enabled else 'OFF'}", flush=True)
     print("=" * 80, flush=True)
     print(f"Contacts Summary : Total: {total_received} | 🟢 Required: {required_count} | ⚪ Existing/Ignored: {ignored_count}", flush=True)
     print(f"Domain Breakdown : Unique Domains: {len(unique_domains_seen)} | In CRM: {existing_domain_contacts} | Net-New: {net_new_domain_contacts}", flush=True)
@@ -1163,6 +1492,6 @@ def get_batch_worker_status():
 
 if __name__ == "__main__":
     print("\n" + "=" * 70)
-    print(">>> [ContactChecker API] Starting Pure Deterministic Engine (Port 8000)")
+    print(">>> [ContactChecker API] Starting Lead Processing Engine (Port 8000)")
     print("=" * 70 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=8000)

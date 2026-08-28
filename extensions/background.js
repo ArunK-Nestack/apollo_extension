@@ -76,6 +76,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       batch: message.batch || "batch_1",
       contacts: message.contacts || []
     };
+  } else if (message.type === "FLUSH_QUEUES") {
+    endpoint = "/flush-pending-queues";
+    body = {};
   } else {
     return;
   }
