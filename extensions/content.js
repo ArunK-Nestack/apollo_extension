@@ -29,7 +29,7 @@
     batchNumber: 1,
     batchName: "batch_1",
     titleGuardrailEnabled: true,
-    indianGuardrailEnabled: false,
+    indianGuardrailEnabled: true,
     observer: null,
     timer: null,
     pageTimer: null,
@@ -136,8 +136,6 @@
     #contact-checker-export-required,
     #contact-checker-dedupe-btn,
     #contact-checker-clear-required,
-    #contact-checker-guardrail-toggle,
-    #contact-checker-indian-toggle,
     #contact-checker-activity-toggle,
     #contact-checker-clear-activity {
       border: 0;
@@ -148,12 +146,6 @@
       font-size: 12px;
       font-weight: 700;
       cursor: pointer;
-    }
-
-    #contact-checker-guardrail-toggle,
-    #contact-checker-indian-toggle {
-      background: #374151 !important;
-      transition: background 0.2s ease;
     }
 
     #contact-checker-dedupe-btn {
@@ -1057,10 +1049,34 @@
     }
 
     const badges = contact.nameCell.querySelectorAll(
-      ".contact-checker-existing-badge, .contact-checker-required-badge, .contact-checker-ignored-badge"
+      "[data-contact-checker], .contact-checker-existing-badge, .contact-checker-required-badge, .contact-checker-ignored-badge"
     );
 
     badges.forEach(b => b.remove());
+  }
+
+  function setContactBadge(contact, className, text, title, bgColor = "") {
+    if (!contact?.link) return;
+    const nameCell = contact.nameCell || contact.link.closest('[role="cell"]') || contact.link.parentElement;
+    if (!nameCell) return;
+
+    const existingBadge = nameCell.querySelector(".contact-checker-existing-badge, .contact-checker-required-badge, .contact-checker-ignored-badge");
+    if (existingBadge) {
+      if (existingBadge.className === className && existingBadge.textContent === text) {
+        if (title) existingBadge.title = title;
+        return; // Idempotent: already has the exact badge, do not touch DOM
+      }
+      existingBadge.remove();
+    }
+
+    const badge = document.createElement("span");
+    badge.className = className;
+    badge.setAttribute("data-contact-checker", "true");
+    badge.textContent = text;
+    if (title) badge.title = title;
+    if (bgColor) badge.style.background = bgColor;
+
+    contact.link.insertAdjacentElement("afterend", badge);
   }
 
   function highlightContact(
@@ -1069,46 +1085,30 @@
   ) {
     const row = contact.row;
 
-    if (!row) {
-      return;
+    if (row) {
+      if (row.classList.contains("contact-checker-required-row")) {
+        row.classList.remove("contact-checker-required-row");
+      }
+      if (row.classList.contains("contact-checker-existing")) {
+        row.classList.remove("contact-checker-existing");
+      }
     }
-
-    clearContactBadges(contact);
 
     // Remove from required contacts if previously recorded
-    state.requiredContactsAll.delete(contact.key);
-    scheduleRequiredContactsSave();
-    renderExportControls();
-
-    row.classList.remove("contact-checker-required-row");
-    row.classList.remove("contact-checker-existing");
-
-    const badge =
-      document.createElement("span");
-
-    badge.className =
-      "contact-checker-existing-badge";
-
-    badge.textContent =
-      "✓ Existing";
-
-    if (result.email) {
-      badge.title =
-        `CRM email: ${result.email}`;
+    if (state.requiredContactsAll.has(contact.key)) {
+      state.requiredContactsAll.delete(contact.key);
+      const compKey = getCompanyDedupeKey(contact.company, result?.matched_domain || contact.domain);
+      if (compKey && state.requiredCompanyMap.get(compKey)?.key === contact.key) {
+        state.requiredCompanyMap.delete(compKey);
+      }
     }
 
-    contact.link.insertAdjacentElement(
-      "afterend",
-      badge
-    );
+    const title = result.email ? `CRM email: ${result.email}` : "";
+    setContactBadge(contact, "contact-checker-existing-badge", "✓ Existing", title);
   }
 
   // ============================================================
   // PERSIST REQUIRED CONTACTS ACROSS RELOADS
-  //
-  // chrome.storage.local only — never sent anywhere, never touches
-  // Apollo. This just survives a tab refresh or browser restart so
-  // a long session isn't lost.
   // ============================================================
 
   // ============================================================
@@ -1138,10 +1138,6 @@
 
   // ============================================================
   // PERSIST REQUIRED CONTACTS ACROSS RELOADS
-  //
-  // chrome.storage.local only — never sent anywhere, never touches
-  // Apollo. This just survives a tab refresh or browser restart so
-  // a long session isn't lost.
   // ============================================================
 
   function loadStoredRequiredContacts() {
@@ -1160,11 +1156,15 @@
         }
         if (result?.[TITLE_GUARDRAIL_STORAGE_KEY] !== undefined) {
           state.titleGuardrailEnabled =
-            result[TITLE_GUARDRAIL_STORAGE_KEY] === true;
+            result[TITLE_GUARDRAIL_STORAGE_KEY] !== false;
+        } else {
+          state.titleGuardrailEnabled = true;
         }
         if (result?.[INDIAN_GUARDRAIL_STORAGE_KEY] !== undefined) {
           state.indianGuardrailEnabled =
-            result[INDIAN_GUARDRAIL_STORAGE_KEY] === true;
+            result[INDIAN_GUARDRAIL_STORAGE_KEY] !== false;
+        } else {
+          state.indianGuardrailEnabled = true;
         }
 
         const stored =
@@ -1254,9 +1254,6 @@
     );
   }
 
-  // Apollo IDs come from the row's own link href/data-to attribute,
-  // which is already present in the DOM the user is looking at.
-  // Nothing is clicked or navigated to get this value.
   function getApolloIdFromKey(key) {
     if (!key || !key.startsWith("apollo-") || key.startsWith("apollo-row-")) {
       return "";
@@ -1282,6 +1279,9 @@
       }
     }
 
+    const isPending = (result?.guardrail_status === "pending_title_eval") || (result?.segment === "Pending_Evaluation");
+    const segmentVal = result?.segment || (isPending ? "Pending_Evaluation" : "Required_Lead");
+
     state.requiredContactsAll.set(contact.key, {
       apollo_id: apolloId,
       first_name: firstName,
@@ -1292,7 +1292,9 @@
       domain: domain,
       location: contact.location || "",
       linkedin_url: contact.linkedin_url || "",
-      apollo_profile_url: apolloUrl
+      apollo_profile_url: apolloUrl,
+      segment: segmentVal,
+      is_pending_eval: isPending
     });
 
     if (compKey) {
@@ -1302,55 +1304,49 @@
         company: contact.company
       });
     }
-
-    scheduleRequiredContactsSave();
   }
 
   function markRequired(contact, result) {
     const row = contact.row;
 
     if (row) {
-      row.classList.remove("contact-checker-existing");
-      row.classList.add("contact-checker-required-row");
+      if (row.classList.contains("contact-checker-existing")) {
+        row.classList.remove("contact-checker-existing");
+      }
+      if (!row.classList.contains("contact-checker-required-row")) {
+        row.classList.add("contact-checker-required-row");
+      }
       state.highlightedRows.add(row);
     }
 
-    clearContactBadges(contact);
-
     recordRequiredContact(contact, result);
-    renderExportControls();
 
-    const badge =
-      document.createElement("span");
-
-    badge.className =
-      "contact-checker-required-badge";
-
-    badge.textContent =
-      "★ Required Lead";
+    const isPending = (result?.guardrail_status === "pending_title_eval") || (result?.segment === "Pending_Evaluation");
+    let title = isPending
+      ? `Novel Title Provisionally Accepted (Pending 50-item AI batch evaluation)`
+      : "Target Lead: Net-new domain (Ready for CSV export)";
 
     if (result?.guardrail_reason) {
       const roleStr = result.role_type ? ` [${result.role_type}]` : "";
-      badge.title = `Tier ${result.tier || ""}${roleStr}: ${result.guardrail_reason}`;
-    } else {
-      badge.title = "Target Lead: Net-new domain (Ready for CSV export)";
+      title = isPending
+        ? result.guardrail_reason
+        : `Tier ${result.tier || ""}${roleStr}: ${result.guardrail_reason}`;
     }
 
-    contact.link.insertAdjacentElement(
-      "afterend",
-      badge
-    );
+    setContactBadge(contact, "contact-checker-required-badge", "★ Required Lead", title);
   }
 
   function markIgnored(contact, result) {
     const row = contact.row;
 
     if (row) {
-      row.classList.remove("contact-checker-existing");
-      row.classList.remove("contact-checker-required-row");
+      if (row.classList.contains("contact-checker-existing")) {
+        row.classList.remove("contact-checker-existing");
+      }
+      if (row.classList.contains("contact-checker-required-row")) {
+        row.classList.remove("contact-checker-required-row");
+      }
     }
-
-    clearContactBadges(contact);
 
     // Only delete from required contacts if disqualified for domain/title/demographic,
     // NEVER delete an already-saved lead if merely receiving company_limit_reached!
@@ -1362,68 +1358,44 @@
         if (compKey && state.requiredCompanyMap.get(compKey)?.key === contact.key) {
           state.requiredCompanyMap.delete(compKey);
         }
-        scheduleRequiredContactsSave();
-        renderExportControls();
       }
     }
 
-    const badge =
-      document.createElement("span");
+    let badgeText = "⊘ Ignored";
+    let badgeBg = "#64748b";
+    let badgeTitle = result?.guardrail_reason || "Ignored by guardrail rules.";
 
-    badge.className =
-      "contact-checker-ignored-badge";
-
-    if (result?.guardrail_status === "domain_already_in_db") {
-      badge.textContent =
-        "⊘ Existing Domain";
-
-      badge.title =
-        result.guardrail_reason ||
-        "Company domain already exists in CRM database with existing contacts.";
+    if (result?.guardrail_status === "contact_already_in_db") {
+      badgeText = "⊘ Existing Contact";
+      badgeBg = "#475569";
+      badgeTitle = result.guardrail_reason || "Contact (full name & domain) already exists in CRM database.";
+    } else if (result?.guardrail_status === "email_already_in_db") {
+      badgeText = "⊘ Existing Email";
+      badgeBg = "#475569";
+      badgeTitle = result.guardrail_reason || "Contact email already exists in CRM database.";
+    } else if (result?.guardrail_status === "domain_already_in_db") {
+      badgeText = "⊘ Existing Domain";
+      badgeBg = "#475569";
+      badgeTitle = result.guardrail_reason || "Company domain already exists in CRM database with existing contacts.";
     } else if (result?.guardrail_status === "indian_name_disqualified") {
-      badge.textContent =
-        "⊘ Indian Origin";
-      badge.style.background = "#ef4444";
-
-      badge.title =
-        result.guardrail_reason ||
-        "Excluded: Pure Indian Name Origin.";
+      badgeText = "⊘ Indian Origin";
+      badgeBg = "#ef4444";
+      badgeTitle = result.guardrail_reason || "Excluded: Pure Indian Name Origin.";
     } else if (result?.guardrail_status === "not_recognized_title" || result?.guardrail_status === "not_recognized") {
-      badge.textContent =
-        "⊘ Not Recognized";
-      badge.style.background = "#64748b";
-
-      badge.title =
-        result.guardrail_reason ||
-        "Title is not recognized in our database.";
+      badgeText = "⊘ Not Recognized";
+      badgeBg = "#64748b";
+      badgeTitle = result.guardrail_reason || "Title is not recognized in our database.";
     } else if (result?.guardrail_status === "disqualified_title") {
-      badge.textContent =
-        "⊘ Excluded: Title";
-
-      badge.title =
-        result.guardrail_reason ||
-        "Excluded: Title belongs to non-required segment (Prio 3/4).";
+      badgeText = "⊘ Excluded: Title";
+      badgeBg = "#64748b";
+      badgeTitle = result.guardrail_reason || "Excluded: Title belongs to non-required segment.";
     } else if (result?.guardrail_status === "company_limit_reached") {
-      badge.textContent =
-        "⊘ 1/Company Max";
-      badge.style.background = "#6b7280";
-
-      badge.title =
-        result.guardrail_reason ||
-        "Only 1 contact per company is allowed.";
-    } else {
-      badge.textContent =
-        "⊘ Ignored";
-
-      badge.title =
-        result?.guardrail_reason ||
-        "Ignored by guardrail rules.";
+      badgeText = "⊘ 1/Company Max";
+      badgeBg = "#6b7280";
+      badgeTitle = result.guardrail_reason || "Only 1 contact per company is allowed.";
     }
 
-    contact.link.insertAdjacentElement(
-      "afterend",
-      badge
-    );
+    setContactBadge(contact, "contact-checker-ignored-badge", badgeText, badgeTitle, badgeBg);
   }
 
   function applyContactResult(
@@ -1537,44 +1509,147 @@
     return lines.join("\n");
   }
 
+  function checkAndFlushPendingTitles(force = false, callback = null) {
+    const pendingContacts = [];
+    const pendingTitles = new Set();
+    const pendingNames = new Set();
+
+    state.requiredContactsAll.forEach((c, key) => {
+      if (c.segment === "Pending_Evaluation" || c.is_pending_eval || c.is_pending_indian_eval) {
+        pendingContacts.push({ key, contact: c });
+        if (c.job_title) pendingTitles.add(c.job_title);
+        if (c.name) pendingNames.add(c.name);
+      }
+    });
+
+    if (pendingContacts.length === 0) {
+      if (callback) callback();
+      return;
+    }
+
+    // Only auto-trigger when count hits 50 or force is requested (e.g. before export)
+    if (!force && pendingContacts.length < 50) {
+      if (callback) callback();
+      return;
+    }
+
+    const titlesList = Array.from(pendingTitles);
+    const namesList = Array.from(pendingNames);
+    showStatus(`⚡ 50-Item Batch: Evaluating ${pendingContacts.length} pending titles & names with AI...`, 0, true);
+
+    chrome.runtime.sendMessage({
+      type: "EVALUATE_PENDING_TITLES",
+      titles: titlesList,
+      names: namesList,
+      batch: state.batchName || "batch_1"
+    }, (response) => {
+      if (!response?.success) {
+        if (callback) callback();
+        return;
+      }
+
+      const titleEvals = response.title_results || response.results || {};
+      const nameEvals = response.name_results || {};
+      let excludedTitlesCount = 0;
+      let excludedIndianCount = 0;
+      let keptCount = 0;
+
+      pendingContacts.forEach(({ key, contact }) => {
+        const titleEval = titleEvals[contact.job_title];
+        const nameEval = nameEvals[contact.name];
+
+        let shouldExclude = false;
+        let excludeReason = "";
+
+        // 1. Check Indian demographic evaluation
+        if (nameEval && nameEval.is_indian === true) {
+          shouldExclude = true;
+          excludeReason = nameEval.reason || "Demographic Filter: Pure Indian Origin";
+          excludedIndianCount++;
+        }
+        // 2. Check Job title hierarchy evaluation
+        else if (titleEval && titleEval.required === false) {
+          shouldExclude = true;
+          excludeReason = titleEval.reason || "Disqualified Title";
+          excludedTitlesCount++;
+        }
+
+        if (shouldExclude) {
+          // Prune / delete from local storage
+          state.requiredContactsAll.delete(key);
+          const compKey = getCompanyDedupeKey(contact.company, contact.domain);
+          if (compKey && state.requiredCompanyMap.get(compKey)?.key === key) {
+            state.requiredCompanyMap.delete(compKey);
+          }
+        } else {
+          // Keep and upgrade
+          keptCount++;
+          if (titleEval?.segment) {
+            contact.segment = titleEval.segment;
+          }
+          contact.is_pending_eval = false;
+          contact.is_pending_indian_eval = false;
+          state.requiredContactsAll.set(key, contact);
+        }
+      });
+
+      saveRequiredContactsNow();
+      renderExportControls();
+
+      // Refresh active page so row badges update from pending to qualified / excluded
+      state.checkedContacts.clear();
+      state.currentContacts.clear();
+      scanApollo();
+
+      const totalExcluded = excludedTitlesCount + excludedIndianCount;
+      showStatus(`⚡ Evaluated ${pendingContacts.length} contacts: ${keptCount} kept, ${totalExcluded} excluded (${excludedTitlesCount} title, ${excludedIndianCount} demographic)!`, 5000);
+      addActivity("PENDING_BATCH_EVALUATED", `AI Evaluated ${pendingContacts.length} pending contacts: ${keptCount} kept, ${totalExcluded} excluded from local storage (${excludedTitlesCount} non-required titles, ${excludedIndianCount} pure Indian names).`, "info", {
+        total_evaluated: pendingContacts.length,
+        kept: keptCount,
+        excluded_titles: excludedTitlesCount,
+        excluded_indian: excludedIndianCount
+      });
+
+      if (callback) callback();
+    });
+  }
+
   function exportRequiredContactsCSV() {
     if (!state.requiredContactsAll.size) {
       showStatus("No required contacts collected yet");
       return;
     }
 
-    // Flush any pending queue items before CSV generation
-    try {
-      chrome.runtime.sendMessage({ type: "FLUSH_QUEUES" }, () => {});
-    } catch (e) {}
+    // Flush any pending queue items and evaluate any pending novel titles before generating final CSV
+    checkAndFlushPendingTitles(true, () => {
+      const csv = buildRequiredContactsCSV();
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
 
-    const csv = buildRequiredContactsCSV();
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const batchTag = (state.batchName || "batch_1").replace(/[^a-zA-Z0-9_-]/g, "_");
+      link.download = `required-contacts-${batchTag}-${Date.now()}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
 
-    const link = document.createElement("a");
-    link.href = url;
-    const batchTag = (state.batchName || "batch_1").replace(/[^a-zA-Z0-9_-]/g, "_");
-    link.download = `required-contacts-${batchTag}-${Date.now()}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+      URL.revokeObjectURL(url);
 
-    URL.revokeObjectURL(url);
+      addActivity(
+        "REQUIRED_CONTACTS_EXPORTED",
+        `Exported ${state.requiredContactsAll.size} required contact(s) to CSV.`,
+        "info",
+        {
+          count: state.requiredContactsAll.size
+        }
+      );
 
-    addActivity(
-      "REQUIRED_CONTACTS_EXPORTED",
-      `Exported ${state.requiredContactsAll.size} required contact(s) to CSV.`,
-      "info",
-      {
-        count: state.requiredContactsAll.size
-      }
-    );
-
-    showStatus(
-      `Exported ${state.requiredContactsAll.size} required contact(s)`,
-      3000
-    );
+      showStatus(
+        `Exported ${state.requiredContactsAll.size} required contact(s)`,
+        3000
+      );
+    });
   }
 
   function deduplicateStoredContacts() {
@@ -1700,68 +1775,6 @@
     showStatus(`List cleared. Next scans will save under '${state.batchName}' in Database.`, 3000);
   }
 
-  function toggleTitleGuardrail() {
-    state.titleGuardrailEnabled = !state.titleGuardrailEnabled;
-
-    if (chrome?.storage?.local) {
-      chrome.storage.local.set({
-        [TITLE_GUARDRAIL_STORAGE_KEY]: state.titleGuardrailEnabled
-      });
-    }
-
-    renderExportControls();
-
-    showStatus(
-      `AI Title Filter ${state.titleGuardrailEnabled ? "ENABLED (Tiers 1–6)" : "DISABLED (New domains auto-qualified)"}`,
-      3500
-    );
-
-    addActivity(
-      "GUARDRAIL_TOGGLED",
-      `AI Title Filter toggled ${state.titleGuardrailEnabled ? "ON" : "OFF"}. Rescanning active contacts...`,
-      "info",
-      {
-        title_guardrail_enabled: state.titleGuardrailEnabled
-      }
-    );
-
-    // Clear evaluated contact cache so active page is re-evaluated with the new setting
-    state.checkedContacts.clear();
-    state.currentContacts.clear();
-    scanApollo();
-  }
-
-  function toggleIndianGuardrail() {
-    state.indianGuardrailEnabled = !state.indianGuardrailEnabled;
-
-    if (chrome?.storage?.local) {
-      chrome.storage.local.set({
-        [INDIAN_GUARDRAIL_STORAGE_KEY]: state.indianGuardrailEnabled
-      });
-    }
-
-    renderExportControls();
-
-    showStatus(
-      `Indian Name Filter ${state.indianGuardrailEnabled ? "ENABLED (Pure Indian excluded)" : "DISABLED"}`,
-      3500
-    );
-
-    addActivity(
-      "GUARDRAIL_TOGGLED",
-      `Indian Name Filter toggled ${state.indianGuardrailEnabled ? "ON" : "OFF"}. Rescanning active contacts...`,
-      "info",
-      {
-        indian_name_guardrail_enabled: state.indianGuardrailEnabled
-      }
-    );
-
-    // Clear evaluated contact cache so active page is re-evaluated with the new setting
-    state.checkedContacts.clear();
-    state.currentContacts.clear();
-    scanApollo();
-  }
-
   function renderExportControls() {
     let controls = document.getElementById(
       "contact-checker-controls"
@@ -1805,14 +1818,6 @@
           style="background: #eab308; color: #111827; font-weight: 700;"
           title="Scan and delete all duplicate contacts from the same company in local storage"
         >⚡ Deduplicate List</button>
-        <button
-          id="contact-checker-guardrail-toggle"
-          type="button"
-        >AI Title Filter: OFF</button>
-        <button
-          id="contact-checker-indian-toggle"
-          type="button"
-        >Indian Name Filter: OFF</button>
         <button
           id="contact-checker-clear-required"
           type="button"
@@ -1871,24 +1876,6 @@
 
       controls
         .querySelector(
-          "#contact-checker-guardrail-toggle"
-        )
-        .addEventListener(
-          "click",
-          toggleTitleGuardrail
-        );
-
-      controls
-        .querySelector(
-          "#contact-checker-indian-toggle"
-        )
-        .addEventListener(
-          "click",
-          toggleIndianGuardrail
-        );
-
-      controls
-        .querySelector(
           "#contact-checker-clear-required"
         )
         .addEventListener(
@@ -1915,42 +1902,6 @@
       batchInputExisting.value = state.batchName || "batch_1";
     }
 
-    const guardrailButton = controls.querySelector(
-      "#contact-checker-guardrail-toggle"
-    );
-
-    if (guardrailButton) {
-      if (state.titleGuardrailEnabled) {
-        guardrailButton.textContent = "Title Guardrail: ON";
-        guardrailButton.style.background = "#8b5cf6";
-        guardrailButton.title =
-          "Title Guardrail Active: Filtering contacts by 64K database rules & on-demand LLM evaluation";
-      } else {
-        guardrailButton.textContent = "Title Guardrail: OFF";
-        guardrailButton.style.background = "#374151";
-        guardrailButton.title =
-          "Title Guardrail Inactive: All net-new domains are auto-qualified as Required";
-      }
-    }
-
-    const indianButton = controls.querySelector(
-      "#contact-checker-indian-toggle"
-    );
-
-    if (indianButton) {
-      if (state.indianGuardrailEnabled) {
-        indianButton.textContent = "Indian Name Filter: ON";
-        indianButton.style.background = "#ef4444";
-        indianButton.title =
-          "Guardrail 3 Active: Excluding unambiguous pure Indian names";
-      } else {
-        indianButton.textContent = "Indian Name Filter: OFF";
-        indianButton.style.background = "#374151";
-        indianButton.title =
-          "Guardrail 3 Inactive: Demographic name filter is disabled";
-      }
-    }
-
     const visibleRequiredCount =
       getRequiredContacts().length;
 
@@ -1962,12 +1913,9 @@
     );
 
     const isScanning = state.pendingContacts.size > 0;
-    const pageText = isScanning
-      ? `Scanning ${state.pendingContacts.size} contact(s)...`
-      : `Required on page: ${visibleRequiredCount}`;
-
-    const countText =
-      `${pageText} | Collected total: ${totalCollected}`;
+    const countText = isScanning
+      ? `Required on page: ${visibleRequiredCount} (scanning ${state.pendingContacts.size}...) | Collected total: ${totalCollected}`
+      : `Required on page: ${visibleRequiredCount} | Collected total: ${totalCollected}`;
 
     if (countLabel && countLabel.textContent !== countText) {
       countLabel.textContent = countText;
@@ -2332,7 +2280,9 @@
           liveStatusDone.textContent = `✓ Checked (${matches} existing, ${requiredCount} req, ${ignoredCount} ign)`;
         }
 
+        scheduleRequiredContactsSave();
         renderExportControls();
+        checkAndFlushPendingTitles(false);
 
         showStatus(
           `✓ Checked ${contactsToCheck.length} contact(s) — ${matches} existing, ${requiredCount} required lead(s)`,
@@ -2352,19 +2302,17 @@
       ? node
       : node?.parentElement;
 
+    if (!element) return false;
+
     return Boolean(
-      element?.matches?.(
-        `#contact-checker-status,
-         #contact-checker-controls,
-         #contact-checker-activity-panel,
-         .contact-checker-existing-badge,
-         .contact-checker-required-badge`
-      ) ||
-      element?.closest?.(
-        `#contact-checker-status,
-         #contact-checker-controls,
-         #contact-checker-activity-panel`
-      )
+      element.hasAttribute?.("data-contact-checker") ||
+      element.closest?.("[data-contact-checker]") ||
+      element.id?.startsWith("contact-checker-") ||
+      element.closest?.("#contact-checker-status, #contact-checker-controls, #contact-checker-activity-panel") ||
+      element.classList?.contains("contact-checker-existing-badge") ||
+      element.classList?.contains("contact-checker-required-badge") ||
+      element.classList?.contains("contact-checker-ignored-badge") ||
+      element.closest?.(".contact-checker-existing-badge, .contact-checker-required-badge, .contact-checker-ignored-badge")
     );
   }
 
@@ -2385,10 +2333,19 @@
       return false;
     }
 
+    const nonExtensionAdded = Array.from(mutation.addedNodes).filter(n => !isExtensionNode(n));
+    const nonExtensionRemoved = Array.from(mutation.removedNodes).filter(n => !isExtensionNode(n));
+
+    if (nonExtensionAdded.length === 0 && nonExtensionRemoved.length === 0) {
+      return false;
+    }
+
     const affectsApolloRows = node => {
       const element = node?.nodeType === Node.ELEMENT_NODE
         ? node
         : node?.parentElement;
+
+      if (!element || isExtensionNode(element)) return false;
 
       return Boolean(
         element?.matches?.(
@@ -2409,11 +2366,7 @@
       );
     };
 
-    return affectsApolloRows(mutation.target) ||
-      changedNodes.some(node =>
-        !isExtensionNode(node) &&
-        affectsApolloRows(node)
-      );
+    return nonExtensionAdded.some(affectsApolloRows) || nonExtensionRemoved.some(affectsApolloRows);
   }
 
   function scheduleScan(delay = 35) {

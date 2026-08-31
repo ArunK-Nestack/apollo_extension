@@ -67,14 +67,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     body = {
       contacts: message.contacts,
       batch: message.batch || "batch_1",
-      title_guardrail_enabled: message.title_guardrail_enabled === true,
-      indian_name_guardrail_enabled: message.indian_name_guardrail_enabled === true
+      title_guardrail_enabled: message.title_guardrail_enabled !== false,
+      indian_name_guardrail_enabled: message.indian_name_guardrail_enabled !== false
     };
   } else if (message.type === "SYNC_SAVED_LEADS") {
     endpoint = "/sync-saved-leads";
     body = {
       batch: message.batch || "batch_1",
       contacts: message.contacts || []
+    };
+  } else if (message.type === "EVALUATE_PENDING_TITLES" || message.type === "EVALUATE_PENDING_BATCH") {
+    endpoint = "/evaluate-pending-titles";
+    body = {
+      batch: message.batch || "batch_1",
+      titles: message.titles || [],
+      names: message.names || []
     };
   } else if (message.type === "FLUSH_QUEUES") {
     endpoint = "/flush-pending-queues";

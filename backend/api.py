@@ -508,6 +508,88 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
             return do_query(conn)
 
 
+def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain: dict[str, str], connection=None) -> dict[str, dict]:
+    """
+    Check if (full_name, domain) or domain exists in CRM 'emails' table.
+    1. Collects all candidate domains.
+    2. Executes 1 single fast indexed query on 'idx_emails_domain' in 'emails' table.
+    3. Matches both exact person at domain (full_name + domain) and company domain.
+    """
+    if not contacts:
+        return {}
+
+    candidate_domains = list({contact_primary_domain.get(c.key, "") for c in contacts if contact_primary_domain.get(c.key)})
+    if not candidate_domains:
+        return {}
+
+    # Query DB for all records matching these domains
+    def do_query(conn):
+        schema = get_target_table_schema(conn)
+        tbl_name = schema["table_name"]
+        domain_col = schema["email_domain"]
+        name_col = schema["name"] or "full_name"
+
+        matched_records = {}  # (norm_name, domain) -> raw_full_name
+        matched_domains = set()
+
+        try:
+            with conn.cursor() as cur:
+                format_strings = ",".join(["%s"] * len(candidate_domains))
+                query = f"SELECT `{domain_col}`, `{name_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings});"
+                cur.execute(query, tuple(candidate_domains))
+                rows = cur.fetchall()
+                for r in rows:
+                    dom = str(r[0] or "").strip().lower()
+                    raw_nm = str(r[1] or "").strip()
+                    norm_nm = normalize_text(raw_nm)
+                    if dom:
+                        matched_domains.add(dom)
+                        if norm_nm:
+                            matched_records[(norm_nm, dom)] = raw_nm
+        except Exception as e:
+            print(f"[ContactChecker] Notice: CRM lookup error: {e}", flush=True)
+
+        return matched_records, matched_domains
+
+    if connection:
+        matched_records, matched_domains = do_query(connection)
+    else:
+        with get_connection() as conn:
+            matched_records, matched_domains = do_query(conn)
+
+    # Evaluate each contact
+    results = {}
+    for c in contacts:
+        prim_d = contact_primary_domain.get(c.key, "")
+        norm_c_name = normalize_text(c.name)
+
+        # 1. Exact Person at Domain Match (Full Name + Domain in CRM emails table)
+        if (norm_c_name, prim_d) in matched_records:
+            matched_crm_name = matched_records[(norm_c_name, prim_d)]
+            results[c.key] = {
+                "exists": True,
+                "required": False,
+                "ignored": True,
+                "guardrail_status": "contact_already_in_db",
+                "guardrail_reason": f"Contact '{c.name}' at domain '{prim_d}' already exists in CRM database (matched: '{matched_crm_name}').",
+                "matched_domain": prim_d,
+                "matched_db_domain": prim_d
+            }
+        # 2. Company Domain Match in CRM emails table
+        elif prim_d in matched_domains:
+            results[c.key] = {
+                "exists": True,
+                "required": False,
+                "ignored": True,
+                "guardrail_status": "domain_already_in_db",
+                "guardrail_reason": f"Company domain '{prim_d}' already exists in CRM database.",
+                "matched_domain": prim_d,
+                "matched_db_domain": prim_d
+            }
+
+    return results
+
+
 # ============================================================
 # LAYER 1: TOP-TIER EXECUTIVE SUBSTRING PATTERNS
 # ============================================================
@@ -848,6 +930,77 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
 
 
 # ============================================================
+# DEMOGRAPHIC NAME CLASSIFIER (50-ITEM BATCH LLM EVALUATOR)
+# ============================================================
+
+DEMOGRAPHIC_SYSTEM_PROMPT = """Classify full names into demographic categories for sales outreach.
+is_indian=1: Traditional Indian subcontinent origin names and pure Indian surnames (e.g. Sharma, Patel, Gupta, Reddy, Kumar, Singh, Rao, Nair, Mukherjee, Agarwal, Chatterjee, Joshi, Banerjee, Verma, Deshmukh, Patil, etc.).
+is_indian=0: Western, Anglo-Saxon, Goan Christian / Mangalorean (e.g. D'Souza, Fernandes, Pinto, Pereira, Lobo, Rodrigues, Albuquerque, etc.), Parsi (e.g. Godrej, Tata, Mistry, Poonawalla, Wadia), Arab / Middle Eastern, East Asian, Hispanic, European, or global foreign names.
+
+Output plain CSV lines (no markdown):
+index,is_indian(1|0),reason"""
+
+
+def classify_names_compact_llm(names: list[str], connection=None) -> tuple[dict[str, dict], dict]:
+    """Call gpt-4o-mini to evaluate candidate names for Indian vs Global origin in 1-shot batch."""
+    if not names or not OPENAI_API_KEY:
+        return {}, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0}
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    user_prompt = "Classify these names:\n" + "\n".join(f"{i+1}. {n}" for i, n in enumerate(names))
+
+    t0 = time.perf_counter()
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_DOMAIN_MODEL,
+            messages=[
+                {"role": "system", "content": DEMOGRAPHIC_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=1500,
+            temperature=0.0
+        )
+        latency_ms = (time.perf_counter() - t0) * 1000
+        raw_text = (response.choices[0].message.content or "").replace("```csv", "").replace("```", "").strip()
+        usage = response.usage
+        token_stats = {
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+            "latency_ms": round(latency_ms, 1)
+        }
+    except Exception as e:
+        print(f"[LLM Error] Failed to classify names with {OPENAI_DOMAIN_MODEL}: {e}", flush=True)
+        return {}, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0}
+
+    parsed_items = {}
+    csv_reader = csv.reader(io.StringIO(raw_text))
+    for row in csv_reader:
+        if not row or len(row) < 2:
+            continue
+        try:
+            idx_str = row[0].strip().rstrip(".")
+            if not idx_str.isdigit():
+                continue
+            idx = int(idx_str)
+            is_ind = int(row[1].strip()) == 1 if row[1].strip().isdigit() else False
+            reason = row[2].strip() if len(row) > 2 else ("Demographic Filter: Pure Indian Origin" if is_ind else "Global Name")
+            parsed_items[idx] = {"is_indian": is_ind, "reason": reason}
+        except Exception:
+            continue
+
+    classified_dict = {}
+    for idx, raw_name in enumerate(names, 1):
+        norm_nm = normalize_text(raw_name)
+        res = parsed_items.get(idx, {"is_indian": False, "reason": "Global / Foreign Name"})
+        classified_dict[raw_name] = res
+        with _indian_name_cache_lock:
+            _indian_name_cache[norm_nm] = (res["is_indian"], res["reason"])
+
+    return classified_dict, token_stats
+
+
+# ============================================================
 # ASYNCHRONOUS BACKGROUND MICRO-BATCH WORKER (50-ITEM FLUSH)
 # ============================================================
 
@@ -1076,8 +1229,8 @@ class ApolloContact(BaseModel):
 class ApolloMatchRequest(BaseModel):
     contacts: list[ApolloContact]
     batch: str = "batch_1"
-    title_guardrail_enabled: bool = False
-    indian_name_guardrail_enabled: bool = False
+    title_guardrail_enabled: bool = True
+    indian_name_guardrail_enabled: bool = True
 
 
 class SyncSavedLeadItem(BaseModel):
@@ -1101,9 +1254,107 @@ class SyncSavedLeadsRequest(BaseModel):
     contacts: list[SyncSavedLeadItem]
 
 
+class EvaluatePendingTitlesRequest(BaseModel):
+    titles: list[str] = Field(default_factory=list)
+    names: list[str] = Field(default_factory=list)
+    batch: str = "batch_1"
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "engine": "company_domains_lookup_v3"}
+
+
+@app.post("/evaluate-pending-titles")
+@app.post("/evaluate-pending-batch")
+def evaluate_pending_titles(request: EvaluatePendingTitlesRequest):
+    """
+    50-Item Threshold Batch LLM Evaluator:
+    Receives batch of novel unrecognized titles and candidate names accumulated in local storage,
+    evaluates both with LLM in 1-shot batch, persists classifications to database/caches,
+    and returns decisions so non-required leads and pure Indian names can be excluded.
+    """
+    titles_to_eval = request.titles or []
+    names_to_eval = request.names or []
+
+    if not titles_to_eval and not names_to_eval:
+        return {
+            "status": "ok",
+            "results": {},
+            "title_results": {},
+            "name_results": {},
+            "total_titles_evaluated": 0,
+            "total_names_evaluated": 0
+        }
+
+    final_title_results = {}
+    final_name_results = {}
+    total_token_stats = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    with get_connection() as conn:
+        # 1. Batch Title Evaluation
+        if titles_to_eval:
+            unique_titles = list(set(t.strip() for t in titles_to_eval if t.strip()))
+            db_res = lookup_job_titles_batch(unique_titles, connection=conn)
+            unresolved = [t for t in unique_titles if db_res.get(t, {}).get("status") == "not_recognized_title"]
+
+            llm_res = {}
+            if unresolved and OPENAI_API_KEY:
+                llm_res, t_stats = classify_novel_titles_compact_llm(unresolved, connection=conn)
+                for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    total_token_stats[k] += t_stats.get(k, 0)
+
+            for t in unique_titles:
+                norm_t = normalize_text(t)
+                if norm_t in llm_res:
+                    final_title_results[t] = llm_res[norm_t]
+                elif t in db_res and db_res[t].get("status") != "not_recognized_title":
+                    final_title_results[t] = db_res[t]
+                else:
+                    final_title_results[t] = {
+                        "required": True,
+                        "status": "qualified",
+                        "segment": "Unclassified_Kept",
+                        "reason": "Preserved provisionally"
+                    }
+
+        # 2. Batch Demographic Name Evaluation
+        if names_to_eval:
+            unique_names = list(set(n.strip() for n in names_to_eval if n.strip()))
+            unresolved_names = []
+            for n in unique_names:
+                norm_n = normalize_text(n)
+                with _indian_name_cache_lock:
+                    if norm_n in _indian_name_cache:
+                        is_ind, reason = _indian_name_cache[norm_n]
+                        final_name_results[n] = {"is_indian": is_ind, "reason": reason}
+                    else:
+                        is_ind, reason = is_unambiguous_pure_indian_name(n, connection=conn)
+                        if is_ind:
+                            final_name_results[n] = {"is_indian": True, "reason": reason}
+                        else:
+                            unresolved_names.append(n)
+
+            if unresolved_names and OPENAI_API_KEY:
+                llm_name_res, n_stats = classify_names_compact_llm(unresolved_names, connection=conn)
+                for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    total_token_stats[k] += n_stats.get(k, 0)
+                for n in unresolved_names:
+                    if n in llm_name_res:
+                        final_name_results[n] = llm_name_res[n]
+                    else:
+                        final_name_results[n] = {"is_indian": False, "reason": "Global Name preserved"}
+
+    print(f"\n[ContactChecker] 50-Threshold LLM Batch: Evaluated {len(titles_to_eval)} titles and {len(names_to_eval)} names via {OPENAI_DOMAIN_MODEL}.", flush=True)
+    return {
+        "status": "ok",
+        "results": final_title_results,
+        "title_results": final_title_results,
+        "name_results": final_name_results,
+        "total_titles_evaluated": len(titles_to_eval),
+        "total_names_evaluated": len(names_to_eval),
+        "token_stats": total_token_stats
+    }
 
 
 @app.post("/flush-pending-queues")
@@ -1266,31 +1517,19 @@ def match_apollo(request: ApolloMatchRequest):
             if d:
                 unique_domains_seen.add(d)
 
-        # Check all unique candidate domains in CRM 'emails' table in 1 single fast indexed query
-        check_domains_in_crm_batch(list(unique_domains_seen), connection=conn)
+        # --------------------------------------------------------
+        # STEP 2: DUAL DEDUPLICATION: FULL NAME + DOMAIN & DOMAIN IN CRM
+        # --------------------------------------------------------
+        crm_matches = check_person_and_domains_in_crm_batch(contacts, contact_primary_domain, connection=conn)
 
-        # --------------------------------------------------------
-        # STEP 2: GROUP CONTACTS BY EXISTING DOMAIN VS NET-NEW
-        # --------------------------------------------------------
         net_new_contacts: list[ApolloContact] = []
 
         for idx, contact in enumerate(contacts, 1):
-            prim_d = contact_primary_domain.get(contact.key, "")
-            domain_in_crm, matched_crm_domain = check_domains_in_crm_batch([prim_d], connection=conn)
-
-            if domain_in_crm:
+            if contact.key in crm_matches:
                 existing_domain_contacts += 1
                 existing_count += 1
                 ignored_count += 1
-                results[contact.key] = {
-                    "exists": True,
-                    "required": False,
-                    "ignored": True,
-                    "guardrail_status": "domain_already_in_db",
-                    "guardrail_reason": f"Company domain '{matched_crm_domain}' already exists in CRM database.",
-                    "matched_domain": matched_crm_domain,
-                    "matched_db_domain": matched_crm_domain,
-                }
+                results[contact.key] = crm_matches[contact.key]
             else:
                 net_new_domain_contacts += 1
                 net_new_contacts.append(contact)
@@ -1319,9 +1558,13 @@ def match_apollo(request: ApolloMatchRequest):
             contact_title_eval[contact.key] = t_info
 
             if t_info.get("status") == "not_recognized_title":
-                norm_t = normalize_text(title_name)
-                novel_titles_to_eval[norm_t] = title_name
-                background_batch_worker.enqueue(title_name)
+                # Novel title: provisionally accept as pending_title_eval so lead is captured in local storage
+                contact_title_eval[contact.key] = {
+                    "required": True,
+                    "status": "pending_title_eval",
+                    "segment": "Pending_Evaluation",
+                    "reason": f"Novel title '{title_name}' provisionally accepted (pending 50-item LLM evaluation)"
+                }
                 novel_titles_sent += 1
             else:
                 db_title_hits += 1
