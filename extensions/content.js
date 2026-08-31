@@ -1254,6 +1254,86 @@
     );
   }
 
+  const MULTI_PART_TLDS_JS = new Set([
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au",
+    "co.nz", "net.nz", "org.nz",
+    "co.in", "net.in", "org.in", "gen.in", "firm.in",
+    "co.za", "org.za",
+    "com.br", "org.br",
+    "com.sg", "org.sg",
+    "co.jp", "ne.jp", "or.jp",
+    "gc.ca"
+  ]);
+
+  function extractRootDomain(rawUrlOrDomain) {
+    if (!rawUrlOrDomain) return "";
+    let dom = String(rawUrlOrDomain).trim().toLowerCase();
+
+    // Remove protocol and query
+    if (dom.includes("://")) {
+      try {
+        const u = new URL(dom.startsWith("http") ? dom : `https://${dom}`);
+        dom = u.hostname || dom;
+      } catch (e) {
+        dom = dom.replace(/^[a-zA-Z]+:\/\//, "");
+      }
+    }
+
+    // Strip ports, paths, query
+    dom = dom.split("/")[0].split(":")[0].split("?")[0].trim();
+    // Strip leading www.
+    dom = dom.replace(/^www\d*\./, "");
+
+    const parts = dom.split(".");
+    if (parts.length <= 2) {
+      return dom;
+    }
+
+    const lastTwo = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+    if (MULTI_PART_TLDS_JS.has(lastTwo)) {
+      if (parts.length >= 3) {
+        return `${parts[parts.length - 3]}.${lastTwo}`;
+      }
+      return dom;
+    }
+
+    return `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  }
+
+  function getSeniorityScore(jobTitle) {
+    if (!jobTitle) return 0;
+    const t = String(jobTitle).toLowerCase().trim();
+    if (/\b(founder|co-founder|ceo|cto|cmo|cro|coo|cfo|cpo|cio|chief|owner|president|partner)\b/.test(t)) {
+      return 100; // Tier 1: C-Suite / Founders
+    }
+    if (/\b(vp|vice president|head of|general manager|gm)\b/.test(t) || t.startsWith("head ") || t.startsWith("head,") || t.startsWith("head -")) {
+      return 80; // Tier 2: Vice President / Head of
+    }
+    if (/\b(director|principal|lead architect|group product manager|staff)\b/.test(t)) {
+      return 60; // Tier 3: Director / Principal
+    }
+    if (/\b(manager|team lead|lead|senior|sr\.?)\b/.test(t)) {
+      return 40; // Tier 4: Manager / Senior
+    }
+    return 20; // Tier 5: Individual contributor
+  }
+
+  function getCompanyDedupeKey(companyName, rawDomain = "") {
+    const rootDomain = extractRootDomain(rawDomain);
+    if (rootDomain) return rootDomain;
+
+    if (!companyName) return "";
+    let clean = String(companyName).toLowerCase().trim();
+    clean = clean.replace(/[·•|].*?(?:employees|people|workers|emp).*$/i, "");
+    clean = clean.replace(/[-–—]\s*\d+[\d,]*\s*(?:employees|people|emp).*$/i, "");
+    clean = clean.replace(/\s*\((?:formerly|yc|acquired|seed|series\s+[a-z]).*?\)/i, "");
+    clean = clean.replace(/[^\w\s.-]/g, " ").trim();
+    const legalWords = new Set(["inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation", "technologies", "technology", "tech", "services", "solutions", "group", "holdings", "holding", "pvt", "private", "gmbh", "co", "company", "international", "global", "consulting", "enterprises", "media", "labs"]);
+    const words = clean.split(/\s+/).filter(w => !legalWords.has(w.replace(/\.$/, "")));
+    return words.join("").replace(/[^a-z0-9]/g, "") || clean.replace(/[^a-z0-9]/g, "");
+  }
+
   function getApolloIdFromKey(key) {
     if (!key || !key.startsWith("apollo-") || key.startsWith("apollo-row-")) {
       return "";
@@ -1267,15 +1347,25 @@
     const nameParts = (contact.name || "").trim().split(/\s+/);
     const firstName = nameParts[0] || "";
     const lastName = nameParts.slice(1).join(" ") || "";
-    const domain = result?.matched_domain || contact.domain || "";
+    const rawDomain = result?.matched_domain || contact.domain || "";
+    const rootDomain = extractRootDomain(rawDomain);
     const apolloUrl = apolloId ? `https://app.apollo.io/#/people/${apolloId}` : "";
-    const compKey = getCompanyDedupeKey(contact.company, domain);
+    const compKey = rootDomain || getCompanyDedupeKey(contact.company);
+    const incomingScore = getSeniorityScore(contact.job_title);
 
-    // Ensure 1 unique lead per company in local storage
+    // Seniority-based Lead Election: 1 unique lead per company in local storage
     if (compKey && state.requiredCompanyMap.has(compKey)) {
       const prevElected = state.requiredCompanyMap.get(compKey);
       if (prevElected && prevElected.key && prevElected.key !== contact.key) {
-        state.requiredContactsAll.delete(prevElected.key);
+        const prevScore = prevElected.score || 0;
+        if (incomingScore > prevScore) {
+          // Replace lower-ranking previous lead with higher-ranking decision maker
+          state.requiredContactsAll.delete(prevElected.key);
+          state.syncedLeadKeys.delete(prevElected.key);
+        } else {
+          // Current contact is lower or equal rank -> do not replace existing superior lead
+          return;
+        }
       }
     }
 
@@ -1289,19 +1379,23 @@
       name: contact.name,
       job_title: contact.job_title,
       company: contact.company,
-      domain: domain,
+      domain: rootDomain || rawDomain,
       location: contact.location || "",
       linkedin_url: contact.linkedin_url || "",
       apollo_profile_url: apolloUrl,
       segment: segmentVal,
-      is_pending_eval: isPending
+      is_pending_eval: isPending,
+      seniority_score: incomingScore
     });
 
     if (compKey) {
       state.requiredCompanyMap.set(compKey, {
         key: contact.key,
         name: contact.name,
-        company: contact.company
+        title: contact.job_title,
+        score: incomingScore,
+        company: contact.company,
+        domain: rootDomain || rawDomain
       });
     }
   }
@@ -1472,9 +1566,28 @@
   }
 
   function buildRequiredContactsCSV() {
-    const rows = Array.from(
+    const rawRows = Array.from(
       state.requiredContactsAll.values()
     );
+
+    // Pre-Export Single-Pass Strict Sweep: Exactly 1 Lead per Canonical Root Domain
+    const uniqueCompanyMap = new Map();
+    rawRows.forEach(row => {
+      const rootDom = extractRootDomain(row.domain);
+      const dedupeKey = rootDom || getCompanyDedupeKey(row.company);
+      const score = row.seniority_score || getSeniorityScore(row.job_title);
+
+      if (!uniqueCompanyMap.has(dedupeKey)) {
+        uniqueCompanyMap.set(dedupeKey, { row, score });
+      } else {
+        const existing = uniqueCompanyMap.get(dedupeKey);
+        if (score > existing.score) {
+          uniqueCompanyMap.set(dedupeKey, { row, score });
+        }
+      }
+    });
+
+    const rows = Array.from(uniqueCompanyMap.values()).map(item => item.row);
 
     const header = [
       "First Name",
@@ -1496,7 +1609,7 @@
           row.last_name || "",
           row.job_title || "",
           row.company || "",
-          row.domain || "",
+          extractRootDomain(row.domain) || row.domain || "",
           row.location || "",
           row.linkedin_url || "",
           row.apollo_profile_url || ""

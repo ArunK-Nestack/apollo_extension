@@ -200,20 +200,85 @@ def normalize_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value)
 
 
-def normalize_domain(domain: str) -> str:
-    """Normalize a domain string (e.g. 'https://www.Liquid.AI/' -> 'liquid.ai')."""
-    if not domain:
+MULTI_PART_TLDS = {
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au",
+    "co.nz", "net.nz", "org.nz",
+    "co.in", "net.in", "org.in", "gen.in", "firm.in",
+    "co.za", "org.za",
+    "com.br", "org.br",
+    "com.sg", "org.sg",
+    "co.jp", "ne.jp", "or.jp",
+    "gc.ca"
+}
+
+
+def extract_root_domain(raw_url_or_domain: str) -> str:
+    """
+    Extract the canonical registrable root domain from any raw URL or domain string.
+    Examples:
+      - 'https://careers.ramp.com/about?ref=123' -> 'ramp.com'
+      - 'http://au.stripe.com/en-au' -> 'stripe.com'
+      - 'www.datadoghq.com' -> 'datadoghq.com'
+      - 'checkout.shopify.co.uk' -> 'shopify.co.uk'
+      - 'liquid.ai' -> 'liquid.ai'
+    """
+    if not raw_url_or_domain:
         return ""
-    dom = domain.strip().lower()
-    if dom.startswith("http://") or dom.startswith("https://"):
+
+    dom = str(raw_url_or_domain).strip().lower()
+    if dom.startswith("http://") or dom.startswith("https://") or "://" in dom:
         try:
             parsed = urlparse(dom)
             dom = parsed.netloc or parsed.path
         except Exception:
             pass
-    dom = re.sub(r"^www\.", "", dom)
+
+    # Strip ports and paths
     dom = dom.split("/")[0].split(":")[0].strip()
-    return dom
+    # Strip leading www
+    dom = re.sub(r"^www\d*\.", "", dom)
+
+    parts = dom.split(".")
+    if len(parts) <= 2:
+        return dom
+
+    last_two = f"{parts[-2]}.{parts[-1]}"
+    if last_two in MULTI_PART_TLDS:
+        if len(parts) >= 3:
+            return f"{parts[-3]}.{last_two}"
+        return dom
+
+    return f"{parts[-2]}.{parts[-1]}"
+
+
+def normalize_domain(domain: str) -> str:
+    """Canonical root domain extractor."""
+    return extract_root_domain(domain)
+
+
+def get_seniority_score(job_title: str) -> int:
+    """
+    Evaluate job title seniority hierarchy score for best lead election:
+      - Tier 1 (100): C-Suite, Founder, Owner, Managing Partner, CEO, CTO, CRO, CMO, COO, CFO, President
+      - Tier 2 (80): VP, Vice President, Head of, GM, General Manager
+      - Tier 3 (60): Director, Group Product Manager, Principal, Lead Architect
+      - Tier 4 (40): Manager, Team Lead, Product Manager, Senior
+      - Tier 5 (20): Specialist, Analyst, Associate, Engineer, Other
+    """
+    if not job_title:
+        return 0
+    t = str(job_title).strip().lower()
+
+    if re.search(r"\b(founder|co-founder|ceo|cto|cmo|cro|coo|cfo|cpo|cio|chief|owner|president|partner)\b", t):
+        return 100
+    if re.search(r"\b(vp|vice president|head of|general manager|gm)\b", t) or t.startswith("head ") or t.startswith("head,") or t.startswith("head -"):
+        return 80
+    if re.search(r"\b(director|principal|lead architect|group product manager|staff)\b", t):
+        return 60
+    if re.search(r"\b(manager|team lead|lead|senior|sr\.?)\b", t):
+        return 40
+    return 20
 
 
 def clean_company_name(company: str) -> str:
@@ -1614,12 +1679,47 @@ def match_apollo(request: ApolloMatchRequest):
                     "matched_domain": prim_d,
                 }
             else:
-                # 4.3 Check 1 Contact per Company Limit
+                # 4.3 Check 1 Contact per Company Limit with Seniority-Based Election
                 already_selected = seen_required_companies.get(comp_key, [])
                 is_same_contact = any(isinstance(item, dict) and item.get("key") == contact.key for item in already_selected)
+                incoming_score = get_seniority_score(contact.job_title)
+                current_elected = already_selected[0] if already_selected and isinstance(already_selected[0], dict) else {}
+                current_score = current_elected.get("score", 0) if current_elected else 0
 
                 if is_same_contact:
                     # Contact is ALREADY the elected lead for this company across page sorts
+                    required_count += 1
+                    results[contact.key] = {
+                        "exists": False,
+                        "required": True,
+                        "ignored": False,
+                        "guardrail_status": "qualified",
+                        "segment": title_seg,
+                        "guardrail_reason": title_reason,
+                        "matched_domain": prim_d,
+                    }
+                elif already_selected and incoming_score > current_score:
+                    # Seniority Election: incoming higher-ranking lead (e.g. CTO/CEO) outranks previous lead (e.g. Manager)
+                    prev_key = current_elected.get("key")
+                    if prev_key and prev_key in results:
+                        results[prev_key] = {
+                            "exists": False,
+                            "required": False,
+                            "ignored": True,
+                            "guardrail_status": "company_limit_reached",
+                            "guardrail_reason": f"Replaced by higher-ranking decision maker ({contact.name} - {contact.job_title})",
+                            "matched_domain": prim_d,
+                        }
+
+                    # Elect the new higher-ranking contact
+                    seen_required_companies[comp_key] = [{
+                        "key": contact.key,
+                        "name": contact.name,
+                        "title": contact.job_title,
+                        "score": incoming_score,
+                        "company": comp_name,
+                        "domain": prim_d
+                    }]
                     required_count += 1
                     results[contact.key] = {
                         "exists": False,
@@ -1643,11 +1743,15 @@ def match_apollo(request: ApolloMatchRequest):
                         "segment": title_seg,
                     }
                 else:
-                    seen_required_companies.setdefault(comp_key, []).append({
-                        "key": contact.key,
-                        "name": contact.name or f"Contact #{idx}"
-                    })
                     required_count += 1
+                    seen_required_companies[comp_key] = [{
+                        "key": contact.key,
+                        "name": contact.name,
+                        "title": contact.job_title,
+                        "score": incoming_score,
+                        "company": comp_name,
+                        "domain": prim_d
+                    }]
                     results[contact.key] = {
                         "exists": False,
                         "required": True,
