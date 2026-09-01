@@ -1194,7 +1194,7 @@
     );
   }
 
-  function saveRequiredContactsNow() {
+  function saveRequiredContactsNow(replaceAll = false) {
     if (!chrome?.storage?.local) {
       return;
     }
@@ -1207,9 +1207,13 @@
       [REQUIRED_CONTACTS_STORAGE_KEY]: contactsList
     });
 
-    // Only send contacts that have not been synced yet
-    const unsyncedContacts = contactsList
-      .filter(([key]) => !state.syncedLeadKeys.has(key))
+    if (replaceAll) {
+      state.syncedLeadKeys.clear();
+    }
+
+    // Only send contacts that have not been synced yet (or all if replaceAll is true)
+    const contactsToSync = contactsList
+      .filter(([key]) => replaceAll || !state.syncedLeadKeys.has(key))
       .map(([key, c]) => ({
         apollo_id: c.apollo_id || "",
         name: c.name || "",
@@ -1218,6 +1222,7 @@
         job_title: c.job_title || "",
         company: c.company || "",
         domain: c.domain || "",
+        website_link: c.website_link || (c.domain ? `https://${c.domain}` : ""),
         location: c.location || "",
         linkedin_url: c.linkedin_url || "",
         apollo_profile_url: c.apollo_profile_url || "",
@@ -1225,21 +1230,21 @@
         _key: key
       }));
 
-    if (unsyncedContacts.length > 0 && chrome?.runtime?.sendMessage) {
-      // Mark as synced to prevent redundant repeated calls
-      unsyncedContacts.forEach(c => state.syncedLeadKeys.add(c._key));
+    if (chrome?.runtime?.sendMessage && (contactsToSync.length > 0 || replaceAll)) {
+      contactsToSync.forEach(c => state.syncedLeadKeys.add(c._key));
 
       const activeBatch = state.batchName || `batch_${state.batchNumber || 1}`;
       chrome.runtime.sendMessage({
         type: "SYNC_SAVED_LEADS",
         batch: activeBatch,
-        contacts: unsyncedContacts
+        contacts: contactsToSync,
+        replace_all: replaceAll
       }, (res) => {
         if (res?.success) {
-          contactCheckerLog(`Synced ${unsyncedContacts.length} new lead(s) to MySQL apollo_saved_leads under ${activeBatch}`);
+          contactCheckerLog(`Synced ${contactsToSync.length} lead(s) to MySQL apollo_saved_leads under ${activeBatch} (replace_all=${replaceAll})`);
         } else {
           // If error, unmark so it can retry
-          unsyncedContacts.forEach(c => state.syncedLeadKeys.delete(c._key));
+          contactsToSync.forEach(c => state.syncedLeadKeys.delete(c._key));
         }
       });
     }
@@ -1371,6 +1376,7 @@
 
     const isPending = (result?.guardrail_status === "pending_title_eval") || (result?.segment === "Pending_Evaluation");
     const segmentVal = result?.segment || (isPending ? "Pending_Evaluation" : "Required_Lead");
+    const websiteLink = contact.website_link || (rootDomain ? `https://${rootDomain}` : "");
 
     state.requiredContactsAll.set(contact.key, {
       apollo_id: apolloId,
@@ -1380,6 +1386,7 @@
       job_title: contact.job_title,
       company: contact.company,
       domain: rootDomain || rawDomain,
+      website_link: websiteLink,
       location: contact.location || "",
       linkedin_url: contact.linkedin_url || "",
       apollo_profile_url: apolloUrl,
@@ -1395,7 +1402,8 @@
         title: contact.job_title,
         score: incomingScore,
         company: contact.company,
-        domain: rootDomain || rawDomain
+        domain: rootDomain || rawDomain,
+        website_link: websiteLink
       });
     }
   }
@@ -1595,6 +1603,7 @@
       "Title",
       "Company",
       "Company Domain",
+      "Website Link",
       "Location",
       "Person Linkedin Url",
       "Apollo Profile Url"
@@ -1603,13 +1612,17 @@
     const lines = [header.join(",")];
 
     rows.forEach(row => {
+      const rootDom = extractRootDomain(row.domain) || row.domain || "";
+      const webLink = row.website_link || (rootDom ? `https://${rootDom}` : "");
+
       lines.push(
         [
           row.first_name || "",
           row.last_name || "",
           row.job_title || "",
           row.company || "",
-          extractRootDomain(row.domain) || row.domain || "",
+          rootDom,
+          webLink,
           row.location || "",
           row.linkedin_url || "",
           row.apollo_profile_url || ""
@@ -1706,7 +1719,7 @@
         }
       });
 
-      saveRequiredContactsNow();
+      saveRequiredContactsNow(true);
       renderExportControls();
 
       // Refresh active page so row badges update from pending to qualified / excluded
@@ -1818,8 +1831,8 @@
       }
     });
 
-    // Save cleaned list directly to chrome.storage.local
-    saveRequiredContactsNow();
+    // Save cleaned list directly to chrome.storage.local and replace DB records for batch
+    saveRequiredContactsNow(true);
 
     const totalAfter = state.requiredContactsAll.size;
     renderExportControls();
@@ -1950,8 +1963,10 @@
           if (chrome?.storage?.local) {
             chrome.storage.local.set({ [BATCH_NAME_STORAGE_KEY]: val });
           }
-          showStatus(`Batch name set to: ${val}`, 2500);
-          addActivity("BATCH_RENAMED", `Batch name updated to '${val}'. Leads will save under this tag in database.`, "info", { batch: val });
+          state.syncedLeadKeys.clear();
+          saveRequiredContactsNow();
+          showStatus(`✓ Batch set to '${val}' — syncing leads to MySQL 'apollo_saved_leads'`, 3500);
+          addActivity("BATCH_RENAMED", `Batch name updated to '${val}'. Stored leads synced under this batch tag in database.`, "info", { batch: val });
         });
       }
 

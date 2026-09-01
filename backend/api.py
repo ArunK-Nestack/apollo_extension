@@ -1317,6 +1317,7 @@ class SyncSavedLeadItem(BaseModel):
 class SyncSavedLeadsRequest(BaseModel):
     batch: str = "batch_1"
     contacts: list[SyncSavedLeadItem]
+    replace_all: bool = False
 
 
 class EvaluatePendingTitlesRequest(BaseModel):
@@ -1463,46 +1464,117 @@ def get_detected_companies_list(limit: int = 100):
             }
 
 
+def ensure_apollo_saved_leads_table(conn):
+    """Ensure the apollo_saved_leads table exists with batch and website_link columns."""
+    try:
+        with conn.cursor() as cur:
+            if is_mysql_conn(conn):
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS `apollo_saved_leads` (
+                        `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                        `batch` VARCHAR(64) NOT NULL DEFAULT 'batch_1',
+                        `apollo_id` VARCHAR(128) DEFAULT '',
+                        `name` VARCHAR(255) NOT NULL DEFAULT '',
+                        `first_name` VARCHAR(128) DEFAULT '',
+                        `last_name` VARCHAR(128) DEFAULT '',
+                        `job_title` VARCHAR(255) DEFAULT '',
+                        `company` VARCHAR(255) DEFAULT '',
+                        `company_domain` VARCHAR(255) DEFAULT '',
+                        `website_link` VARCHAR(512) DEFAULT '',
+                        `location` VARCHAR(255) DEFAULT '',
+                        `linkedin_url` VARCHAR(512) DEFAULT '',
+                        `apollo_profile_url` VARCHAR(512) DEFAULT '',
+                        `segment` VARCHAR(128) DEFAULT 'Required_Lead',
+                        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX `idx_batch` (`batch`),
+                        INDEX `idx_company_domain` (`company_domain`),
+                        UNIQUE KEY `unique_batch_lead` (`batch`(64), `apollo_id`(64), `company_domain`(128))
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
+                try:
+                    cur.execute("ALTER TABLE `apollo_saved_leads` ADD COLUMN `website_link` VARCHAR(512) DEFAULT '' AFTER `company_domain`;")
+                except Exception:
+                    pass
+            else:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS apollo_saved_leads (
+                        id SERIAL PRIMARY KEY,
+                        batch VARCHAR(64) NOT NULL DEFAULT 'batch_1',
+                        apollo_id VARCHAR(128) DEFAULT '',
+                        name VARCHAR(255) NOT NULL DEFAULT '',
+                        first_name VARCHAR(128) DEFAULT '',
+                        last_name VARCHAR(128) DEFAULT '',
+                        job_title VARCHAR(255) DEFAULT '',
+                        company VARCHAR(255) DEFAULT '',
+                        company_domain VARCHAR(255) DEFAULT '',
+                        website_link VARCHAR(512) DEFAULT '',
+                        location VARCHAR(255) DEFAULT '',
+                        linkedin_url VARCHAR(512) DEFAULT '',
+                        apollo_profile_url VARCHAR(512) DEFAULT '',
+                        segment VARCHAR(128) DEFAULT 'Required_Lead',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        CONSTRAINT unique_batch_lead UNIQUE (batch, apollo_id, company_domain)
+                    );
+                """)
+    except Exception as e:
+        print(f"[ContactChecker] Notice: ensure apollo_saved_leads table: {e}", flush=True)
+
+
 @app.post("/sync-saved-leads")
 def sync_saved_leads(request: SyncSavedLeadsRequest):
-    """Direct sync endpoint: immediately persists all collected required leads into MySQL apollo_saved_leads."""
-    if not request.contacts:
-        return {"status": "ok", "synced": 0}
-
+    """Direct sync endpoint: immediately persists all collected required leads into MySQL apollo_saved_leads with batch name and website_link."""
     batch_tag = str(request.batch or "batch_1").strip()[:64]
-    rows_to_insert = []
-    for c in request.contacts:
-        rows_to_insert.append((
-            batch_tag,
-            (c.apollo_id or "")[:128],
-            (c.name or "")[:255],
-            (c.first_name or "")[:128],
-            (c.last_name or "")[:128],
-            (c.job_title or "")[:255],
-            (c.company or "")[:255],
-            (c.domain or "")[:255],
-            (c.location or "")[:255],
-            (c.linkedin_url or "")[:512],
-            (c.apollo_profile_url or "")[:512],
-            (c.segment or "Required_Lead")[:128]
-        ))
 
     with get_connection() as conn:
+        ensure_apollo_saved_leads_table(conn)
         with conn.cursor() as cur:
+            if request.replace_all:
+                cur.execute("DELETE FROM `apollo_saved_leads` WHERE `batch` = %s;", (batch_tag,))
+
+            if not request.contacts:
+                return {"status": "ok", "synced": 0}
+
+            rows_to_insert = []
+            for c in request.contacts:
+                w_link = (c.website_link or "").strip()
+                if not w_link and c.domain:
+                    w_link = f"https://{c.domain}"
+
+                rows_to_insert.append((
+                    batch_tag,
+                    (c.apollo_id or "")[:128],
+                    (c.name or "")[:255],
+                    (c.first_name or "")[:128],
+                    (c.last_name or "")[:128],
+                    (c.job_title or "")[:255],
+                    (c.company or "")[:255],
+                    (c.domain or "")[:255],
+                    w_link[:512],
+                    (c.location or "")[:255],
+                    (c.linkedin_url or "")[:512],
+                    (c.apollo_profile_url or "")[:512],
+                    (c.segment or "Required_Lead")[:128]
+                ))
+
             sql = """
                 INSERT INTO `apollo_saved_leads` (
                     `batch`, `apollo_id`, `name`, `first_name`, `last_name`,
-                    `job_title`, `company`, `company_domain`, `location`,
+                    `job_title`, `company`, `company_domain`, `website_link`, `location`,
                     `linkedin_url`, `apollo_profile_url`, `segment`
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
+                    `name` = VALUES(`name`),
+                    `first_name` = VALUES(`first_name`),
+                    `last_name` = VALUES(`last_name`),
                     `job_title` = VALUES(`job_title`),
+                    `company` = VALUES(`company`),
                     `company_domain` = VALUES(`company_domain`),
+                    `website_link` = VALUES(`website_link`),
                     `segment` = VALUES(`segment`);
             """
             cur.executemany(sql, rows_to_insert)
 
-    print(f"\n[ContactChecker] Synced {len(rows_to_insert)} lead(s) into MySQL table `apollo_saved_leads` under '{batch_tag}'.", flush=True)
+    print(f"\n[ContactChecker] Synced {len(rows_to_insert)} lead(s) with website links into MySQL table `apollo_saved_leads` under batch '{batch_tag}' (replace_all={request.replace_all}).", flush=True)
     return {"status": "ok", "synced": len(rows_to_insert)}
 
 

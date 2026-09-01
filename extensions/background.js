@@ -74,7 +74,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     endpoint = "/sync-saved-leads";
     body = {
       batch: message.batch || "batch_1",
-      contacts: message.contacts || []
+      contacts: message.contacts || [],
+      replace_all: Boolean(message.replace_all)
     };
   } else if (message.type === "EVALUATE_PENDING_TITLES" || message.type === "EVALUATE_PENDING_BATCH") {
     endpoint = "/evaluate-pending-titles";
