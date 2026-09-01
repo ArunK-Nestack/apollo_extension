@@ -1862,17 +1862,6 @@
     const count = state.requiredContactsAll.size;
     const prevBatch = state.batchName || `batch_${state.batchNumber || 1}`;
 
-    const matchNum = prevBatch.match(/^(.*?)(\d+)$/);
-    if (matchNum) {
-      const prefix = matchNum[1];
-      const nextNum = parseInt(matchNum[2], 10) + 1;
-      state.batchName = `${prefix}${nextNum}`;
-      state.batchNumber = nextNum;
-    } else {
-      state.batchNumber = (state.batchNumber || 1) + 1;
-      state.batchName = `${prevBatch}_${state.batchNumber}`;
-    }
-
     state.requiredContactsAll.clear();
     state.requiredCompanyMap.clear();
     state.syncedLeadKeys.clear();
