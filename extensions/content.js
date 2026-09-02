@@ -1671,6 +1671,8 @@
       batch: state.batchName || "batch_1"
     }, (response) => {
       if (!response?.success) {
+        hideStatus();
+        contactCheckerLog("Failed to evaluate pending batch via backend.");
         if (callback) callback();
         return;
       }

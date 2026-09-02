@@ -869,7 +869,7 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
             "low_conf": 0,
         }
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=8.0)
     user_prompt = "Classify these titles:\n" + "\n".join(f"{i+1}. {t}" for i, t in enumerate(novel_titles))
 
     t0 = time.perf_counter()
@@ -1022,7 +1022,7 @@ def classify_names_compact_llm(names: list[str], connection=None) -> tuple[dict[
     if not names or not OPENAI_API_KEY:
         return {}, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0}
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=8.0)
     user_prompt = "Classify these names:\n" + "\n".join(f"{i+1}. {n}" for i, n in enumerate(names))
 
     t0 = time.perf_counter()
