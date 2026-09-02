@@ -570,6 +570,20 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
                 with _crm_domain_cache_lock:
                     _crm_domain_cache[found_domain] = True
                 return True, found_domain
+                
+            # If not in CRM, check apollo_saved_leads
+            if is_mysql_conn(conn):
+                query2 = f"SELECT `company_domain` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) LIMIT 1;"
+                try:
+                    cur.execute(query2, tuple(candidate_domains))
+                    row2 = cur.fetchone()
+                    if row2 and row2[0]:
+                        found_domain = str(row2[0]).strip().lower()
+                        with _crm_domain_cache_lock:
+                            _crm_domain_cache[found_domain] = True
+                        return True, found_domain
+                except Exception:
+                    pass
 
             # Cache negatives
             with _crm_domain_cache_lock:
@@ -611,10 +625,12 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
         try:
             with conn.cursor() as cur:
                 format_strings = ",".join(["%s"] * len(candidate_domains))
-                query = f"SELECT `{domain_col}`, `{name_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings});"
-                cur.execute(query, tuple(candidate_domains))
-                rows = cur.fetchall()
-                for r in rows:
+                
+                # 1. Query CRM table
+                query1 = f"SELECT `{domain_col}`, `{name_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings});"
+                cur.execute(query1, tuple(candidate_domains))
+                rows1 = cur.fetchall()
+                for r in rows1:
                     dom = str(r[0] or "").strip().lower()
                     raw_nm = str(r[1] or "").strip()
                     norm_nm = normalize_text(raw_nm)
@@ -622,6 +638,23 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                         matched_domains.add(dom)
                         if norm_nm:
                             matched_records[(norm_nm, dom)] = raw_nm
+                
+                # 2. Query apollo_saved_leads table
+                query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings});"
+                try:
+                    cur.execute(query2, tuple(candidate_domains))
+                    rows2 = cur.fetchall()
+                    for r in rows2:
+                        dom = str(r[0] or "").strip().lower()
+                        raw_nm = str(r[1] or "").strip()
+                        norm_nm = normalize_text(raw_nm)
+                        if dom:
+                            matched_domains.add(dom)
+                            if norm_nm:
+                                matched_records[(norm_nm, dom)] = raw_nm
+                except Exception as ex2:
+                    print(f"[ContactChecker] Notice: apollo_saved_leads lookup error: {ex2}", flush=True)
+
         except Exception as e:
             print(f"[ContactChecker] Notice: CRM lookup error: {e}", flush=True)
 
