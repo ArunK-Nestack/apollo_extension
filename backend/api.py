@@ -1572,8 +1572,6 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
     with get_connection() as conn:
         ensure_apollo_saved_leads_table(conn)
         with conn.cursor() as cur:
-            if request.replace_all:
-                cur.execute("DELETE FROM `apollo_saved_leads` WHERE `batch` = %s;", (batch_tag,))
 
             if not request.contacts:
                 return {"status": "ok", "synced": 0}
@@ -1618,7 +1616,7 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
             """
             cur.executemany(sql, rows_to_insert)
 
-    print(f"\n[ContactChecker] Synced {len(rows_to_insert)} lead(s) with website links into MySQL table `apollo_saved_leads` under batch '{batch_tag}' (replace_all={request.replace_all}).", flush=True)
+    print(f"\n[ContactChecker] Synced {len(rows_to_insert)} lead(s) with website links into MySQL table `apollo_saved_leads` under batch '{batch_tag}'.", flush=True)
     return {"status": "ok", "synced": len(rows_to_insert)}
 
 

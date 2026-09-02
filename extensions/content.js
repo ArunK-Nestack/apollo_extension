@@ -1196,7 +1196,7 @@
     );
   }
 
-  function saveRequiredContactsNow(replaceAll = false) {
+  function saveRequiredContactsNow() {
     if (!chrome?.storage?.local) {
       return;
     }
@@ -1209,13 +1209,9 @@
       [REQUIRED_CONTACTS_STORAGE_KEY]: contactsList
     });
 
-    if (replaceAll) {
-      state.syncedLeadKeys.clear();
-    }
-
-    // Only send contacts that have not been synced yet (or all if replaceAll is true)
+    // Only send contacts that have not been synced yet
     const contactsToSync = contactsList
-      .filter(([key]) => replaceAll || !state.syncedLeadKeys.has(key))
+      .filter(([key]) => !state.syncedLeadKeys.has(key))
       .map(([key, c]) => ({
         apollo_id: c.apollo_id || "",
         name: c.name || "",
@@ -1232,7 +1228,7 @@
         _key: key
       }));
 
-    if (chrome?.runtime?.sendMessage && (contactsToSync.length > 0 || replaceAll)) {
+    if (chrome?.runtime?.sendMessage && contactsToSync.length > 0) {
       contactsToSync.forEach(c => state.syncedLeadKeys.add(c._key));
 
       const activeBatch = state.batchName || `batch_${state.batchNumber || 1}`;
@@ -1240,10 +1236,10 @@
         type: "SYNC_SAVED_LEADS",
         batch: activeBatch,
         contacts: contactsToSync,
-        replace_all: replaceAll
+        replace_all: false
       }, (res) => {
         if (res?.success) {
-          contactCheckerLog(`Synced ${contactsToSync.length} lead(s) to MySQL apollo_saved_leads under ${activeBatch} (replace_all=${replaceAll})`);
+          contactCheckerLog(`Synced ${contactsToSync.length} lead(s) to MySQL apollo_saved_leads under ${activeBatch}`);
         } else {
           // If error, unmark so it can retry
           contactsToSync.forEach(c => state.syncedLeadKeys.delete(c._key));
@@ -1730,7 +1726,7 @@
         }
       });
 
-      saveRequiredContactsNow(true);
+      saveRequiredContactsNow();
       renderExportControls();
 
       // Refresh active page so row badges update from pending to qualified / excluded
@@ -1842,8 +1838,8 @@
       }
     });
 
-    // Save cleaned list directly to chrome.storage.local and replace DB records for batch
-    saveRequiredContactsNow(true);
+    // Save cleaned list directly to chrome.storage.local
+    saveRequiredContactsNow();
 
     const totalAfter = state.requiredContactsAll.size;
     renderExportControls();
