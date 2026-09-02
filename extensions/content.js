@@ -47,7 +47,8 @@
     activityLog: [],
     activityPanelOpen: false,
     lastLoggedPageSignature: "",
-    lastBackendSummary: null
+    lastBackendSummary: null,
+    isEvaluatingBatch: false
   };
 
   globalThis[STATE_KEY] = state;
@@ -1637,6 +1638,11 @@
   }
 
   function checkAndFlushPendingTitles(force = false, callback = null) {
+    if (state.isEvaluatingBatch) {
+      if (callback) callback();
+      return;
+    }
+
     const pendingContacts = [];
     const pendingTitles = new Set();
     const pendingNames = new Set();
@@ -1663,6 +1669,7 @@
     const titlesList = Array.from(pendingTitles);
     const namesList = Array.from(pendingNames);
     showStatus(`⚡ 50-Item Batch: Evaluating ${pendingContacts.length} pending titles & names with AI...`, 0, true);
+    state.isEvaluatingBatch = true;
 
     chrome.runtime.sendMessage({
       type: "EVALUATE_PENDING_TITLES",
@@ -1670,6 +1677,7 @@
       names: namesList,
       batch: state.batchName || "batch_1"
     }, (response) => {
+      state.isEvaluatingBatch = false;
       if (!response?.success) {
         hideStatus();
         contactCheckerLog("Failed to evaluate pending batch via backend.");
