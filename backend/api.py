@@ -113,20 +113,31 @@ app.add_middleware(
 # ============================================================
 
 def is_mysql_conn(conn) -> bool:
-    return isinstance(conn, pymysql.Connection) if "pymysql" in globals() else False
+    return True # We only use MySQL in this environment for Apollo DB
 
+
+from dbutils.pooled_db import PooledDB
+
+_mysql_pool = None
 
 def get_connection():
+    global _mysql_pool
     if DB_PORT == 3306 or "rds.amazonaws.com" in DB_HOST:
-        return pymysql.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME,
-            autocommit=True,
-            connect_timeout=15,
-        )
+        if _mysql_pool is None:
+            _mysql_pool = PooledDB(
+                creator=pymysql,
+                maxconnections=20,
+                mincached=5,
+                blocking=True,
+                host=DB_HOST,
+                port=DB_PORT,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                database=DB_NAME,
+                autocommit=True,
+                connect_timeout=15,
+            )
+        return _mysql_pool.connection()
 
     return psycopg.connect(
         host=DB_HOST,

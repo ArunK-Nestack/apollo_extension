@@ -8,6 +8,7 @@ python-multipart>=0.0.12
 PyMySQL>=1.1.1
 cryptography>=43.0.0
 psycopg[binary]>=3.2.0
+DBUtils>=3.1.0
 
 # AI & LLM Clients
 openai>=1.50.0

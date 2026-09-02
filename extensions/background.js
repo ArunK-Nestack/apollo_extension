@@ -132,3 +132,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true;
 });
+
+// Keep-alive heartbeat to prevent Service Worker sleep drops
+chrome.alarms.create("keepAlive", { periodInMinutes: 0.33 }); // ~20 seconds
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "keepAlive") {
+    // console.log("Heartbeat"); 
+  }
+});

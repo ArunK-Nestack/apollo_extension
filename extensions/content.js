@@ -1175,6 +1175,7 @@
         if (Array.isArray(stored) && stored.length) {
           stored.forEach(([key, value]) => {
             state.requiredContactsAll.set(key, value);
+            state.syncedLeadKeys.add(key); // Mark as already synced so we don't re-upload on refresh
             const compKey = getCompanyDedupeKey(value.company, value.domain);
             if (compKey) {
               state.requiredCompanyMap.set(compKey, {
@@ -1185,7 +1186,7 @@
               });
             }
           });
-          // Auto-sync loaded contacts to MySQL table immediately
+          // Call save to handle edge cases, but it will be a fast O(1) no-op if all are in syncedLeadKeys
           saveRequiredContactsNow();
         }
 
@@ -2457,36 +2458,10 @@
       return false;
     }
 
-    const affectsApolloRows = node => {
-      const element = node?.nodeType === Node.ELEMENT_NODE
-        ? node
-        : node?.parentElement;
-
-      if (!element || isExtensionNode(element)) return false;
-
-      return Boolean(
-        element?.matches?.(
-          `[role="row"],
-           a[href*="/contacts/"],
-           a[data-to*="/contacts/"],
-           a[href*="/people/"],
-           a[data-to*="/people/"]`
-        ) ||
-        element?.closest?.('[role="row"]') ||
-        element?.querySelector?.(
-          `[role="row"],
-           a[href*="/contacts/"],
-           a[data-to*="/contacts/"],
-           a[href*="/people/"],
-           a[data-to*="/people/"]`
-        )
-      );
-    };
-
-    return nonExtensionAdded.some(affectsApolloRows) || nonExtensionRemoved.some(affectsApolloRows);
+    return true;
   }
 
-  function scheduleScan(delay = 35) {
+  function scheduleScan(delay = 200) {
     clearTimeout(state.timer);
 
     state.timer = setTimeout(
@@ -2498,10 +2473,27 @@
   }
 
   // Instant SPA Navigation Hook (0ms detection when changing pages/sorts)
+  let lastScannedUrl = location.href;
+
   function onPageNavigation() {
-    state.checkedContacts.clear();
-    state.currentContacts.clear();
-    scheduleScan(15);
+    const currentUrl = location.href;
+    try {
+      const currentUrlObj = new URL(currentUrl);
+      const lastUrlObj = new URL(lastScannedUrl);
+      
+      // Only clear cache if we navigated to a new base path or changed pagination
+      if (currentUrlObj.pathname !== lastUrlObj.pathname || currentUrlObj.searchParams.get('page') !== lastUrlObj.searchParams.get('page')) {
+        state.checkedContacts.clear();
+        state.currentContacts.clear();
+      }
+    } catch (e) {
+      // Fallback
+      state.checkedContacts.clear();
+      state.currentContacts.clear();
+    }
+    
+    lastScannedUrl = currentUrl;
+    scheduleScan(200);
   }
 
   window.addEventListener("popstate", onPageNavigation, { passive: true });
