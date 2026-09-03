@@ -47,15 +47,14 @@ The backend acts as the source of truth, managing CRM lookups, database persiste
 
 ### 3.2 CRM Cross-Referencing (`/match-apollo`)
 1. **Domain Extraction**: The backend extracts the canonical root domain (e.g., `stripe.com`) from the provided Apollo website link or company name.
-2. **CRM Lookup**: It queries the `emails` table (the master CRM list).
+2. **CRM Lookup**: It queries both the `emails` table (the master CRM list) and the `apollo_saved_leads` table (the previously scraped leads).
 3. **Outcome**: 
-   - If the domain matches a CRM record, the company is marked as **Existing** and ignored.
+   - If the domain matches a record in either table, the company is marked as **Existing** and ignored.
    - If the domain is net-new, the contact is passed to the AI Engine for role validation.
 
-### 3.3 Database Syncing (`/sync-saved-leads`)
+### 3.3 Database Syncing (`/api/sync-required-contacts`)
 - Receives the Delta Sync payload from the frontend.
-- Uses `INSERT ... ON DUPLICATE KEY UPDATE` to effortlessly merge new contacts into the `apollo_saved_leads` table.
-- Can process a `replace_all: true` payload to fully overwrite a batch if the AI Guardrails prune the local list.
+- The database is strictly **append-only**. It uses `INSERT ... ON DUPLICATE KEY UPDATE` to effortlessly merge new contacts into the `apollo_saved_leads` table without deleting existing records.
 
 ---
 

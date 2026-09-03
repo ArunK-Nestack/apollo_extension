@@ -598,7 +598,7 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
             return do_query(conn)
 
 
-def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain: dict[str, str], connection=None) -> dict[str, dict]:
+def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain: dict[str, str], connection=None, batch: str = None) -> dict[str, dict]:
     """
     Check if (full_name, domain) or domain exists in CRM 'emails' table.
     1. Collects all candidate domains.
@@ -640,9 +640,14 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                             matched_records[(norm_nm, dom)] = raw_nm
                 
                 # 2. Query apollo_saved_leads table
-                query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings});"
+                if batch:
+                    query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) AND `batch` != %s;"
+                    params2 = tuple(candidate_domains) + (batch,)
+                else:
+                    query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings});"
+                    params2 = tuple(candidate_domains)
                 try:
-                    cur.execute(query2, tuple(candidate_domains))
+                    cur.execute(query2, params2)
                     rows2 = cur.fetchall()
                     for r in rows2:
                         dom = str(r[0] or "").strip().lower()
@@ -1699,7 +1704,7 @@ def match_apollo(request: ApolloMatchRequest):
         # --------------------------------------------------------
         # STEP 2: DUAL DEDUPLICATION: FULL NAME + DOMAIN & DOMAIN IN CRM
         # --------------------------------------------------------
-        crm_matches = check_person_and_domains_in_crm_batch(contacts, contact_primary_domain, connection=conn)
+        crm_matches = check_person_and_domains_in_crm_batch(contacts, contact_primary_domain, connection=conn, batch=request.batch)
 
         net_new_contacts: list[ApolloContact] = []
 
