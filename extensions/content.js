@@ -1097,11 +1097,11 @@
 
     // Remove from required contacts if previously recorded
     if (state.requiredContactsAll.has(contact.key)) {
-      state.requiredContactsAll.delete(contact.key);
-      const compKey = getCompanyDedupeKey(contact.company, result?.matched_domain || contact.domain);
-      if (compKey && state.requiredCompanyMap.get(compKey)?.key === contact.key) {
-        state.requiredCompanyMap.delete(compKey);
-      }
+      // DO NOT delete from requiredContactsAll to retain Collected Total
+      // state.requiredContactsAll.delete(contact.key);
+      
+      // Instead, mark as synced so we ignore it for saving to DB again
+      state.syncedLeadKeys.add(contact.key);
     }
 
     const title = result.email ? `CRM email: ${result.email}` : "";
