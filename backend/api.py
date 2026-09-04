@@ -20,7 +20,6 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 import pymysql
-import psycopg
 from dotenv import load_dotenv
 from openai import OpenAI
 from fastapi import FastAPI
@@ -38,13 +37,7 @@ _batch_counter = 0
 
 DB_HOST = os.getenv("DB_HOST", "localhost").strip()
 DB_PORT_STR = os.getenv("DB_PORT", "").strip()
-if DB_PORT_STR:
-    DB_PORT = int(DB_PORT_STR)
-elif "rds.amazonaws.com" in DB_HOST or "mysql" in DB_HOST:
-    DB_PORT = 3306
-else:
-    DB_PORT = 5432
-
+DB_PORT = int(DB_PORT_STR) if DB_PORT_STR else 3306
 DB_NAME = os.getenv("DB_NAME", "apollo_scrapers").strip()
 DB_USER = os.getenv("DB_USER", "nestack").strip()
 DB_PASSWORD = os.getenv("DB_PASSWORD", "").strip()
@@ -112,8 +105,8 @@ app.add_middleware(
 # DATABASE CONNECTION & SCHEMA DETECTION
 # ============================================================
 
-def is_mysql_conn(conn) -> bool:
-    return True # We only use MySQL in this environment for Apollo DB
+def is_mysql_conn(conn=None) -> bool:
+    return True
 
 
 from dbutils.pooled_db import PooledDB
@@ -122,31 +115,21 @@ _mysql_pool = None
 
 def get_connection():
     global _mysql_pool
-    if DB_PORT == 3306 or "rds.amazonaws.com" in DB_HOST:
-        if _mysql_pool is None:
-            _mysql_pool = PooledDB(
-                creator=pymysql,
-                # Bug #5 Fix: Reduced from 20 to 10 to stay within free-tier cloud DB limits.
-                maxconnections=10,
-                mincached=2,
-                blocking=True,
-                host=DB_HOST,
-                port=DB_PORT,
-                user=DB_USER,
-                password=DB_PASSWORD,
-                database=DB_NAME,
-                autocommit=True,
-                connect_timeout=15,
-            )
-        return _mysql_pool.connection()
-
-    return psycopg.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-    )
+    if _mysql_pool is None:
+        _mysql_pool = PooledDB(
+            creator=pymysql,
+            maxconnections=10,
+            mincached=2,
+            blocking=True,
+            host=DB_HOST,
+            port=DB_PORT,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME,
+            autocommit=True,
+            connect_timeout=15,
+        )
+    return _mysql_pool.connection()
 
 
 def get_target_table_schema(conn) -> dict[str, Any]:
@@ -160,20 +143,12 @@ def get_target_table_schema(conn) -> dict[str, Any]:
 
         target_table = DB_TABLE
         with conn.cursor() as cur:
-            if is_mysql_conn(conn):
-                cur.execute("""
-                    SELECT COLUMN_NAME
-                    FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s;
-                """, (DB_NAME, target_table))
-                cols = [row[0] for row in cur.fetchall()]
-            else:
-                cur.execute("""
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_name = %s;
-                """, (target_table,))
-                cols = [row[0] for row in cur.fetchall()]
+            cur.execute("""
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s;
+            """, (DB_NAME, target_table))
+            cols = [row[0] for row in cur.fetchall()]
 
             _schema_cache = {
                 "table_name": target_table,
@@ -289,9 +264,9 @@ def get_seniority_score(job_title: str) -> int:
         return 0
     t = str(job_title).strip().lower()
 
-    if re.search(r"\b(founder|co-founder|ceo|cto|cmo|cro|coo|cfo|cpo|cio|chief|owner|president|partner)\b", t):
+    if re.search(r"\b(founder|co-founder|ceo|cto|cmo|cro|coo|cfo|cpo|cio|chief|owner|managing partner|chair)\b", t) or re.search(r"(?<!vice\s)(?<!vice-)(?<!asst\s)(?<!assistant\s)\bpresident\b", t):
         return 100
-    if re.search(r"\b(vp|vice president|head of|general manager|gm)\b", t) or t.startswith("head ") or t.startswith("head,") or t.startswith("head -"):
+    if re.search(r"\b(vp|svp|evp|avp|vice president|head of|general manager|gm)\b", t) or t.startswith("head ") or t.startswith("head,") or t.startswith("head -"):
         return 80
     if re.search(r"\b(director|principal|lead architect|group product manager|staff)\b", t):
         return 60
@@ -377,34 +352,20 @@ def ensure_detected_companies_table(conn):
     """Ensure the detected_companies table exists for storing detected company names, website links, and domains."""
     try:
         with conn.cursor() as cur:
-            if is_mysql_conn(conn):
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS `detected_companies` (
-                        `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                        `company_name` VARCHAR(255) NOT NULL DEFAULT '',
-                        `normalized_company` VARCHAR(255) NOT NULL DEFAULT '',
-                        `website_link` VARCHAR(512) DEFAULT '',
-                        `domain` VARCHAR(255) NOT NULL DEFAULT '',
-                        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        INDEX `idx_normalized_company` (`normalized_company`),
-                        INDEX `idx_domain` (`domain`),
-                        UNIQUE KEY `unique_company_domain` (`normalized_company`(128), `domain`(128))
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-                """)
-            else:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS detected_companies (
-                        id SERIAL PRIMARY KEY,
-                        company_name VARCHAR(255) NOT NULL DEFAULT '',
-                        normalized_company VARCHAR(255) NOT NULL DEFAULT '',
-                        website_link VARCHAR(512) DEFAULT '',
-                        domain VARCHAR(255) NOT NULL DEFAULT '',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        CONSTRAINT unique_company_domain UNIQUE (normalized_company, domain)
-                    );
-                """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS `detected_companies` (
+                    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    `company_name` VARCHAR(255) NOT NULL DEFAULT '',
+                    `normalized_company` VARCHAR(255) NOT NULL DEFAULT '',
+                    `website_link` VARCHAR(512) DEFAULT '',
+                    `domain` VARCHAR(255) NOT NULL DEFAULT '',
+                    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX `idx_normalized_company` (`normalized_company`),
+                    INDEX `idx_domain` (`domain`),
+                    UNIQUE KEY `unique_company_domain` (`normalized_company`(128), `domain`(128))
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
     except Exception as e:
         print(f"[ContactChecker] Notice: ensure detected_companies table error: {e}", flush=True)
 
@@ -443,13 +404,9 @@ def resolve_company_domains(contacts: list[Any], connection=None) -> tuple[dict[
             ensure_detected_companies_table(conn)
             try:
                 with conn.cursor() as cur:
-                    if is_mysql_conn(conn):
-                        format_strings = ",".join(["%s"] * len(missing_norm_comps))
-                        sql = f"SELECT `normalized_company`, `domain` FROM `detected_companies` WHERE `normalized_company` IN ({format_strings});"
-                        cur.execute(sql, tuple(missing_norm_comps))
-                    else:
-                        sql = 'SELECT normalized_company, domain FROM "detected_companies" WHERE normalized_company = ANY(%s);'
-                        cur.execute(sql, (list(missing_norm_comps),))
+                    format_strings = ",".join(["%s"] * len(missing_norm_comps))
+                    sql = f"SELECT `normalized_company`, `domain` FROM `detected_companies` WHERE `normalized_company` IN ({format_strings});"
+                    cur.execute(sql, tuple(missing_norm_comps))
 
                     rows = cur.fetchall()
                     with _company_domain_cache_lock:
@@ -506,23 +463,14 @@ def resolve_company_domains(contacts: list[Any], connection=None) -> tuple[dict[
             ensure_detected_companies_table(conn)
             try:
                 with conn.cursor() as cur:
-                    if is_mysql_conn(conn):
-                        sql = """
-                            INSERT INTO `detected_companies` (`company_name`, `normalized_company`, `website_link`, `domain`)
-                            VALUES (%s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE
-                                `website_link` = IF(VALUES(`website_link`) != '', VALUES(`website_link`), `website_link`),
-                                `domain` = VALUES(`domain`),
-                                `updated_at` = CURRENT_TIMESTAMP;
-                        """
-                    else:
-                        sql = """
-                            INSERT INTO detected_companies (company_name, normalized_company, website_link, domain)
-                            VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (normalized_company, domain) DO UPDATE
-                                SET website_link = CASE WHEN EXCLUDED.website_link != '' THEN EXCLUDED.website_link ELSE detected_companies.website_link END,
-                                    updated_at = CURRENT_TIMESTAMP;
-                        """
+                    sql = """
+                        INSERT INTO `detected_companies` (`company_name`, `normalized_company`, `website_link`, `domain`)
+                        VALUES (%s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            `website_link` = IF(VALUES(`website_link`) != '', VALUES(`website_link`), `website_link`),
+                            `domain` = VALUES(`domain`),
+                            `updated_at` = CURRENT_TIMESTAMP;
+                    """
                     cur.executemany(sql, new_records_to_insert)
                     print(f"[ContactChecker] Auto-persisted {len(new_records_to_insert)} new record(s) into `detected_companies`.", flush=True)
             except Exception as e:
@@ -557,20 +505,16 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
                 if _crm_domain_cache[dom] is True:
                     return True, dom
 
-    # 2. Query MySQL / Postgres
+    # 2. Query MySQL
     def do_query(conn):
         schema = get_target_table_schema(conn)
         tbl_name = schema["table_name"]
         domain_col = schema["email_domain"]
 
         with conn.cursor() as cur:
-            if is_mysql_conn(conn):
-                format_strings = ",".join(["%s"] * len(candidate_domains))
-                query = f"SELECT `{domain_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings}) LIMIT 1;"
-                cur.execute(query, tuple(candidate_domains))
-            else:
-                query = f"SELECT {domain_col} FROM \"{tbl_name}\" WHERE {domain_col} = ANY(%s) LIMIT 1;"
-                cur.execute(query, (candidate_domains,))
+            format_strings = ",".join(["%s"] * len(candidate_domains))
+            query = f"SELECT `{domain_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings}) LIMIT 1;"
+            cur.execute(query, tuple(candidate_domains))
 
             row = cur.fetchone()
             if row and row[0]:
@@ -580,18 +524,17 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
                 return True, found_domain
                 
             # If not in CRM, check apollo_saved_leads
-            if is_mysql_conn(conn):
-                query2 = f"SELECT `company_domain` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) LIMIT 1;"
-                try:
-                    cur.execute(query2, tuple(candidate_domains))
-                    row2 = cur.fetchone()
-                    if row2 and row2[0]:
-                        found_domain = str(row2[0]).strip().lower()
-                        with _crm_domain_cache_lock:
-                            _crm_domain_cache[found_domain] = True
-                        return True, found_domain
-                except Exception:
-                    pass
+            query2 = f"SELECT `company_domain` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) LIMIT 1;"
+            try:
+                cur.execute(query2, tuple(candidate_domains))
+                row2 = cur.fetchone()
+                if row2 and row2[0]:
+                    found_domain = str(row2[0]).strip().lower()
+                    with _crm_domain_cache_lock:
+                        _crm_domain_cache[found_domain] = True
+                    return True, found_domain
+            except Exception:
+                pass
 
             # Cache negatives
             with _crm_domain_cache_lock:
@@ -1535,54 +1478,32 @@ def ensure_apollo_saved_leads_table(conn):
     """Ensure the apollo_saved_leads table exists with batch and website_link columns."""
     try:
         with conn.cursor() as cur:
-            if is_mysql_conn(conn):
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS `apollo_saved_leads` (
-                        `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                        `batch` VARCHAR(64) NOT NULL DEFAULT 'batch_1',
-                        `apollo_id` VARCHAR(128) DEFAULT '',
-                        `name` VARCHAR(255) NOT NULL DEFAULT '',
-                        `first_name` VARCHAR(128) DEFAULT '',
-                        `last_name` VARCHAR(128) DEFAULT '',
-                        `job_title` VARCHAR(255) DEFAULT '',
-                        `company` VARCHAR(255) DEFAULT '',
-                        `company_domain` VARCHAR(255) DEFAULT '',
-                        `website_link` VARCHAR(512) DEFAULT '',
-                        `location` VARCHAR(255) DEFAULT '',
-                        `linkedin_url` VARCHAR(512) DEFAULT '',
-                        `apollo_profile_url` VARCHAR(512) DEFAULT '',
-                        `segment` VARCHAR(128) DEFAULT 'Required_Lead',
-                        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        INDEX `idx_batch` (`batch`),
-                        INDEX `idx_company_domain` (`company_domain`),
-                        UNIQUE KEY `unique_batch_lead` (`batch`(64), `apollo_id`(64), `company_domain`(128))
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-                """)
-                try:
-                    cur.execute("ALTER TABLE `apollo_saved_leads` ADD COLUMN `website_link` VARCHAR(512) DEFAULT '' AFTER `company_domain`;")
-                except Exception:
-                    pass
-            else:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS apollo_saved_leads (
-                        id SERIAL PRIMARY KEY,
-                        batch VARCHAR(64) NOT NULL DEFAULT 'batch_1',
-                        apollo_id VARCHAR(128) DEFAULT '',
-                        name VARCHAR(255) NOT NULL DEFAULT '',
-                        first_name VARCHAR(128) DEFAULT '',
-                        last_name VARCHAR(128) DEFAULT '',
-                        job_title VARCHAR(255) DEFAULT '',
-                        company VARCHAR(255) DEFAULT '',
-                        company_domain VARCHAR(255) DEFAULT '',
-                        website_link VARCHAR(512) DEFAULT '',
-                        location VARCHAR(255) DEFAULT '',
-                        linkedin_url VARCHAR(512) DEFAULT '',
-                        apollo_profile_url VARCHAR(512) DEFAULT '',
-                        segment VARCHAR(128) DEFAULT 'Required_Lead',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        CONSTRAINT unique_batch_lead UNIQUE (batch, apollo_id, company_domain)
-                    );
-                """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS `apollo_saved_leads` (
+                    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    `batch` VARCHAR(64) NOT NULL DEFAULT 'batch_1',
+                    `apollo_id` VARCHAR(128) DEFAULT '',
+                    `name` VARCHAR(255) NOT NULL DEFAULT '',
+                    `first_name` VARCHAR(128) DEFAULT '',
+                    `last_name` VARCHAR(128) DEFAULT '',
+                    `job_title` VARCHAR(255) DEFAULT '',
+                    `company` VARCHAR(255) DEFAULT '',
+                    `company_domain` VARCHAR(255) DEFAULT '',
+                    `website_link` VARCHAR(512) DEFAULT '',
+                    `location` VARCHAR(255) DEFAULT '',
+                    `linkedin_url` VARCHAR(512) DEFAULT '',
+                    `apollo_profile_url` VARCHAR(512) DEFAULT '',
+                    `segment` VARCHAR(128) DEFAULT 'Required_Lead',
+                    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX `idx_batch` (`batch`),
+                    INDEX `idx_company_domain` (`company_domain`),
+                    UNIQUE KEY `unique_batch_lead` (`batch`(64), `apollo_id`(64), `company_domain`(128))
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD COLUMN `website_link` VARCHAR(512) DEFAULT '' AFTER `company_domain`;")
+            except Exception:
+                pass
     except Exception as e:
         print(f"[ContactChecker] Notice: ensure apollo_saved_leads table: {e}", flush=True)
 

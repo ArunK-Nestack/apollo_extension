@@ -1130,30 +1130,6 @@
   // PERSIST REQUIRED CONTACTS ACROSS RELOADS
   // ============================================================
 
-  // ============================================================
-  // COMPANY DEDUPLICATION KEY HELPER
-  // ============================================================
-
-  function getCompanyDedupeKey(companyName, domain) {
-    const normDom = (domain || "")
-      .toLowerCase()
-      .replace(/^https?:\/\//, "")
-      .replace(/^www\./, "")
-      .split("/")[0]
-      .split(":")[0]
-      .trim();
-    if (normDom && normDom.includes(".")) {
-      return normDom;
-    }
-    return (companyName || "")
-      .toLowerCase()
-      .normalize("NFKD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^\w\s]/g, " ")
-      .replace(/\b(inc|corp|corporation|llc|ltd|limited|pty|gmbh|co|holding|holdings|group)\b/gi, "")
-      .replace(/\s+/g, "")
-      .trim();
-  }
 
   // ============================================================
   // PERSIST REQUIRED CONTACTS ACROSS RELOADS
@@ -1325,10 +1301,10 @@
   function getSeniorityScore(jobTitle) {
     if (!jobTitle) return 0;
     const t = String(jobTitle).toLowerCase().trim();
-    if (/\b(founder|co-founder|ceo|cto|cmo|cro|coo|cfo|cpo|cio|chief|owner|president|partner)\b/.test(t)) {
+    if (/\b(founder|co-founder|ceo|cto|cmo|cro|coo|cfo|cpo|cio|chief|owner|managing partner|chair)\b/.test(t) || /(?<!vice\s)(?<!vice-)(?<!asst\s)(?<!assistant\s)\bpresident\b/.test(t)) {
       return 100; // Tier 1: C-Suite / Founders
     }
-    if (/\b(vp|vice president|head of|general manager|gm)\b/.test(t) || t.startsWith("head ") || t.startsWith("head,") || t.startsWith("head -")) {
+    if (/\b(vp|svp|evp|avp|vice president|head of|general manager|gm)\b/.test(t) || t.startsWith("head ") || t.startsWith("head,") || t.startsWith("head -")) {
       return 80; // Tier 2: Vice President / Head of
     }
     if (/\b(director|principal|lead architect|group product manager|staff)\b/.test(t)) {
