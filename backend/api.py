@@ -126,8 +126,9 @@ def get_connection():
         if _mysql_pool is None:
             _mysql_pool = PooledDB(
                 creator=pymysql,
-                maxconnections=20,
-                mincached=5,
+                # Bug #5 Fix: Reduced from 20 to 10 to stay within free-tier cloud DB limits.
+                maxconnections=10,
+                mincached=2,
                 blocking=True,
                 host=DB_HOST,
                 port=DB_PORT,
@@ -209,6 +210,13 @@ def normalize_text(value: str) -> str:
     value = unicodedata.normalize("NFKD", str(value).strip().lower())
     value = "".join(c for c in value if not unicodedata.combining(c))
     return re.sub(r"[^a-z0-9]", "", value)
+
+
+def _s(value, max_len: int = 250) -> str:
+    """Bug #4 Fix: Sanitize — truncate any string to max_len before writing to MySQL.
+    This prevents DataError crashes on VARCHAR(255) columns when Apollo returns
+    excessively long titles, names, or URLs."""
+    return str(value or "").strip()[:max_len]
 
 
 MULTI_PART_TLDS = {
@@ -1409,10 +1417,16 @@ def evaluate_pending_titles(request: EvaluatePendingTitlesRequest):
             unresolved = [t for t in unique_titles if db_res.get(t, {}).get("status") == "not_recognized_title"]
 
             llm_res = {}
+            llm_actually_failed = False
             if unresolved and OPENAI_API_KEY:
                 llm_res, t_stats = classify_novel_titles_compact_llm(unresolved, connection=conn)
                 for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
                     total_token_stats[k] += t_stats.get(k, 0)
+                # Bug #3 Fix: Detect a genuine LLM failure — unresolved titles were sent but
+                # nothing came back. This prevents silent approval of unqualified contacts.
+                if not llm_res and unresolved:
+                    llm_actually_failed = True
+                    print(f"[LLM Warning] evaluate_pending_titles: LLM returned empty for {len(unresolved)} titles — marking as llm_failed to prevent silent bypass.", flush=True)
 
             for t in unique_titles:
                 norm_t = normalize_text(t)
@@ -1420,6 +1434,15 @@ def evaluate_pending_titles(request: EvaluatePendingTitlesRequest):
                     final_title_results[t] = llm_res[norm_t]
                 elif t in db_res and db_res[t].get("status") != "not_recognized_title":
                     final_title_results[t] = db_res[t]
+                elif llm_actually_failed and t in unresolved:
+                    # Bug #3 Fix: LLM genuinely failed — do NOT silently approve.
+                    # Return a distinct status so the frontend keeps these contacts pending for retry.
+                    final_title_results[t] = {
+                        "required": True,
+                        "status": "llm_failed",
+                        "segment": "Pending_Evaluation",
+                        "reason": "AI evaluation failed — will retry on next batch"
+                    }
                 else:
                     final_title_results[t] = {
                         "required": True,
@@ -1578,24 +1601,24 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
 
             rows_to_insert = []
             for c in request.contacts:
-                w_link = (c.website_link or "").strip()
+                w_link = _s(c.website_link, 512)
                 if not w_link and c.domain:
-                    w_link = f"https://{c.domain}"
+                    w_link = f"https://{_s(c.domain, 250)}"
 
                 rows_to_insert.append((
                     batch_tag,
-                    (c.apollo_id or "")[:128],
-                    (c.name or "")[:255],
-                    (c.first_name or "")[:128],
-                    (c.last_name or "")[:128],
-                    (c.job_title or "")[:255],
-                    (c.company or "")[:255],
-                    (c.domain or "")[:255],
-                    w_link[:512],
-                    (c.location or "")[:255],
-                    (c.linkedin_url or "")[:512],
-                    (c.apollo_profile_url or "")[:512],
-                    (c.segment or "Required_Lead")[:128]
+                    _s(c.apollo_id, 128),
+                    _s(c.name, 250),
+                    _s(c.first_name, 128),
+                    _s(c.last_name, 128),
+                    _s(c.job_title, 250),
+                    _s(c.company, 250),
+                    _s(c.domain, 250),
+                    w_link,
+                    _s(c.location, 250),
+                    _s(c.linkedin_url, 512),
+                    _s(c.apollo_profile_url, 512),
+                    _s(c.segment or "Required_Lead", 128)
                 ))
 
             sql = """
