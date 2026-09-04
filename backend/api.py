@@ -1913,21 +1913,23 @@ def match_apollo(request: ApolloMatchRequest):
                 first_name_val = contact.first_name or (name_parts[0] if name_parts else "")
                 last_name_val = contact.last_name or (name_parts[1] if len(name_parts) > 1 else "")
                 domain_val = contact_primary_domain.get(contact.key) or contact.company_domain or ""
+                web_link_val = contact_website_link.get(contact.key) or getattr(contact, "website_link", "") or (f"https://{domain_val}" if domain_val else "")
                 apollo_url_val = contact.apollo_profile_url or (f"https://app.apollo.io/#/people/{apollo_id_val}" if apollo_id_val else "")
 
                 required_leads_to_save.append((
-                    batch_tag[:64],
-                    apollo_id_val[:128],
-                    (contact.name or "")[:255],
-                    first_name_val[:128],
-                    last_name_val[:128],
-                    (contact.job_title or "")[:255],
-                    (contact.company or "")[:255],
-                    domain_val[:255],
-                    (contact.location or "")[:255],
-                    (contact.linkedin_url or "")[:512],
-                    apollo_url_val[:512],
-                    (r.get("segment") or "Required_Lead")[:128]
+                    _s(batch_tag, 64),
+                    _s(apollo_id_val, 128),
+                    _s(contact.name, 250),
+                    _s(first_name_val, 128),
+                    _s(last_name_val, 128),
+                    _s(contact.job_title, 250),
+                    _s(contact.company, 250),
+                    _s(domain_val, 250),
+                    _s(web_link_val, 512),
+                    _s(contact.location, 250),
+                    _s(contact.linkedin_url, 512),
+                    _s(apollo_url_val, 512),
+                    _s(r.get("segment") or "Required_Lead", 128)
                 ))
 
         if required_leads_to_save:
@@ -1936,12 +1938,13 @@ def match_apollo(request: ApolloMatchRequest):
                     sql = """
                         INSERT INTO `apollo_saved_leads` (
                             `batch`, `apollo_id`, `name`, `first_name`, `last_name`,
-                            `job_title`, `company`, `company_domain`, `location`,
+                            `job_title`, `company`, `company_domain`, `website_link`, `location`,
                             `linkedin_url`, `apollo_profile_url`, `segment`
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
                             `job_title` = VALUES(`job_title`),
                             `company_domain` = VALUES(`company_domain`),
+                            `website_link` = VALUES(`website_link`),
                             `segment` = VALUES(`segment`);
                     """
                     cur.executemany(sql, required_leads_to_save)

@@ -1,3 +1,4 @@
+
 (() => {
   const STATE_KEY = "__contactDatabaseChecker";
   const REQUIRED_CONTACTS_STORAGE_KEY =
@@ -30,6 +31,7 @@
     batchName: "batch_1",
     titleGuardrailEnabled: true,
     indianGuardrailEnabled: true,
+    isUpdatingDom: false,
     observer: null,
     timer: null,
     pageTimer: null,
@@ -38,7 +40,7 @@
     settleTimer: null,
     settleRetryAttempts: 0,
     checkedContacts: new Map(),
-    pendingContacts: new Set(),
+    pendingContacts: new Map(), // key -> timestamp (supports TTL auto-expiration)
     currentContacts: new Map(),
     requiredContactsAll: new Map(),
     requiredCompanyMap: new Map(),
@@ -48,7 +50,9 @@
     activityPanelOpen: false,
     lastLoggedPageSignature: "",
     lastBackendSummary: null,
-    isEvaluatingBatch: false
+    isEvaluatingBatch: false,
+    lastEvaluatedPendingTimestamp: 0,
+    lastNavigatedKey: ""
   };
 
   globalThis[STATE_KEY] = state;
@@ -1049,11 +1053,15 @@
       return;
     }
 
-    const badges = contact.nameCell.querySelectorAll(
-      "[data-contact-checker], .contact-checker-existing-badge, .contact-checker-required-badge, .contact-checker-ignored-badge"
-    );
-
-    badges.forEach(b => b.remove());
+    state.isUpdatingDom = true;
+    try {
+      const badges = contact.nameCell.querySelectorAll(
+        "[data-contact-checker], .contact-checker-existing-badge, .contact-checker-required-badge, .contact-checker-ignored-badge"
+      );
+      badges.forEach(b => b.remove());
+    } finally {
+      state.isUpdatingDom = false;
+    }
   }
 
   function setContactBadge(contact, className, text, title, bgColor = "") {
@@ -1067,17 +1075,27 @@
         if (title) existingBadge.title = title;
         return; // Idempotent: already has the exact badge, do not touch DOM
       }
-      existingBadge.remove();
+      state.isUpdatingDom = true;
+      try {
+        existingBadge.remove();
+      } finally {
+        state.isUpdatingDom = false;
+      }
     }
 
-    const badge = document.createElement("span");
-    badge.className = className;
-    badge.setAttribute("data-contact-checker", "true");
-    badge.textContent = text;
-    if (title) badge.title = title;
-    if (bgColor) badge.style.background = bgColor;
+    state.isUpdatingDom = true;
+    try {
+      const badge = document.createElement("span");
+      badge.className = className;
+      badge.setAttribute("data-contact-checker", "true");
+      badge.textContent = text;
+      if (title) badge.title = title;
+      if (bgColor) badge.style.background = bgColor;
 
-    contact.link.insertAdjacentElement("afterend", badge);
+      contact.link.insertAdjacentElement("afterend", badge);
+    } finally {
+      state.isUpdatingDom = false;
+    }
   }
 
   function highlightContact(
@@ -1099,7 +1117,7 @@
     if (state.requiredContactsAll.has(contact.key)) {
       // DO NOT delete from requiredContactsAll to retain Collected Total
       // state.requiredContactsAll.delete(contact.key);
-      
+
       // Instead, mark as synced so we ignore it for saving to DB again
       state.syncedLeadKeys.add(contact.key);
     }
@@ -1639,6 +1657,12 @@
       return;
     }
 
+    // Cooldown guard to avoid rapid consecutive triggers in a loop
+    if (!force && Date.now() - state.lastEvaluatedPendingTimestamp < 10000) {
+      if (callback) callback();
+      return;
+    }
+
     const pendingContacts = [];
     const pendingTitles = new Set();
     const pendingNames = new Set();
@@ -1662,125 +1686,115 @@
       return;
     }
 
+    state.lastEvaluatedPendingTimestamp = Date.now();
     const titlesList = Array.from(pendingTitles);
     const namesList = Array.from(pendingNames);
     showStatus(`⚡ 50-Item Batch: Evaluating ${pendingContacts.length} pending titles & names with AI...`, 0, true);
     state.isEvaluatingBatch = true;
 
     // Bug #2 Fix: Helper to rescue contacts when AI batch evaluation fails.
-    // Instead of abandoning them with a frozen '⌛ AI evaluating...' badge,
-    // we reset their pending flags so the next scan cycle can re-evaluate them.
     function rescuePendingContacts(reason) {
       state.isEvaluatingBatch = false;
       addActivity("AI_BATCH_FAILED", `AI evaluation failed (${reason}). Resetting ${pendingContacts.length} contact(s) to re-evaluate on next scan.`, "error");
       pendingContacts.forEach(({ key, contact }) => {
-        // Keep them in requiredContactsAll but strip the pending eval flag
-        // so extractContact/applyContactResult can re-attempt them
         contact.is_pending_eval = false;
         contact.is_pending_indian_eval = false;
         state.requiredContactsAll.set(key, contact);
-        // Also remove from checkedContacts so they get re-checked on next scanApollo
         state.checkedContacts.delete(key);
         state.pendingContacts.delete(key);
       });
-      hideStatus();
       showStatus(`⚠ AI batch failed — ${pendingContacts.length} contacts reset for retry`, 3000, false);
       if (callback) callback();
     }
 
     try {
-    chrome.runtime.sendMessage({
-      type: "EVALUATE_PENDING_TITLES",
-      titles: titlesList,
-      names: namesList,
-      batch: state.batchName || "batch_1"
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        rescuePendingContacts(chrome.runtime.lastError.message);
-        return;
-      }
-      state.isEvaluatingBatch = false;
-      if (!response?.success) {
-        rescuePendingContacts(response?.error || "backend error");
-        return;
-      }
-
-      const titleEvals = response.title_results || response.results || {};
-      const nameEvals = response.name_results || {};
-      let excludedTitlesCount = 0;
-      let excludedIndianCount = 0;
-      let keptCount = 0;
-
-      pendingContacts.forEach(({ key, contact }) => {
-        const titleEval = titleEvals[contact.job_title];
-        const nameEval = nameEvals[contact.name];
-
-        let shouldExclude = false;
-        let excludeReason = "";
-
-        // Bug #3 Fix: If the backend signals llm_failed, do NOT approve the contact.
-        // Keep it in Pending_Evaluation so it gets retried on the next batch trigger.
-        const titleLlmFailed = titleEval?.status === "llm_failed";
-        if (titleLlmFailed) {
-          contact.is_pending_eval = true;
-          contact.segment = "Pending_Evaluation";
-          state.requiredContactsAll.set(key, contact);
-          return; // Skip all further processing for this contact
+      chrome.runtime.sendMessage({
+        type: "EVALUATE_PENDING_TITLES",
+        titles: titlesList,
+        names: namesList,
+        batch: state.batchName || "batch_1"
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          rescuePendingContacts(chrome.runtime.lastError.message);
+          return;
+        }
+        state.isEvaluatingBatch = false;
+        if (!response?.success) {
+          rescuePendingContacts(response?.error || "backend error");
+          return;
         }
 
-        // 1. Check Indian demographic evaluation
-        if (nameEval && nameEval.is_indian === true) {
-          shouldExclude = true;
-          excludeReason = nameEval.reason || "Demographic Filter: Pure Indian Origin";
-          excludedIndianCount++;
-        }
-        // 2. Check Job title hierarchy evaluation
-        else if (titleEval && titleEval.required === false) {
-          shouldExclude = true;
-          excludeReason = titleEval.reason || "Disqualified Title";
-          excludedTitlesCount++;
-        }
+        const titleEvals = response.title_results || response.results || {};
+        const nameEvals = response.name_results || {};
+        let excludedTitlesCount = 0;
+        let excludedIndianCount = 0;
+        let keptCount = 0;
 
-        if (shouldExclude) {
-          // Prune / delete from local storage
-          state.requiredContactsAll.delete(key);
-          const compKey = getCompanyDedupeKey(contact.company, contact.domain);
-          if (compKey && state.requiredCompanyMap.get(compKey)?.key === key) {
-            state.requiredCompanyMap.delete(compKey);
+        pendingContacts.forEach(({ key, contact }) => {
+          const titleEval = titleEvals[contact.job_title];
+          const nameEval = nameEvals[contact.name];
+
+          let shouldExclude = false;
+          let excludeReason = "";
+
+          const titleLlmFailed = titleEval?.status === "llm_failed";
+          if (titleLlmFailed) {
+            contact.is_pending_eval = true;
+            contact.segment = "Pending_Evaluation";
+            state.requiredContactsAll.set(key, contact);
+            return;
           }
-        } else {
-          // Keep and upgrade
-          keptCount++;
-          if (titleEval?.segment) {
-            contact.segment = titleEval.segment;
+
+          // 1. Check Indian demographic evaluation
+          if (nameEval && nameEval.is_indian === true) {
+            shouldExclude = true;
+            excludeReason = nameEval.reason || "Demographic Filter: Pure Indian Origin";
+            excludedIndianCount++;
           }
-          contact.is_pending_eval = false;
-          contact.is_pending_indian_eval = false;
-          state.requiredContactsAll.set(key, contact);
-        }
+          // 2. Check Job title hierarchy evaluation
+          else if (titleEval && titleEval.required === false) {
+            shouldExclude = true;
+            excludeReason = titleEval.reason || "Disqualified Title";
+            excludedTitlesCount++;
+          }
+
+          if (shouldExclude) {
+            // Prune / delete from local storage
+            state.requiredContactsAll.delete(key);
+            const compKey = getCompanyDedupeKey(contact.company, contact.domain);
+            if (compKey && state.requiredCompanyMap.get(compKey)?.key === key) {
+              state.requiredCompanyMap.delete(compKey);
+            }
+          } else {
+            // Keep and upgrade
+            keptCount++;
+            if (titleEval?.segment) {
+              contact.segment = titleEval.segment;
+            }
+            contact.is_pending_eval = false;
+            contact.is_pending_indian_eval = false;
+            state.requiredContactsAll.set(key, contact);
+          }
+        });
+
+        saveRequiredContactsNow();
+        renderExportControls();
+
+        // Refresh badges safely without recursion loop
+        scheduleScan(300);
+
+        const totalExcluded = excludedTitlesCount + excludedIndianCount;
+        showStatus(`⚡ Evaluated ${pendingContacts.length} contacts: ${keptCount} kept, ${totalExcluded} excluded (${excludedTitlesCount} title, ${excludedIndianCount} demographic)!`, 5000);
+        addActivity("PENDING_BATCH_EVALUATED", `AI Evaluated ${pendingContacts.length} pending contacts: ${keptCount} kept, ${totalExcluded} excluded from local storage (${excludedTitlesCount} non-required titles, ${excludedIndianCount} pure Indian names).`, "info", {
+          total_evaluated: pendingContacts.length,
+          kept: keptCount,
+          excluded_titles: excludedTitlesCount,
+          excluded_indian: excludedIndianCount
+        });
+
+        if (callback) callback();
       });
-
-      saveRequiredContactsNow();
-      renderExportControls();
-
-      // Refresh active page so row badges update from pending to qualified / excluded
-      state.checkedContacts.clear();
-      state.currentContacts.clear();
-      scanApollo();
-
-      const totalExcluded = excludedTitlesCount + excludedIndianCount;
-      showStatus(`⚡ Evaluated ${pendingContacts.length} contacts: ${keptCount} kept, ${totalExcluded} excluded (${excludedTitlesCount} title, ${excludedIndianCount} demographic)!`, 5000);
-      addActivity("PENDING_BATCH_EVALUATED", `AI Evaluated ${pendingContacts.length} pending contacts: ${keptCount} kept, ${totalExcluded} excluded from local storage (${excludedTitlesCount} non-required titles, ${excludedIndianCount} pure Indian names).`, "info", {
-        total_evaluated: pendingContacts.length,
-        kept: keptCount,
-        excluded_titles: excludedTitlesCount,
-        excluded_indian: excludedIndianCount
-      });
-
-      if (callback) callback();
-    });
     } catch (sendErr) {
-      // Bug #2 Fix: Chrome threw synchronously on this sendMessage call too
       rescuePendingContacts(`sendMessage threw: ${sendErr?.message || sendErr}`);
     }
   }
@@ -2109,98 +2123,61 @@
       return;
     }
 
-    const links =
-      getApolloContactLinks();
+    // Auto-expire pending requests older than 10s to prevent stuck/frozen rows
+    const now = Date.now();
+    for (const [k, ts] of state.pendingContacts.entries()) {
+      if (now - ts > 10000) {
+        state.pendingContacts.delete(k);
+      }
+    }
+
+    const links = getApolloContactLinks();
 
     if (!links.length) {
       state.currentContacts.clear();
       renderExportControls();
-
-      console.log(
-        "Contact Checker: no Apollo contacts found."
-      );
-
       return;
     }
 
     const contactsToCheck = [];
-
-    const currentContacts =
-      new Map();
-
-    // Bug #6 Fix: Track consecutive extraction failures to detect Apollo DOM changes.
+    const currentContacts = new Map();
     let failedExtractionCount = 0;
 
-    links.forEach(
-      (link, index) => {
-        const contact =
-          extractContact(
-            link,
-            index
-          );
+    links.forEach((link, index) => {
+      const contact = extractContact(link, index);
 
-        if (!contact) {
-          failedExtractionCount++;
-          return;
-        }
-
-        failedExtractionCount = 0; // reset on success
-
-        // Avoid duplicates
-        if (
-          currentContacts.has(
-            contact.key
-          )
-        ) {
-          return;
-        }
-
-        currentContacts.set(
-          contact.key,
-          contact
-        );
-
-        // Already checked earlier
-        if (
-          state.checkedContacts.has(
-            contact.key
-          )
-        ) {
-          const cached =
-            state.checkedContacts.get(
-              contact.key
-            );
-
-          if (cached) {
-            applyContactResult(
-              contact,
-              cached
-            );
-          }
-
-          return;
-        }
-
-        // Currently in flight
-        if (
-          state.pendingContacts.has(
-            contact.key
-          )
-        ) {
-          return;
-        }
-
-        contactsToCheck.push(
-          contact
-        );
+      if (!contact) {
+        failedExtractionCount++;
+        return;
       }
-    );
 
-    state.currentContacts =
-      currentContacts;
+      failedExtractionCount = 0;
 
-    // Bug #6 Fix: If ALL visible contact links failed extraction, warn the user.
-    // This means Apollo likely changed their HTML structure and the scraper is blind.
+      if (currentContacts.has(contact.key)) {
+        return;
+      }
+
+      currentContacts.set(contact.key, contact);
+
+      // Already checked earlier on this page view
+      if (state.checkedContacts.has(contact.key)) {
+        const cached = state.checkedContacts.get(contact.key);
+        if (cached) {
+          applyContactResult(contact, cached);
+        }
+        return;
+      }
+
+      // Currently in flight
+      if (state.pendingContacts.has(contact.key)) {
+        return;
+      }
+
+      contactsToCheck.push(contact);
+    });
+
+    state.currentContacts = currentContacts;
+
     if (failedExtractionCount > 0 && currentContacts.size === 0 && links.length > 0) {
       addActivity(
         "DOM_PARSE_FAILURE",
@@ -2210,50 +2187,16 @@
       showStatus("⚠ Apollo layout change detected — scraper may need an update", 5000, false);
     }
 
-    // Settle retry engine
-    if (
-      contactsToCheck.some(
-        contact =>
-          contact.needsSettling
-      )
-      && state.settleRetryAttempts < 6
-    ) {
-      state.settleRetryAttempts += 1;
-
-      clearTimeout(
-        state.settleTimer
-      );
-
-      state.settleTimer = setTimeout(
-        scanApollo,
-        150
-      );
-    } else {
-      state.settleRetryAttempts = 0;
-    }
-
-    const currentSignature =
-      Array.from(
-        currentContacts.keys()
-      ).join("|");
-
-    if (
-      currentSignature &&
-      currentSignature
-        !== state.lastLoggedPageSignature
-    ) {
-      state.lastLoggedPageSignature =
-        currentSignature;
-
+    const currentSignature = Array.from(currentContacts.keys()).join("|");
+    if (currentSignature && currentSignature !== state.lastLoggedPageSignature) {
+      state.lastLoggedPageSignature = currentSignature;
       addActivity(
         "PAGE_SCANNED",
         `Apollo page scanned — ${currentContacts.size} contact(s) visible.`,
         "info",
         {
-          visible_contacts:
-            currentContacts.size,
-          new_contacts_to_check:
-            contactsToCheck.length
+          visible_contacts: currentContacts.size,
+          new_contacts_to_check: contactsToCheck.length
         }
       );
     }
@@ -2264,8 +2207,9 @@
       return;
     }
 
+    // Mark contacts as pending with current timestamp
     contactsToCheck.forEach(contact =>
-      state.pendingContacts.add(contact.key)
+      state.pendingContacts.set(contact.key, Date.now())
     );
 
     showStatus(
@@ -2285,150 +2229,78 @@
       `Sending ${contactsToCheck.length} contact(s) to the local matching API.`,
       "info",
       {
-        contacts:
-          contactsToCheck.length
+        contacts: contactsToCheck.length
       }
     );
 
-    // ==========================================================
-    // SEND ONE BATCH TO PYTHON
-    // ==========================================================
-
-    // Bug #1 Fix: Wrap in try/catch to handle synchronous Chrome errors
-    // (e.g. background worker suspended/context invalidated) which would
-    // otherwise leave state.pendingContacts permanently populated → "Forever Scanning".
+    // Send batch to backend
     try {
       chrome.runtime.sendMessage(
         {
           type: "MATCH_APOLLO",
           batch: state.batchName || `batch_${state.batchNumber || 1}`,
-          title_guardrail_enabled:
-            state.titleGuardrailEnabled === true,
-          indian_name_guardrail_enabled:
-            state.indianGuardrailEnabled === true,
-
-          contacts:
-            contactsToCheck.map(
-              contact => {
-                const apolloId = getApolloIdFromKey(contact.key);
-                const nameParts = (contact.name || "").trim().split(/\s+/);
-                return {
-                  key: contact.key,
-                  apollo_id: apolloId,
-                  name: contact.name,
-                  first_name: nameParts[0] || "",
-                  last_name: nameParts.slice(1).join(" ") || "",
-                  job_title: contact.job_title,
-                  company: contact.company,
-                  company_domain: contact.company_domain || contact.domain || "",
-                  website_link: contact.website_link || "",
-                  email: contact.email || "",
-                  location: contact.location || "",
-                  linkedin_url: contact.linkedin_url || "",
-                  apollo_profile_url: apolloId ? `https://app.apollo.io/#/people/${apolloId}` : ""
-                };
-              }
-            )
+          title_guardrail_enabled: state.titleGuardrailEnabled === true,
+          indian_name_guardrail_enabled: state.indianGuardrailEnabled === true,
+          contacts: contactsToCheck.map(contact => {
+            const apolloId = getApolloIdFromKey(contact.key);
+            const nameParts = (contact.name || "").trim().split(/\s+/);
+            return {
+              key: contact.key,
+              apollo_id: apolloId,
+              name: contact.name,
+              first_name: nameParts[0] || "",
+              last_name: nameParts.slice(1).join(" ") || "",
+              job_title: contact.job_title,
+              company: contact.company,
+              company_domain: contact.company_domain || contact.domain || "",
+              website_link: contact.website_link || "",
+              email: contact.email || "",
+              location: contact.location || "",
+              linkedin_url: contact.linkedin_url || "",
+              apollo_profile_url: apolloId ? `https://app.apollo.io/#/people/${apolloId}` : ""
+            };
+          })
         },
-
         response => {
-          if (
-            chrome.runtime.lastError
-          ) {
-            contactsToCheck.forEach(contact =>
-              state.pendingContacts.delete(contact.key)
-            );
+          contactsToCheck.forEach(contact => state.pendingContacts.delete(contact.key));
 
-            console.error(
-              "Contact Checker runtime error:",
-              chrome.runtime.lastError.message
-            );
-
-            addActivity(
-              "EXTENSION_RUNTIME_ERROR",
-              chrome.runtime.lastError.message,
-              "error"
-            );
-
+          if (chrome.runtime.lastError) {
+            console.error("Contact Checker runtime error:", chrome.runtime.lastError.message);
+            addActivity("EXTENSION_RUNTIME_ERROR", chrome.runtime.lastError.message, "error");
             const liveStatusErr = document.getElementById("contact-checker-live-status");
             if (liveStatusErr) {
               liveStatusErr.className = "contact-checker-live-badge";
               liveStatusErr.textContent = "⚠ Runtime Error";
             }
-
-            showStatus(
-              "Extension runtime error — will retry on next scan",
-              3000,
-              false
-            );
-
+            showStatus("Extension runtime error — will retry on next scan", 3000, false);
             return;
           }
 
-        if (!response?.success) {
-          contactsToCheck.forEach(contact =>
-            state.pendingContacts.delete(contact.key)
-          );
-
-          console.error(
-            "Contact Checker API error:",
-            response
-          );
-
-          addActivity(
-            "API_ERROR",
-            response?.error ||
-            "Unknown API error",
-            "error"
-          );
-
-          const liveStatusErr = document.getElementById("contact-checker-live-status");
-          if (liveStatusErr) {
-            liveStatusErr.className = "contact-checker-live-badge";
-            liveStatusErr.textContent = "⚠ API Error";
+          if (!response?.success) {
+            console.error("Contact Checker API error:", response);
+            addActivity("API_ERROR", response?.error || "Unknown API error", "error");
+            const liveStatusErr = document.getElementById("contact-checker-live-status");
+            if (liveStatusErr) {
+              liveStatusErr.className = "contact-checker-live-badge";
+              liveStatusErr.textContent = "⚠ API Error";
+            }
+            showStatus("Database connection error", 3000, false);
+            return;
           }
 
-          showStatus(
-            "Database connection error",
-            3000,
-            false
-          );
+          appendBackendActivity(response.activity || []);
+          state.lastBackendSummary = response.summary || null;
+          renderActivityPanel();
 
-          return;
-        }
+          let matches = 0;
+          let requiredCount = 0;
+          let ignoredCount = 0;
 
-        appendBackendActivity(
-          response.activity || []
-        );
+          contactsToCheck.forEach(contact => {
+            const result = response.results?.[contact.key];
+            if (!result) return;
 
-        state.lastBackendSummary =
-          response.summary || null;
-
-        renderActivityPanel();
-
-        let matches = 0;
-        let requiredCount = 0;
-        let ignoredCount = 0;
-
-        contactsToCheck.forEach(
-          contact => {
-            state.pendingContacts.delete(
-              contact.key
-            );
-
-            const result =
-              response.results?.[
-                contact.key
-              ];
-
-            if (!result) {
-              return;
-            }
-
-            state.checkedContacts.set(
-              contact.key,
-              result
-            );
+            state.checkedContacts.set(contact.key, result);
 
             if (result.exists) {
               matches++;
@@ -2438,45 +2310,39 @@
               ignoredCount++;
             }
 
-            applyContactResult(
-              contact,
-              result
-            );
+            applyContactResult(contact, result);
+          });
+
+          addActivity(
+            "BATCH_APPLIED_TO_PAGE",
+            `Batch complete: ${matches} existing, ${requiredCount} required lead(s), ${ignoredCount} ignored.`,
+            "info",
+            {
+              existing: matches,
+              required: requiredCount,
+              ignored: ignoredCount,
+              total: contactsToCheck.length
+            }
+          );
+
+          const liveStatusDone = document.getElementById("contact-checker-live-status");
+          if (liveStatusDone) {
+            liveStatusDone.className = "contact-checker-live-badge";
+            liveStatusDone.textContent = `✓ Checked (${matches} existing, ${requiredCount} req, ${ignoredCount} ign)`;
           }
-        );
 
-        addActivity(
-          "BATCH_APPLIED_TO_PAGE",
-          `Batch complete: ${matches} existing, ${requiredCount} required lead(s), ${ignoredCount} ignored.`,
-          "info",
-          {
-            existing: matches,
-            required: requiredCount,
-            ignored: ignoredCount,
-            total: contactsToCheck.length
-          }
-        );
+          scheduleRequiredContactsSave();
+          renderExportControls();
+          checkAndFlushPendingTitles(false);
 
-        const liveStatusDone = document.getElementById("contact-checker-live-status");
-        if (liveStatusDone) {
-          liveStatusDone.className = "contact-checker-live-badge";
-          liveStatusDone.textContent = `✓ Checked (${matches} existing, ${requiredCount} req, ${ignoredCount} ign)`;
-        }
-
-        scheduleRequiredContactsSave();
-        renderExportControls();
-        checkAndFlushPendingTitles(false);
-
-        showStatus(
-          `✓ Checked ${contactsToCheck.length} contact(s) — ${matches} existing, ${requiredCount} required lead(s)`,
-          3500,
-          false
-        );
+          showStatus(
+            `✓ Checked ${contactsToCheck.length} contact(s) — ${matches} existing, ${requiredCount} required lead(s)`,
+            3500,
+            false
+          );
         }
       );
     } catch (sendErr) {
-      // Bug #1 Fix: Chrome threw synchronously (context invalidated, extension reloaded, etc.)
-      // Clear every contact from the pending set so the scan loop is never permanently frozen.
       contactsToCheck.forEach(contact => state.pendingContacts.delete(contact.key));
       console.error("Contact Checker: sendMessage threw synchronously:", sendErr);
       addActivity("EXTENSION_RUNTIME_ERROR", `sendMessage failed: ${sendErr?.message || sendErr}`, "error");
@@ -2513,6 +2379,10 @@
   }
 
   function mutationNeedsScan(mutation) {
+    if (state.isUpdatingDom) {
+      return false;
+    }
+
     if (isExtensionNode(mutation.target)) {
       return false;
     }
@@ -2539,45 +2409,33 @@
     return true;
   }
 
-  function scheduleScan(delay = 200) {
-    clearTimeout(state.timer);
+  function scheduleScan(delay = 300) {
+    if (state.isUpdatingDom) {
+      return;
+    }
 
-    state.timer = setTimeout(
-      () => {
-        scanApollo();
-      },
-      delay
-    );
+    clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+      scanApollo();
+    }, delay);
   }
 
-  // Instant SPA Navigation Hook (0ms detection when changing pages/sorts)
-  let lastScannedUrl = location.href;
-
+  // Instant SPA Hash & Route Navigation Hook
   function onPageNavigation() {
-    const currentUrl = location.href;
-    try {
-      const currentUrlObj = new URL(currentUrl);
-      const lastUrlObj = new URL(lastScannedUrl);
-      
-      // Only clear cache if we navigated to a new base path or changed pagination
-      if (currentUrlObj.pathname !== lastUrlObj.pathname || currentUrlObj.searchParams.get('page') !== lastUrlObj.searchParams.get('page')) {
-        state.checkedContacts.clear();
-        state.currentContacts.clear();
-      }
-    } catch (e) {
-      // Fallback
-      state.checkedContacts.clear();
-      state.currentContacts.clear();
+    const currentNavKey = `${location.pathname}${location.search}${location.hash}`;
+    if (state.lastNavigatedKey === currentNavKey) {
+      return; // URL has not changed
     }
-    
-    lastScannedUrl = currentUrl;
-    scheduleScan(200);
+
+    state.lastNavigatedKey = currentNavKey;
+    state.checkedContacts.clear();
+    state.currentContacts.clear();
+    scheduleScan(300);
   }
 
   window.addEventListener("popstate", onPageNavigation, { passive: true });
   window.addEventListener("hashchange", onPageNavigation, { passive: true });
 
-  // Hook pushState and replaceState for instant Apollo SPA navigation detection
   if (window.history && window.history.pushState) {
     const originalPushState = window.history.pushState;
     window.history.pushState = function (...args) {
@@ -2595,26 +2453,17 @@
     };
   }
 
-  state.observer =
-    new MutationObserver(
-      mutations => {
-        if (
-          mutations.some(
-            mutationNeedsScan
-          )
-        ) {
-          scheduleScan(35);
-        }
-      }
-    );
-
-  state.observer.observe(
-    document.body,
-    {
-      childList: true,
-      subtree: true
+  state.observer = new MutationObserver(mutations => {
+    if (state.isUpdatingDom) return;
+    if (mutations.some(mutationNeedsScan)) {
+      scheduleScan(300);
     }
-  );
+  });
+
+  state.observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
 
   // ============================================================
   // CLEANUP / TURN OFF

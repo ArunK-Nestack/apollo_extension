@@ -35,12 +35,16 @@ async function callBackendApi(endpoint, body) {
   let lastError = null;
 
   for (const host of hosts) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
     try {
       const response = await fetch(`${host}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         throw new Error(`API error: ${response.status} ${response.statusText}`);
@@ -48,6 +52,7 @@ async function callBackendApi(endpoint, body) {
 
       return await response.json();
     } catch (err) {
+      clearTimeout(timeoutId);
       lastError = err;
     }
   }
@@ -88,7 +93,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     endpoint = "/flush-pending-queues";
     body = {};
   } else {
-    return;
+    // Unrecognized message
+    return false;
   }
 
   const startedAt = performance.now();
@@ -126,17 +132,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       sendResponse({
         success: false,
-        error: error.message
+        error: error?.message || String(error)
       });
     });
 
-  return true;
+  return true; // Keep message port open for async response
 });
 
 // Keep-alive heartbeat to prevent Service Worker sleep drops
 chrome.alarms.create("keepAlive", { periodInMinutes: 0.33 }); // ~20 seconds
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "keepAlive") {
-    // console.log("Heartbeat"); 
+    // Keep alive active
   }
 });
