@@ -1667,17 +1667,41 @@
     showStatus(`⚡ 50-Item Batch: Evaluating ${pendingContacts.length} pending titles & names with AI...`, 0, true);
     state.isEvaluatingBatch = true;
 
+    // Bug #2 Fix: Helper to rescue contacts when AI batch evaluation fails.
+    // Instead of abandoning them with a frozen '⌛ AI evaluating...' badge,
+    // we reset their pending flags so the next scan cycle can re-evaluate them.
+    function rescuePendingContacts(reason) {
+      state.isEvaluatingBatch = false;
+      addActivity("AI_BATCH_FAILED", `AI evaluation failed (${reason}). Resetting ${pendingContacts.length} contact(s) to re-evaluate on next scan.`, "error");
+      pendingContacts.forEach(({ key, contact }) => {
+        // Keep them in requiredContactsAll but strip the pending eval flag
+        // so extractContact/applyContactResult can re-attempt them
+        contact.is_pending_eval = false;
+        contact.is_pending_indian_eval = false;
+        state.requiredContactsAll.set(key, contact);
+        // Also remove from checkedContacts so they get re-checked on next scanApollo
+        state.checkedContacts.delete(key);
+        state.pendingContacts.delete(key);
+      });
+      hideStatus();
+      showStatus(`⚠ AI batch failed — ${pendingContacts.length} contacts reset for retry`, 3000, false);
+      if (callback) callback();
+    }
+
+    try {
     chrome.runtime.sendMessage({
       type: "EVALUATE_PENDING_TITLES",
       titles: titlesList,
       names: namesList,
       batch: state.batchName || "batch_1"
     }, (response) => {
+      if (chrome.runtime.lastError) {
+        rescuePendingContacts(chrome.runtime.lastError.message);
+        return;
+      }
       state.isEvaluatingBatch = false;
       if (!response?.success) {
-        hideStatus();
-        contactCheckerLog("Failed to evaluate pending batch via backend.");
-        if (callback) callback();
+        rescuePendingContacts(response?.error || "backend error");
         return;
       }
 
@@ -1693,6 +1717,16 @@
 
         let shouldExclude = false;
         let excludeReason = "";
+
+        // Bug #3 Fix: If the backend signals llm_failed, do NOT approve the contact.
+        // Keep it in Pending_Evaluation so it gets retried on the next batch trigger.
+        const titleLlmFailed = titleEval?.status === "llm_failed";
+        if (titleLlmFailed) {
+          contact.is_pending_eval = true;
+          contact.segment = "Pending_Evaluation";
+          state.requiredContactsAll.set(key, contact);
+          return; // Skip all further processing for this contact
+        }
 
         // 1. Check Indian demographic evaluation
         if (nameEval && nameEval.is_indian === true) {
@@ -1745,6 +1779,10 @@
 
       if (callback) callback();
     });
+    } catch (sendErr) {
+      // Bug #2 Fix: Chrome threw synchronously on this sendMessage call too
+      rescuePendingContacts(`sendMessage threw: ${sendErr?.message || sendErr}`);
+    }
   }
 
   function exportRequiredContactsCSV() {
@@ -2090,6 +2128,9 @@
     const currentContacts =
       new Map();
 
+    // Bug #6 Fix: Track consecutive extraction failures to detect Apollo DOM changes.
+    let failedExtractionCount = 0;
+
     links.forEach(
       (link, index) => {
         const contact =
@@ -2099,8 +2140,11 @@
           );
 
         if (!contact) {
+          failedExtractionCount++;
           return;
         }
+
+        failedExtractionCount = 0; // reset on success
 
         // Avoid duplicates
         if (
@@ -2154,6 +2198,17 @@
 
     state.currentContacts =
       currentContacts;
+
+    // Bug #6 Fix: If ALL visible contact links failed extraction, warn the user.
+    // This means Apollo likely changed their HTML structure and the scraper is blind.
+    if (failedExtractionCount > 0 && currentContacts.size === 0 && links.length > 0) {
+      addActivity(
+        "DOM_PARSE_FAILURE",
+        `⚠ Apollo DOM changed? Found ${links.length} contact link(s) but could not extract data from any of them. The scraper may be blind.`,
+        "error"
+      );
+      showStatus("⚠ Apollo layout change detected — scraper may need an update", 5000, false);
+    }
 
     // Settle retry engine
     if (
@@ -2239,72 +2294,76 @@
     // SEND ONE BATCH TO PYTHON
     // ==========================================================
 
-    chrome.runtime.sendMessage(
-      {
-        type: "MATCH_APOLLO",
-        batch: state.batchName || `batch_${state.batchNumber || 1}`,
-        title_guardrail_enabled:
-          state.titleGuardrailEnabled === true,
-        indian_name_guardrail_enabled:
-          state.indianGuardrailEnabled === true,
+    // Bug #1 Fix: Wrap in try/catch to handle synchronous Chrome errors
+    // (e.g. background worker suspended/context invalidated) which would
+    // otherwise leave state.pendingContacts permanently populated → "Forever Scanning".
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "MATCH_APOLLO",
+          batch: state.batchName || `batch_${state.batchNumber || 1}`,
+          title_guardrail_enabled:
+            state.titleGuardrailEnabled === true,
+          indian_name_guardrail_enabled:
+            state.indianGuardrailEnabled === true,
 
-        contacts:
-          contactsToCheck.map(
-            contact => {
-              const apolloId = getApolloIdFromKey(contact.key);
-              const nameParts = (contact.name || "").trim().split(/\s+/);
-              return {
-                key: contact.key,
-                apollo_id: apolloId,
-                name: contact.name,
-                first_name: nameParts[0] || "",
-                last_name: nameParts.slice(1).join(" ") || "",
-                job_title: contact.job_title,
-                company: contact.company,
-                company_domain: contact.company_domain || contact.domain || "",
-                website_link: contact.website_link || "",
-                email: contact.email || "",
-                location: contact.location || "",
-                linkedin_url: contact.linkedin_url || "",
-                apollo_profile_url: apolloId ? `https://app.apollo.io/#/people/${apolloId}` : ""
-              };
+          contacts:
+            contactsToCheck.map(
+              contact => {
+                const apolloId = getApolloIdFromKey(contact.key);
+                const nameParts = (contact.name || "").trim().split(/\s+/);
+                return {
+                  key: contact.key,
+                  apollo_id: apolloId,
+                  name: contact.name,
+                  first_name: nameParts[0] || "",
+                  last_name: nameParts.slice(1).join(" ") || "",
+                  job_title: contact.job_title,
+                  company: contact.company,
+                  company_domain: contact.company_domain || contact.domain || "",
+                  website_link: contact.website_link || "",
+                  email: contact.email || "",
+                  location: contact.location || "",
+                  linkedin_url: contact.linkedin_url || "",
+                  apollo_profile_url: apolloId ? `https://app.apollo.io/#/people/${apolloId}` : ""
+                };
+              }
+            )
+        },
+
+        response => {
+          if (
+            chrome.runtime.lastError
+          ) {
+            contactsToCheck.forEach(contact =>
+              state.pendingContacts.delete(contact.key)
+            );
+
+            console.error(
+              "Contact Checker runtime error:",
+              chrome.runtime.lastError.message
+            );
+
+            addActivity(
+              "EXTENSION_RUNTIME_ERROR",
+              chrome.runtime.lastError.message,
+              "error"
+            );
+
+            const liveStatusErr = document.getElementById("contact-checker-live-status");
+            if (liveStatusErr) {
+              liveStatusErr.className = "contact-checker-live-badge";
+              liveStatusErr.textContent = "⚠ Runtime Error";
             }
-          )
-      },
 
-      response => {
-        if (
-          chrome.runtime.lastError
-        ) {
-          contactsToCheck.forEach(contact =>
-            state.pendingContacts.delete(contact.key)
-          );
+            showStatus(
+              "Extension runtime error — will retry on next scan",
+              3000,
+              false
+            );
 
-          console.error(
-            "Contact Checker runtime error:",
-            chrome.runtime.lastError.message
-          );
-
-          addActivity(
-            "EXTENSION_RUNTIME_ERROR",
-            chrome.runtime.lastError.message,
-            "error"
-          );
-
-          const liveStatusErr = document.getElementById("contact-checker-live-status");
-          if (liveStatusErr) {
-            liveStatusErr.className = "contact-checker-live-badge";
-            liveStatusErr.textContent = "⚠ Runtime Error";
+            return;
           }
-
-          showStatus(
-            "Extension runtime error",
-            3000,
-            false
-          );
-
-          return;
-        }
 
         if (!response?.success) {
           contactsToCheck.forEach(contact =>
@@ -2413,8 +2472,21 @@
           3500,
           false
         );
+        }
+      );
+    } catch (sendErr) {
+      // Bug #1 Fix: Chrome threw synchronously (context invalidated, extension reloaded, etc.)
+      // Clear every contact from the pending set so the scan loop is never permanently frozen.
+      contactsToCheck.forEach(contact => state.pendingContacts.delete(contact.key));
+      console.error("Contact Checker: sendMessage threw synchronously:", sendErr);
+      addActivity("EXTENSION_RUNTIME_ERROR", `sendMessage failed: ${sendErr?.message || sendErr}`, "error");
+      const liveEl = document.getElementById("contact-checker-live-status");
+      if (liveEl) {
+        liveEl.className = "contact-checker-live-badge";
+        liveEl.textContent = "⚠ Reconnecting...";
       }
-    );
+      showStatus("Extension disconnected — will retry on next scan", 3000, false);
+    }
   }
 
   // ============================================================

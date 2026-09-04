@@ -5,6 +5,8 @@
 
 # Python Cache & Virtual Environments
 __pycache__/
+*/__pycache__/
+backend/__pycache__/
 *.py[cod]
 *$py.class
 .venv/
@@ -12,22 +14,30 @@ venv/
 env/
 .pytest_cache/
 
-# Data Files & Datasets
+# Data Files, Datasets & Folders
 *.csv
 *.tsv
 *.parquet
 *.jsonl
 *.xlsx
+*.xls
 *.sqlite
 *.db
 backend/data/*.csv
 backend/data/*.json
 backend/data/*.tsv
+august 2026/
+august*/
+*wasted*
+
+# Logs & Temp Files
+*.log
+query
+desktop.ini
 
 # Chrome Extension Keys & Package Artifacts
 *.crx
 *.pem
-query
 
 # OS Files
 .DS_Store
