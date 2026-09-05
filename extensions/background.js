@@ -116,6 +116,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       sendResponse({
         success: true,
+        ...data,
         results: data.results,
         activity: data.activity || [],
         summary: data.summary || {}

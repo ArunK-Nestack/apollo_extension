@@ -1,0 +1,25 @@
+{
+  "name": "apollo-contact-database-checker",
+  "version": "2.0.0",
+  "description": "Deterministic Apollo contact matcher with CRM domain indexing, 64K title guardrails, and on-demand LLM fallback.",
+  "main": "extensions/content.js",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "package": "node scripts/package.js",
+    "dev": "python backend/api.py",
+    "test": "python tests/run_all_testers.py",
+    "test:guardrails": "python tests/test_hard_guardrails.py",
+    "test:runtime": "node tests/test_extension_runtime.js",
+    "test:34": "node tests/test_34_page_simulation.js",
+    "test:all": "node scripts/build.js && node tests/test_extension_runtime.js && node tests/test_34_page_simulation.js && python tests/test_hard_guardrails.py && python tests/run_all_testers.py"
+  },
+  "keywords": [
+    "apollo",
+    "chrome-extension",
+    "lead-generation",
+    "deduplication",
+    "crm"
+  ],
+  "author": "Nestack Technologies",
+  "license": "ISC"
+}

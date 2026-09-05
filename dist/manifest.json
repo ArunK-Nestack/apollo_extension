@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Apollo Contact Database Checker",
+  "version": "2.0.0",
+  "description": "Deterministic Apollo contact matcher with CRM domain indexing, 64K title guardrails, and on-demand LLM fallback.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "unlimitedStorage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    "https://app.apollo.io/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://app.apollo.io/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Toggle Contact Database Checker (ON / OFF)"
+  }
+}

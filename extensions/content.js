@@ -349,7 +349,7 @@
     }
   `;
 
-  document.documentElement.appendChild(style);
+  (document.head || document.documentElement || document.body)?.appendChild(style);
 
   // ============================================================
   // HELPERS
@@ -528,7 +528,7 @@
         .querySelector(
           "#contact-checker-clear-activity"
         )
-        .addEventListener(
+        ?.addEventListener(
           "click",
           () => {
             state.activityLog = [];
@@ -572,95 +572,113 @@
       ]
     ];
 
-    summaryElement.replaceChildren();
-
-    metrics.forEach(
-      ([value, label]) => {
-        const metric =
-          document.createElement("div");
-
-        metric.className =
-          "contact-checker-activity-metric";
-
-        const strong =
-          document.createElement("strong");
-
-        strong.textContent =
-          String(value);
-
-        const span =
-          document.createElement("span");
-
-        span.textContent =
-          label;
-
-        metric.append(
-          strong,
-          span
-        );
-
-        summaryElement.appendChild(
-          metric
-        );
+    if (summaryElement) {
+      if (typeof summaryElement.replaceChildren === "function") {
+        summaryElement.replaceChildren();
+      } else {
+        summaryElement.innerHTML = "";
       }
-    );
+
+      metrics.forEach(
+        ([value, label]) => {
+          const metric =
+            document.createElement("div");
+
+          metric.className =
+            "contact-checker-activity-metric";
+
+          const strong =
+            document.createElement("strong");
+
+          strong.textContent =
+            String(value);
+
+          const span =
+            document.createElement("span");
+
+          span.textContent =
+            label;
+
+          if (typeof metric.append === "function") {
+            metric.append(strong, span);
+          } else {
+            metric.appendChild(strong);
+            metric.appendChild(span);
+          }
+
+          summaryElement.appendChild(
+            metric
+          );
+        }
+      );
+    }
 
     const list =
       panel.querySelector(
         "#contact-checker-activity-list"
       );
 
-    list.replaceChildren();
+    if (list) {
+      if (typeof list.replaceChildren === "function") {
+        list.replaceChildren();
+      } else {
+        list.innerHTML = "";
+      }
 
-    const entries =
-      state.activityLog.slice(-120);
+      const entries =
+        state.activityLog.slice(-120);
 
-    entries.forEach(entry => {
-      const row =
-        document.createElement("div");
+      entries.forEach(entry => {
+        const row =
+          document.createElement("div");
 
-      row.className =
-        `contact-checker-activity-row ${entry.level || "info"}`;
+        row.className =
+          `contact-checker-activity-row ${entry.level || "info"}`;
 
-      const time =
-        document.createElement("div");
+        const time =
+          document.createElement("span");
 
-      time.className =
-        "contact-checker-activity-time";
+        time.className =
+          "contact-checker-activity-time";
 
-      time.textContent =
-        activityClock(
-          entry.timestamp
-        );
+        time.textContent =
+          activityClock(entry.timestamp);
 
-      const event =
-        document.createElement("div");
+        const event =
+          document.createElement("span");
 
-      event.className =
-        "contact-checker-activity-event";
+        event.className =
+          "contact-checker-activity-event";
 
-      event.textContent =
-        entry.event || "";
+        event.textContent =
+          entry.event || "";
 
-      const message =
-        document.createElement("div");
+        const message =
+          document.createElement("span");
 
-      message.className =
-        "contact-checker-activity-message";
+        message.className =
+          "contact-checker-activity-message";
 
-      message.textContent =
-        entry.message || "";
+        message.textContent =
+          entry.message || "";
 
-      row.append(
-        time,
-        event,
-        message
-      );
+        if (typeof row.append === "function") {
+          row.append(
+            time,
+            event,
+            message
+          );
+        } else {
+          row.appendChild(time);
+          row.appendChild(event);
+          row.appendChild(message);
+        }
 
-      list.appendChild(row);
-    });
+        list.appendChild(row);
+      });
+    }
 
-    if (state.activityPanelOpen) {
+    if (state.activityPanelOpen && list) {
       list.scrollTop =
         list.scrollHeight;
     }
@@ -1442,18 +1460,9 @@
       }
     }
 
-    // Only delete from required contacts if disqualified for domain/title/demographic,
-    // NEVER delete an already-saved lead if merely receiving company_limit_reached!
-    if (result?.guardrail_status !== "company_limit_reached") {
-      const existing = state.requiredContactsAll.get(contact.key);
-      if (existing) {
-        state.requiredContactsAll.delete(contact.key);
-        const compKey = getCompanyDedupeKey(existing.company, existing.domain);
-        if (compKey && state.requiredCompanyMap.get(compKey)?.key === contact.key) {
-          state.requiredCompanyMap.delete(compKey);
-        }
-      }
-    }
+    // Passive browsing or re-evaluations must NEVER delete an already-collected
+    // required lead from local storage (state.requiredContactsAll)!
+    // Collected leads are only pruned upon explicit user action or higher seniority election.
 
     let badgeText = "⊘ Ignored";
     let badgeBg = "#64748b";
@@ -1496,6 +1505,16 @@
     contact,
     result
   ) {
+    // 1. If this contact was ALREADY collected into required contacts in this session:
+    // Retain its required status, green badge, and local storage record across all page navigations!
+    if (state.requiredContactsAll.has(contact.key)) {
+      markRequired(
+        contact,
+        result
+      );
+      return;
+    }
+
     if (result.exists) {
       highlightContact(
         contact,
@@ -1539,6 +1558,10 @@
     return Array.from(
       state.currentContacts.values()
     ).filter(contact => {
+      // If contact is in collected required contacts, it counts as required on page
+      if (state.requiredContactsAll.has(contact.key)) {
+        return true;
+      }
       const result =
         state.checkedContacts.get(
           contact.key
@@ -1558,7 +1581,7 @@
   function csvEscape(value) {
     const text = String(value ?? "");
 
-    if (/[",\n]/.test(text)) {
+    if (/[",\r\n]/.test(text)) {
       return `"${text.replace(/"/g, '""')}"`;
     }
 
@@ -1784,7 +1807,7 @@
     // Flush any pending queue items and evaluate any pending novel titles before generating final CSV
     checkAndFlushPendingTitles(true, () => {
       const csv = buildRequiredContactsCSV();
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
 
       const link = document.createElement("a");
@@ -1998,7 +2021,7 @@
         .querySelector(
           "#contact-checker-rescan-btn"
         )
-        .addEventListener(
+        ?.addEventListener(
           "click",
           () => {
             state.checkedContacts.clear();
@@ -2012,7 +2035,7 @@
         .querySelector(
           "#contact-checker-export-required"
         )
-        .addEventListener(
+        ?.addEventListener(
           "click",
           exportRequiredContactsCSV
         );
@@ -2021,7 +2044,7 @@
         .querySelector(
           "#contact-checker-dedupe-btn"
         )
-        .addEventListener(
+        ?.addEventListener(
           "click",
           deduplicateStoredContacts
         );
@@ -2030,7 +2053,7 @@
         .querySelector(
           "#contact-checker-clear-required"
         )
-        .addEventListener(
+        ?.addEventListener(
           "click",
           clearRequiredContactsList
         );
@@ -2039,7 +2062,7 @@
         .querySelector(
           "#contact-checker-activity-toggle"
         )
-        .addEventListener(
+        ?.addEventListener(
           "click",
           toggleActivityPanel
         );

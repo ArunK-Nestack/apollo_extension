@@ -168,22 +168,70 @@ Execution Latency: Actual: 620.4ms | Predicted: ~500.2ms (24.8 ms/contact)
 
 ---
 
-## 6. Project Structure
+---
+
+## 6. Build & CLI Commands (`package.json`)
+
+Just like modern web applications, the project is configured with standard npm commands:
+
+```bash
+# Compile and validate production extension bundle into dist/
+npm run build
+
+# Package the extension into dist/apollo-extension.zip for distribution
+npm run package
+
+# Start the Python FastAPI backend engine
+npm run dev
+
+# Run the full 15/15 automated multi-tester verification suite
+npm test
+
+# Run the 666 real-world duplicate regression test
+npm run test:guardrails
+
+# Run the extension DOM runtime simulation
+npm run test:runtime
+
+# Run all test suites end-to-end
+npm run test:all
+```
+
+---
+
+## 7. Project Directory Structure
 
 ```text
 apollo_extension/
-├── backend/
-│   ├── api.py                           # Core FastAPI Matching Engine & Dashboard
-│   └── data/
-│       ├── import_job_titles_pipeline.py# 64K CSV ingestion into MySQL table
-│       ├── classify_novel_titles_batch.py# Batch LLM testing & token benchmark script
-│       ├── job_titles (2) - job_titles (2).csv # 48,557 newly synced job titles
-│       └── novel_titles_needs_llm_1000.csv    # 1,000 benchmark novel titles
-├── extensions/
-│   ├── manifest.json                    # Chrome Manifest V3 configuration
-│   ├── background.js                    # Service worker with dual-host fallback
-│   └── content.js                       # Apollo DOM observer, badge injector & CSV exporter
-├── requirements.txt                     # Python dependencies
-├── .env.example                         # Environment configuration template
-└── README.md                            # Comprehensive documentation
+├── backend/                       # Python FastAPI lead engine & deduplication microservice
+│   └── api.py
+├── extensions/                    # Source code for Chrome Extension (Dev mode)
+│   ├── manifest.json
+│   ├── background.js
+│   └── content.js
+├── dist/                          # Production distribution output (created by npm run build)
+│   ├── manifest.json
+│   ├── background.js
+│   ├── content.js
+│   └── apollo-extension.zip       # Packaged zip ready for Chrome Web Store / team sharing
+├── docs/                          # Architecture & technical specifications
+│   ├── SYSTEM_ARCHITECTURE.md
+│   ├── WORKFLOW_EXTENSION_TECHNICAL_SPEC.md
+│   ├── SINGLE_CONTACT_WORKFLOW.md
+│   └── DOMAIN_DEDUPLICATION_DESIGN.md
+├── scripts/                       # Build pipeline & maintenance CLI tools
+│   ├── build.js                   # npm run build engine
+│   ├── package.js                 # npm run package engine
+│   ├── cleanup_saved_leads.py
+│   ├── export_batch.py
+│   └── import_august_emails.py
+├── tests/                         # Automated QA & regression test suites
+│   ├── run_all_testers.py         # 15/15 multi-tester QA suite
+│   ├── test_hard_guardrails.py    # 666 real-world duplicate regression
+│   └── test_extension_runtime.js  # Extension DOM runtime simulation
+├── data/                          # Historical datasets, raw CSVs & archive data
+├── package.json                   # Standard NPM script definitions
+├── requirements.txt               # Python dependencies
+├── .env.example                   # Environment configuration template
+└── README.md                      # Comprehensive documentation
 ```

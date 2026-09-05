@@ -9,6 +9,13 @@ import time
 import unicodedata
 from datetime import datetime, timezone
 from typing import Any
+
+try:
+    import dns.resolver as _dns_resolver
+    _DNS_AVAILABLE = True
+except ImportError:
+    _dns_resolver = None
+    _DNS_AVAILABLE = False
 from urllib.parse import urlparse
 
 # Ensure Windows stdout/stderr never crashes on non-ASCII international names
@@ -67,6 +74,356 @@ _schema_cache_lock = threading.Lock()
 _batch_seen_companies: dict[str, dict[str, list[str]]] = {}  # batch_tag -> (comp_key -> list of contact names)
 _batch_seen_companies_lock = threading.Lock()
 
+# ============================================================
+# LAYER 2: PERSON-NAME LCS ANCHOR CACHE
+# {normalized_name -> [(domain, raw_name), ...]} loaded from DB on first use
+# ============================================================
+_person_domain_cache: dict[str, list[str]] = {}  # normalized_name -> [db_domain1, ...]
+_person_domain_cache_lock = threading.Lock()
+
+# ============================================================
+# LAYER 3: DATABASE-DRIVEN DOMAIN PREFIX TRIE
+# Built on startup from all unique domains already in emails table
+# ============================================================
+
+class _TrieNode:
+    __slots__ = ("children", "is_end", "domain")
+    def __init__(self):
+        self.children: dict[str, "_TrieNode"] = {}
+        self.is_end: bool = False
+        self.domain: str = ""
+
+class DomainPrefixTrie:
+    """
+    Radix prefix trie of all unique DB domain slugs (TLD stripped).
+    Supports:
+      - insert(slug, full_domain)
+      - find_prefix_match(slug) -> (matched_db_domain, common_prefix)
+    """
+    def __init__(self):
+        self._root = _TrieNode()
+        self._lock = threading.Lock()
+        self._loaded = False
+        self._node_count = 0
+
+    def insert(self, slug: str, full_domain: str):
+        node = self._root
+        for ch in slug:
+            if ch not in node.children:
+                node.children[ch] = _TrieNode()
+            node = node.children[ch]
+        node.is_end = True
+        node.domain = full_domain
+        self._node_count += 1
+
+    def find_prefix_match(self, slug: str, min_prefix_len: int = 4) -> tuple[str, str]:
+        """
+        Walk the trie with the incoming domain slug.
+        Returns (matched_db_domain, common_prefix) if:
+          - The trie hits an end node (existing DB domain) as a PREFIX of the incoming slug.
+          - The common prefix length >= min_prefix_len.
+        Otherwise returns ("", "").
+        """
+        node = self._root
+        prefix = []
+        for ch in slug:
+            if ch not in node.children:
+                break
+            node = node.children[ch]
+            prefix.append(ch)
+            if node.is_end and len(prefix) >= min_prefix_len:
+                # The DB domain slug is a prefix of the incoming slug
+                remaining = slug[len(prefix):]
+                # Only flag as a branch if there ARE trailing chars (the slug is longer than the DB domain)
+                if remaining:  # e.g. "kiss" trailing -> branch confirmed
+                    return node.domain, "".join(prefix)
+        return "", ""
+
+    @property
+    def loaded(self) -> bool:
+        return self._loaded
+
+    @property
+    def node_count(self) -> int:
+        return self._node_count
+
+
+# Singleton trie instance
+_domain_trie = DomainPrefixTrie()
+_domain_trie_lock = threading.Lock()
+
+
+def _strip_tld(domain: str) -> str:
+    """
+    Strip TLD and return bare slug for trie indexing.
+    e.g. 'mullinaxford.com' -> 'mullinaxford'
+         'tynan.com.au' -> 'tynan'
+    """
+    MULTI_PART = {
+        "co.uk", "org.uk", "gov.uk", "com.au", "net.au", "org.au",
+        "co.nz", "net.nz", "co.in", "co.za", "com.br", "com.sg", "co.jp", "gc.ca"
+    }
+    dom = domain.strip().lower()
+    parts = dom.split(".")
+    if len(parts) >= 3:
+        two = ".".join(parts[-2:])
+        if two in MULTI_PART:
+            # e.g. ['tynan', 'com', 'au'] -> slug = 'tynan'
+            return ".".join(parts[:-2]) if len(parts) > 2 else parts[0]
+    # standard .com / .net etc
+    return ".".join(parts[:-1]) if len(parts) >= 2 else dom
+
+
+def _clean_slug(domain: str) -> str:
+    """
+    Normalize domain slug by removing non-alphanumeric characters (hyphens, dots).
+    e.g. 'lubri-care.com' -> 'lubricare'
+         'manukau.toyota.co.nz' -> 'manukautoyota'
+    """
+    s = _strip_tld(domain)
+    return re.sub(r'[^a-z0-9]', '', s.lower())
+
+
+TRIE_CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "domain_slugs_cache.txt")
+
+def load_domain_trie(connection=None):
+    """
+    Load all unique domain slugs into the in-memory prefix trie.
+    Optimized: Reads from local disk cache `data/domain_slugs_cache.txt` in ~0.5s if available,
+    otherwise falls back to querying MySQL once and caches the result.
+    """
+    global _domain_trie
+    with _domain_trie_lock:
+        if _domain_trie.loaded:
+            return
+
+        inserted = 0
+        t0 = time.perf_counter()
+
+        # Fast Path: Load directly from local persistent disk cache
+        if os.path.exists(TRIE_CACHE_FILE):
+            try:
+                with open(TRIE_CACHE_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        raw_dom = line.strip().lower()
+                        if raw_dom:
+                            slug = _strip_tld(raw_dom)
+                            cslug = _clean_slug(raw_dom)
+                            if slug and len(slug) >= 3:
+                                _domain_trie.insert(slug, raw_dom)
+                                inserted += 1
+                            if cslug and cslug != slug and len(cslug) >= 3:
+                                _domain_trie.insert(cslug, raw_dom)
+                                inserted += 1
+                _domain_trie._loaded = True
+                dur = (time.perf_counter() - t0) * 1000
+                print(f"[DomainTrie] Instantly loaded {inserted:,} unique domain slugs from disk cache in {dur:.1f}ms!", flush=True)
+                return
+            except Exception as e:
+                print(f"[DomainTrie] Disk cache read notice: {e} - falling back to DB query", flush=True)
+
+        # Fallback Path: Query MySQL database directly
+        def _do_load(conn):
+            nonlocal inserted
+            schema = get_target_table_schema(conn)
+            domain_col = schema["email_domain"]
+            tbl_name = schema["table_name"]
+            domains_to_cache = []
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT DISTINCT `{domain_col}` FROM `{tbl_name}` WHERE `{domain_col}` != ''")
+                    for (dom,) in cur.fetchall():
+                        if dom:
+                            raw_dom = str(dom).strip().lower()
+                            domains_to_cache.append(raw_dom)
+                            slug = _strip_tld(raw_dom)
+                            cslug = _clean_slug(raw_dom)
+                            if slug and len(slug) >= 3:
+                                _domain_trie.insert(slug, raw_dom)
+                                inserted += 1
+                            if cslug and cslug != slug and len(cslug) >= 3:
+                                _domain_trie.insert(cslug, raw_dom)
+                                inserted += 1
+
+                # Write to disk cache for future instant startups
+                try:
+                    os.makedirs(os.path.dirname(TRIE_CACHE_FILE), exist_ok=True)
+                    with open(TRIE_CACHE_FILE, "w", encoding="utf-8") as f:
+                        f.write("\n".join(domains_to_cache))
+                except Exception:
+                    pass
+
+                _domain_trie._loaded = True
+                dur = (time.perf_counter() - t0) * 1000
+                print(f"[DomainTrie] Loaded {inserted:,} unique domain slugs from MySQL in {dur:.1f}ms and cached to disk.", flush=True)
+            except Exception as e:
+                print(f"[DomainTrie] Warning: trie load error: {e}", flush=True)
+                _domain_trie._loaded = True  # Don't block startup
+
+        if connection:
+            _do_load(connection)
+        else:
+            with get_connection() as conn:
+                _do_load(conn)
+
+
+
+# ============================================================
+# LAYER 2 HELPER: LONGEST COMMON SUBSTRING (LCS) RATIO
+# ============================================================
+
+def _lcs_ratio(a: str, b: str) -> tuple[float, str]:
+    """
+    Compute the longest common substring and its ratio relative to the shorter string.
+    Returns (ratio: float, common_substring: str).
+    Complexity: O(len(a) * len(b)) - fast for short domain slugs (<30 chars each).
+    """
+    if not a or not b:
+        return 0.0, ""
+    m, n = len(a), len(b)
+    # DP table
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    best_len = 0
+    best_end_a = 0
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if a[i - 1] == b[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1] + 1
+                if dp[i][j] > best_len:
+                    best_len = dp[i][j]
+                    best_end_a = i
+            else:
+                dp[i][j] = 0
+    common = a[best_end_a - best_len: best_end_a]
+    ratio = best_len / min(m, n) if min(m, n) > 0 else 0.0
+    return ratio, common
+
+
+# Generic corporate descriptors that cannot constitute a unique brand root match in Layer 2
+GENERIC_CORPORATE_WORDS = {
+    "company", "companies", "services", "service", "solutions", "solution",
+    "holdings", "holding", "group", "groups", "enterprises", "enterprise",
+    "partners", "partner", "international", "global", "national", "american",
+    "technologies", "technology", "logistics", "management", "financial",
+    "finance", "capital", "automotive", "dealership", "commercial",
+    "industries", "industry", "ventures", "venture", "corp", "corporation",
+    "limited", "consulting", "consultants", "medical", "health", "healthcare",
+    "online", "retail", "media", "financials", "associates", "systems", "network",
+    "networks", "digital", "agency", "direct", "directors", "products"
+}
+
+
+# Generic dictionary stems that should not act as wildcard prefixes in Layer 3 Trie matching
+GENERIC_DICTIONARY_STEMS = {
+    "star", "apple", "first", "stan", "gold", "blue", "sun", "park", "best",
+    "auto", "tech", "data", "meta", "open", "home", "city", "line", "care",
+    "lead", "real", "fast", "well", "free", "good", "high", "main", "safe",
+    "true", "view", "west", "east", "north", "south", "iron", "peak", "bell",
+    "clear", "smart", "bright", "prime", "grand", "pure", "wise", "next"
+}
+
+BRANCH_INDICATORS = (
+    "auto", "autogroup", "motors", "motorcycles", "dealer", "dealers", "dealership",
+    "sales", "direct", "group", "holdings", "express", "center", "centre", "of",
+    "north", "south", "east", "west", "parts", "kiss", "service", "services",
+    "care", "chev", "chevrolet", "honda", "ford", "jeep", "dodge", "nissan",
+    "toyota", "subaru", "hyundai", "kia", "detail", "distributors"
+)
+
+
+def _is_valid_branch_match(db_domain: str, common_prefix: str, incoming_slug: str) -> bool:
+    """
+    Validate that an incoming domain slug is a legitimate branch of a DB domain,
+    preventing common dictionary words (e.g. 'star', 'apple', 'stan', 'first')
+    from falsely matching unrelated businesses in Layer 3 Trie.
+    """
+    pref = common_prefix.lower()
+    rem = incoming_slug[len(common_prefix):].lower()
+    if not rem:
+        return False
+    # Long distinctive brand stem (>= 7 chars)
+    if len(pref) >= 7 and pref not in GENERIC_DICTIONARY_STEMS:
+        return True
+    # Short stem must not be generic dictionary word AND must be accompanied by branch indicator
+    if pref in GENERIC_DICTIONARY_STEMS:
+        return False
+    # Check if remainder starts with branch indicator
+    return any(rem.startswith(ind) for ind in BRANCH_INDICATORS)
+
+
+# ============================================================
+# LAYER 4: ASYNC DNS MX MAIL ROUTING RESOLVER
+# ============================================================
+_mx_cache: dict[str, str] = {}  # incoming_domain -> resolved_mail_root_domain
+_mx_cache_lock = threading.Lock()
+
+
+def _resolve_mx_root_domain(domain: str) -> str:
+    """
+    Query DNS MX record for `domain` and extract the canonical mail root domain.
+    e.g. MX for cortesecyclesales.com -> 'corteseauto-com.mail.protection.outlook.com'
+         Extracts -> 'corteseauto.com'
+    Returns empty string if DNS lookup fails or no useful MX found.
+    Cached in _mx_cache to make subsequent calls instant (0.0001ms).
+    """
+    if not _DNS_AVAILABLE or not domain:
+        return ""
+
+    with _mx_cache_lock:
+        if domain in _mx_cache:
+            return _mx_cache[domain]
+
+    result = ""
+    try:
+        answers = _dns_resolver.resolve(domain, "MX", lifetime=1.0)
+        for rdata in answers:
+            mx_host = str(rdata.exchange).rstrip(".").lower()
+            # Pattern 1: Google Workspace / Microsoft 365 tenant encoding
+            # e.g. 'corteseauto-com.mail.protection.outlook.com'
+            m = re.match(r"^([a-z0-9]+(?:-[a-z0-9]+)*)-com\.mail\.protection\.outlook\.com$", mx_host)
+            if m:
+                slug = m.group(1).replace("-", "")
+                result = f"{slug}.com"
+                break
+            # Pattern 2: Direct mail subdomain -> e.g. 'mail.corteseauto.com'
+            if mx_host.startswith("mail.") or mx_host.startswith("smtp.") or mx_host.startswith("mx."):
+                root = ".".join(mx_host.split(".")[-2:])
+                if root and root != domain:
+                    result = root
+                    break
+            # Pattern 3: Google / Microsoft generic -> skip
+            if any(x in mx_host for x in ["google.com", "outlook.com", "mailgun.org", "sendgrid.net", "amazonses.com"]):
+                continue
+            # Pattern 4: Raw MX host is a different real domain
+            parts = mx_host.split(".")
+            if len(parts) >= 2:
+                candidate = ".".join(parts[-2:])
+                if candidate != domain:
+                    result = candidate
+                    break
+    except Exception:
+        pass
+
+    with _mx_cache_lock:
+        _mx_cache[domain] = result
+    return result
+
+
+def prefetch_mx_records(domains: list[str]):
+    """High-speed parallel DNS MX pre-fetch using ThreadPoolExecutor."""
+    if not _DNS_AVAILABLE or not domains:
+        return
+    with _mx_cache_lock:
+        to_resolve = [d for d in set(domains) if d and d not in _mx_cache]
+    if not to_resolve:
+        return
+    import concurrent.futures
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(to_resolve), 8)) as executor:
+            list(executor.map(_resolve_mx_root_domain, to_resolve))
+    except Exception:
+        pass
+
 BLOCKER_KEYWORDS = ("compliance", "legal", "regulatory", "procurement", "privacy", "gdpr", "grc", "trade", "ethics", "audit")
 
 LLM_SYSTEM_PROMPT = """Classify B2B job titles into sales segments.
@@ -120,6 +477,9 @@ def get_connection():
             creator=pymysql,
             maxconnections=10,
             mincached=2,
+            maxcached=5,
+            maxusage=1000,
+            ping=7,  # Transparently test and auto-reconnect if idle or dropped by server
             blocking=True,
             host=DB_HOST,
             port=DB_PORT,
@@ -431,18 +791,18 @@ def resolve_company_domains(contacts: list[Any], connection=None) -> tuple[dict[
         comp_name = clean_company_name(c.company)
         norm_comp = normalize_text(comp_name)
 
-        resolved_domain = _company_domain_cache.get(norm_comp)
         web_link = (getattr(c, "website_link", None) or "").strip()
+        contact_explicit_domain = ""
+        if web_link:
+            contact_explicit_domain = normalize_domain(web_link)
+        elif getattr(c, "company_domain", None):
+            contact_explicit_domain = normalize_domain(c.company_domain)
+
+        resolved_domain = contact_explicit_domain or _company_domain_cache.get(norm_comp)
 
         if not resolved_domain:
-            if web_link:
-                resolved_domain = normalize_domain(web_link)
-            elif getattr(c, "company_domain", None):
-                resolved_domain = normalize_domain(c.company_domain)
-
-            if not resolved_domain:
-                cand_doms = generate_candidate_domains(comp_name)
-                resolved_domain = cand_doms[0] if cand_doms else (norm_comp + ".com" if norm_comp else "")
+            cand_doms = generate_candidate_domains(comp_name)
+            resolved_domain = cand_doms[0] if cand_doms else (norm_comp + ".com" if norm_comp else "")
 
             if resolved_domain and norm_comp:
                 with _company_domain_cache_lock:
@@ -551,10 +911,14 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
 
 def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain: dict[str, str], connection=None) -> dict[str, dict]:
     """
-    Check if (full_name, domain) or domain exists in CRM 'emails' table.
-    1. Collects all candidate domains.
-    2. Executes 1 single fast indexed query on 'idx_emails_domain' in 'emails' table.
-    3. Matches both exact person at domain (full_name + domain) and company domain.
+    4-Layer Deduplication Engine:
+      Layer 1 – Exact domain match in emails + apollo_saved_leads.
+      Layer 2 – Person-name anchor: looks up full_name in DB and computes LCS ratio
+                between the DB email domain and the Apollo-displayed domain.
+      Layer 3 – Database-driven prefix trie: checks if the incoming domain slug is
+                a branch extension of a known DB domain (e.g. mullinaxfordkiss -> mullinaxford).
+      Layer 4 – DNS MX mail routing: resolves the incoming domain's mail exchange server
+                and checks if the mail root domain is known in the DB.
     """
     if not contacts:
         return {}
@@ -563,7 +927,13 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
     if not candidate_domains:
         return {}
 
-    # Query DB for all records matching these domains
+    # Parallel asynchronous DNS MX prefetch (runs concurrently while MySQL queries execute)
+    if _DNS_AVAILABLE and candidate_domains:
+        threading.Thread(target=prefetch_mx_records, args=(candidate_domains,), daemon=True).start()
+
+    # ----------------------------------------------------------
+    # LAYER 1: Exact domain batch query (emails + apollo_saved_leads)
+    # ----------------------------------------------------------
     def do_query(conn):
         schema = get_target_table_schema(conn)
         tbl_name = schema["table_name"]
@@ -576,8 +946,8 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
         try:
             with conn.cursor() as cur:
                 format_strings = ",".join(["%s"] * len(candidate_domains))
-                
-                # 1. Query CRM table
+
+                # Layer 1a: Query CRM emails table by exact domain
                 query1 = f"SELECT `{domain_col}`, `{name_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings});"
                 cur.execute(query1, tuple(candidate_domains))
                 rows1 = cur.fetchall()
@@ -589,8 +959,8 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                         matched_domains.add(dom)
                         if norm_nm:
                             matched_records[(norm_nm, dom)] = raw_nm
-                
-                # 2. Query apollo_saved_leads table
+
+                # Layer 1b: Query apollo_saved_leads by exact domain
                 query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings});"
                 try:
                     cur.execute(query2, tuple(candidate_domains))
@@ -617,35 +987,201 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
         with get_connection() as conn:
             matched_records, matched_domains = do_query(conn)
 
-    # Evaluate each contact
+    # ----------------------------------------------------------
+    # LAYER 2 PREP: Fetch DB domains for each contact's full name
+    # (batch query: all unique names at once)
+    # ----------------------------------------------------------
+    unique_names_needed = set()
+    for c in contacts:
+        prim_d = contact_primary_domain.get(c.key, "")
+        if c.name and prim_d and prim_d not in matched_domains:
+            norm_nm = normalize_text(c.name)
+            with _person_domain_cache_lock:
+                if norm_nm not in _person_domain_cache:
+                    unique_names_needed.add(c.name.strip())
+
+    if unique_names_needed:
+        def _fetch_person_domains(conn):
+            schema = get_target_table_schema(conn)
+            tbl_name = schema["table_name"]
+            domain_col = schema["email_domain"]
+            name_col = schema["name"] or "full_name"
+            fmt = ",".join(["%s"] * len(unique_names_needed))
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT `{name_col}`, `{domain_col}` FROM `{tbl_name}` WHERE `{name_col}` IN ({fmt})",
+                        tuple(unique_names_needed)
+                    )
+                    rows = cur.fetchall()
+                    with _person_domain_cache_lock:
+                        for row in rows:
+                            raw_nm = str(row[0] or "").strip()
+                            dom = str(row[1] or "").strip().lower()
+                            norm_nm = normalize_text(raw_nm)
+                            if norm_nm and dom:
+                                if norm_nm not in _person_domain_cache:
+                                    _person_domain_cache[norm_nm] = []
+                                if dom not in _person_domain_cache[norm_nm]:
+                                    _person_domain_cache[norm_nm].append(dom)
+                    # Also mark names not found in DB as empty list (negative cache)
+                    with _person_domain_cache_lock:
+                        for nm in unique_names_needed:
+                            norm_nm = normalize_text(nm)
+                            if norm_nm not in _person_domain_cache:
+                                _person_domain_cache[norm_nm] = []
+            except Exception as e:
+                print(f"[ContactChecker] Notice: person-domain lookup error: {e}", flush=True)
+
+        if connection:
+            _fetch_person_domains(connection)
+        else:
+            with get_connection() as conn:
+                _fetch_person_domains(conn)
+
+    # ----------------------------------------------------------
+    # Evaluate each contact through all 4 layers
+    # ----------------------------------------------------------
     results = {}
     for c in contacts:
         prim_d = contact_primary_domain.get(c.key, "")
         norm_c_name = normalize_text(c.name)
 
-        # 1. Exact Person at Domain Match (Full Name + Domain in CRM emails table)
+        # --- LAYER 1a: Exact Person at Domain Match ---
         if (norm_c_name, prim_d) in matched_records:
             matched_crm_name = matched_records[(norm_c_name, prim_d)]
             results[c.key] = {
-                "exists": True,
-                "required": False,
-                "ignored": True,
+                "exists": True, "required": False, "ignored": True,
                 "guardrail_status": "contact_already_in_db",
-                "guardrail_reason": f"Contact '{c.name}' at domain '{prim_d}' already exists in CRM database (matched: '{matched_crm_name}').",
-                "matched_domain": prim_d,
-                "matched_db_domain": prim_d
+                "guardrail_reason": f"[L1] Contact '{c.name}' at domain '{prim_d}' already exists in CRM (matched: '{matched_crm_name}').",
+                "matched_domain": prim_d, "matched_db_domain": prim_d
             }
-        # 2. Company Domain Match in CRM emails table
-        elif prim_d in matched_domains:
+            continue
+
+        # --- LAYER 1b: Exact Company Domain Match ---
+        if prim_d in matched_domains:
             results[c.key] = {
-                "exists": True,
-                "required": False,
-                "ignored": True,
+                "exists": True, "required": False, "ignored": True,
                 "guardrail_status": "domain_already_in_db",
-                "guardrail_reason": f"Company domain '{prim_d}' already exists in CRM database.",
-                "matched_domain": prim_d,
-                "matched_db_domain": prim_d
+                "guardrail_reason": f"[L1] Company domain '{prim_d}' already exists in CRM database.",
+                "matched_domain": prim_d, "matched_db_domain": prim_d
             }
+            continue
+
+        # --- LAYER 2: Person-Name Anchor + LCS Domain Overlap ---
+        if c.name and prim_d:
+            with _person_domain_cache_lock:
+                db_domains_for_person = list(_person_domain_cache.get(norm_c_name, []))
+
+            incoming_slug = _clean_slug(prim_d)
+            for db_dom in db_domains_for_person:
+                db_slug = _clean_slug(db_dom)
+                if not db_slug or not incoming_slug:
+                    continue
+                ratio, common = _lcs_ratio(db_slug, incoming_slug)
+                if not common or common.lower() in GENERIC_CORPORATE_WORDS:
+                    continue
+                # Multi-tier overlap:
+                # 1. Standard: ratio >= 65% with common >= 4 chars
+                # 2. Balanced: ratio >= 50% with common >= 5 chars (e.g. 'mancave', 'janssen', 'cavender')
+                # 3. Short root with person match: ratio >= 55% with common >= 4 chars (e.g. 'star')
+                # 4. Shared brand prefix: both slugs start with the same >= 4-char prefix (e.g. 'karl'chevy / 'karl'direct)
+                # 5. Long unique brand stem: common >= 7 chars
+                hit = (
+                    (ratio >= 0.65 and len(common) >= 4) or
+                    (ratio >= 0.50 and len(common) >= 5) or
+                    (ratio >= 0.55 and len(common) >= 4) or
+                    (db_slug.startswith(common) and incoming_slug.startswith(common) and len(common) >= 4) or
+                    (len(common) >= 7)
+                )
+                if hit:
+                    results[c.key] = {
+                        "exists": True, "required": False, "ignored": True,
+                        "guardrail_status": "person_domain_overlap",
+                        "guardrail_reason": (
+                            f"[L2] Person '{c.name}' exists in DB at '{db_dom}'. "
+                            f"Domain '{prim_d}' shares brand root '{common}' "
+                            f"(overlap {ratio:.0%}) \u2192 same company branch."
+                        ),
+                        "matched_domain": prim_d, "matched_db_domain": db_dom
+                    }
+                    break
+            if c.key in results:
+                continue
+
+        # --- LAYER 3: Database-Driven Prefix Trie ---
+        if prim_d and _domain_trie.loaded:
+            incoming_slug = _clean_slug(prim_d)
+            if incoming_slug:
+                trie_match_domain, common_prefix = _domain_trie.find_prefix_match(incoming_slug, min_prefix_len=4)
+                if trie_match_domain and trie_match_domain != prim_d and _is_valid_branch_match(trie_match_domain, common_prefix, incoming_slug):
+                    results[c.key] = {
+                        "exists": True, "required": False, "ignored": True,
+                        "guardrail_status": "trie_brand_stem_match",
+                        "guardrail_reason": (
+                            f"[L3] Domain '{prim_d}' is a branch of known DB domain '{trie_match_domain}' "
+                            f"(shared stem: '{common_prefix}')."
+                        ),
+                        "matched_domain": prim_d, "matched_db_domain": trie_match_domain
+                    }
+                    continue
+
+        # --- LAYER 4: DNS MX Mail Routing Resolver ---
+        if prim_d and _DNS_AVAILABLE:
+            mx_root = _resolve_mx_root_domain(prim_d)
+            if mx_root and mx_root != prim_d:
+                # Check if the MX root domain exists in DB
+                with _crm_domain_cache_lock:
+                    mx_in_cache = _crm_domain_cache.get(mx_root)
+                if mx_in_cache is True:
+                    results[c.key] = {
+                        "exists": True, "required": False, "ignored": True,
+                        "guardrail_status": "mx_routing_match",
+                        "guardrail_reason": (
+                            f"[L4] Domain '{prim_d}' routes mail through '{mx_root}' "
+                            f"which is already in your CRM (shared mail infrastructure)."
+                        ),
+                        "matched_domain": prim_d, "matched_db_domain": mx_root
+                    }
+                    continue
+                elif mx_in_cache is None:
+                    # Not yet in cache: do a quick DB check for the mx_root
+                    def _check_mx_in_db(conn, dom):
+                        schema = get_target_table_schema(conn)
+                        tbl_name = schema["table_name"]
+                        domain_col = schema["email_domain"]
+                        try:
+                            with conn.cursor() as cur:
+                                cur.execute(
+                                    f"SELECT 1 FROM `{tbl_name}` WHERE `{domain_col}` = %s LIMIT 1", (dom,)
+                                )
+                                return cur.fetchone() is not None
+                        except Exception:
+                            return False
+
+                    try:
+                        if connection:
+                            mx_found = _check_mx_in_db(connection, mx_root)
+                        else:
+                            with get_connection() as conn:
+                                mx_found = _check_mx_in_db(conn, mx_root)
+                    except Exception:
+                        mx_found = False
+
+                    with _crm_domain_cache_lock:
+                        _crm_domain_cache[mx_root] = mx_found
+
+                    if mx_found:
+                        results[c.key] = {
+                            "exists": True, "required": False, "ignored": True,
+                            "guardrail_status": "mx_routing_match",
+                            "guardrail_reason": (
+                                f"[L4] Domain '{prim_d}' routes mail through '{mx_root}' "
+                                f"which is already in your CRM (shared mail infrastructure)."
+                            ),
+                            "matched_domain": prim_d, "matched_db_domain": mx_root
+                        }
+                        continue
 
     return results
 
@@ -705,6 +1241,21 @@ EXCLUDED_ENTRY_SUBSTRINGS = [
     r"\btrainee\b",
     r"\bapprentice\b",
     r"\bstudent\b",
+    r"\bassistant to\b",
+    r"\bexecutive assistant\b",
+    r"\bpersonal assistant\b",
+    r"\bcompliance\b",
+    r"\blegal\b",
+    r"\bregulatory\b",
+    r"\bprocurement\b",
+    r"\bprivacy\b",
+    r"\bgdpr\b",
+    r"\bgrc\b",
+    r"\baudit\b",
+    r"\bauditor\b",
+    r"\bjunior\b",
+    r"\bjr\b",
+    r"\bjr\.\b",
 ]
 
 
@@ -1301,6 +1852,7 @@ class SyncSavedLeadItem(BaseModel):
     job_title: str | None = ""
     company: str | None = ""
     domain: str | None = ""
+    company_domain: str | None = ""
     website_link: str | None = ""
     email: str | None = ""
     location: str | None = ""
@@ -1522,9 +2074,10 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
 
             rows_to_insert = []
             for c in request.contacts:
+                target_dom = (c.company_domain or c.domain or "").strip()
                 w_link = _s(c.website_link, 512)
-                if not w_link and c.domain:
-                    w_link = f"https://{_s(c.domain, 250)}"
+                if not w_link and target_dom:
+                    w_link = f"https://{_s(target_dom, 250)}"
 
                 rows_to_insert.append((
                     batch_tag,
@@ -1534,7 +2087,7 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
                     _s(c.last_name, 128),
                     _s(c.job_title, 250),
                     _s(c.company, 250),
-                    _s(c.domain, 250),
+                    _s(target_dom, 250),
                     w_link,
                     _s(c.location, 250),
                     _s(c.linkedin_url, 512),
@@ -1559,6 +2112,26 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
                     `segment` = VALUES(`segment`);
             """
             cur.executemany(sql, rows_to_insert)
+
+    # Immediately update in-memory trie, CRM domain cache and person cache so re-scrapes are caught instantly
+    for c in request.contacts:
+        target_dom = (c.company_domain or c.domain or "").strip().lower()
+        if target_dom:
+            slug = _strip_tld(target_dom)
+            cslug = _clean_slug(target_dom)
+            if slug:
+                _domain_trie.insert(slug, target_dom)
+            if cslug and cslug != slug:
+                _domain_trie.insert(cslug, target_dom)
+            with _crm_domain_cache_lock:
+                _crm_domain_cache[target_dom] = True
+            if c.name:
+                norm_nm = normalize_text(c.name)
+                with _person_domain_cache_lock:
+                    if norm_nm not in _person_domain_cache:
+                        _person_domain_cache[norm_nm] = []
+                    if target_dom not in _person_domain_cache[norm_nm]:
+                        _person_domain_cache[norm_nm].append(target_dom)
 
     print(f"\n[ContactChecker] Synced {len(rows_to_insert)} lead(s) with website links into MySQL table `apollo_saved_leads` under batch '{batch_tag}'.", flush=True)
     return {"status": "ok", "synced": len(rows_to_insert)}
@@ -1606,6 +2179,11 @@ def match_apollo(request: ApolloMatchRequest):
 
     batch_tag = str(request.batch or "batch_1").strip()
     with _batch_seen_companies_lock:
+        if len(_batch_seen_companies) > 100 and batch_tag not in _batch_seen_companies:
+            # Keep the 50 most recent batches to protect RAM over long-running periods
+            oldest_keys = list(_batch_seen_companies.keys())[:50]
+            for k in oldest_keys:
+                _batch_seen_companies.pop(k, None)
         if batch_tag not in _batch_seen_companies:
             _batch_seen_companies[batch_tag] = {}
         seen_required_companies = _batch_seen_companies[batch_tag]
@@ -1630,6 +2208,10 @@ def match_apollo(request: ApolloMatchRequest):
     with get_connection() as conn:
         # Pre-initialize table schema
         get_target_table_schema(conn)
+
+        # Load domain prefix trie on first request (lazy, thread-safe, ~2-5 seconds once)
+        if not _domain_trie.loaded:
+            threading.Thread(target=load_domain_trie, daemon=True).start()
 
         # --------------------------------------------------------
         # STEP 1: REFINED DOMAIN LOOKUP CHAIN (company_domains)
