@@ -2,6 +2,8 @@
 
 A high-performance Chrome Extension and FastAPI backend system for real-time contact duplicate detection, qualification, and lead extraction directly within **Apollo.io**.
 
+> 📖 **Operations Manual**: For the full, detailed guide on all executable commands, testing suites, and CLI utilities, see **[Commands & Operations Guide](docs/COMMANDS_AND_OPERATIONS_GUIDE.md)**.
+
 ---
 
 ## 1. System Overview
