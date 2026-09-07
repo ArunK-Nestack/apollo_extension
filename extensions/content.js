@@ -11,6 +11,8 @@
     "contactCheckerBatchNumber";
   const BATCH_NAME_STORAGE_KEY =
     "contactCheckerBatchName";
+  const EXTENSION_ENABLED_STORAGE_KEY =
+    "contactCheckerExtensionEnabled";
 
   // ============================================================
   // TOGGLE OFF
@@ -45,6 +47,7 @@
     requiredContactsAll: new Map(),
     requiredCompanyMap: new Map(),
     syncedLeadKeys: new Set(),
+    syncingLeadKeys: new Set(),
     highlightedRows: new Set(),
     activityLog: [],
     activityPanelOpen: false,
@@ -349,7 +352,12 @@
     }
   `;
 
-  (document.head || document.documentElement || document.body)?.appendChild(style);
+  function ensureStylesInjected() {
+    if (!document.getElementById("contact-checker-style")) {
+      (document.head || document.documentElement || document.body)?.appendChild(style);
+    }
+  }
+  ensureStylesInjected();
 
   // ============================================================
   // HELPERS
@@ -363,7 +371,7 @@
 
   function normalizeDomain(value) {
     if (!value) return "";
-    let dom = String(value).trim().toLowerCase();
+    let dom = String(value).trim().toLowerCase().replace(/,/g, ".");
     try {
       if (!dom.startsWith("http://") && !dom.startsWith("https://") && !dom.startsWith("//")) {
         dom = "https://" + dom;
@@ -373,7 +381,7 @@
     } catch {
       dom = dom.replace(/^https?:\/\//, "").replace(/^\/\//, "").split("/")[0].split(":")[0];
     }
-    dom = dom.replace(/^www\./, "").split("/")[0].split(":")[0].trim();
+    dom = dom.replace(/^www\d*\./, "").split("/")[0].split(":")[0].trim();
     return dom;
   }
 
@@ -758,9 +766,9 @@
       // Exclude navigation tabs or search filters
       if (href.endsWith("/people") || href.endsWith("/contacts") || href.includes("?")) {
         // Only accept if inside an actual data row
-        return Boolean(link.closest('[role="row"]'));
+        return Boolean(link.closest('[role="row"], tr'));
       }
-      return Boolean(link.closest('[role="row"]'));
+      return Boolean(link.closest('[role="row"], tr'));
     });
   }
 
@@ -803,7 +811,7 @@
   ) {
     const headers = Array.from(
       document.querySelectorAll(
-        '[role="columnheader"]'
+        '[role="columnheader"], th'
       )
     );
 
@@ -837,7 +845,7 @@
 
     if (ariaColumnIndex) {
       const indexedCell = row.querySelector(
-        `[role="cell"][aria-colindex="${ariaColumnIndex}"]`
+        `[role="cell"][aria-colindex="${ariaColumnIndex}"], td[aria-colindex="${ariaColumnIndex}"]`
       );
 
       if (indexedCell) {
@@ -861,7 +869,7 @@
   // ============================================================
 
   function extractContact(link, index) {
-    const row = link.closest('[role="row"]');
+    const row = link.closest('[role="row"], tr');
 
     if (!row) {
       return null;
@@ -880,7 +888,7 @@
     // ----------------------------------------------------------
 
     const cells = Array.from(
-      row.querySelectorAll('[role="cell"]')
+      row.querySelectorAll('[role="cell"], td')
     );
 
     const nameCellIndex = cells.findIndex(
@@ -889,7 +897,7 @@
 
     const nameCell = nameCellIndex !== -1
       ? cells[nameCellIndex]
-      : (link.closest('[role="cell"]') || link.parentElement);
+      : (link.closest('[role="cell"], td') || link.parentElement);
 
     // 1. Dynamic Title Detection (by header or next cell)
     let titleCell = findCellByHeader(
@@ -910,7 +918,7 @@
     if (!companyCell) {
       const compLink = row.querySelector('a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]');
       if (compLink) {
-        companyCell = compLink.closest('[role="cell"]') || compLink.parentElement;
+        companyCell = compLink.closest('[role="cell"], td') || compLink.parentElement;
       }
     }
     if (!companyCell && nameCellIndex !== -1 && nameCellIndex + 2 < cells.length) {
@@ -1084,7 +1092,7 @@
 
   function setContactBadge(contact, className, text, title, bgColor = "") {
     if (!contact?.link) return;
-    const nameCell = contact.nameCell || contact.link.closest('[role="cell"]') || contact.link.parentElement;
+    const nameCell = contact.nameCell || contact.link.closest('[role="cell"], td') || contact.link.parentElement;
     if (!nameCell) return;
 
     const existingBadge = nameCell.querySelector(".contact-checker-existing-badge, .contact-checker-required-badge, .contact-checker-ignored-badge");
@@ -1126,9 +1134,10 @@
       if (row.classList.contains("contact-checker-required-row")) {
         row.classList.remove("contact-checker-required-row");
       }
-      if (row.classList.contains("contact-checker-existing")) {
-        row.classList.remove("contact-checker-existing");
+      if (!row.classList.contains("contact-checker-existing")) {
+        row.classList.add("contact-checker-existing");
       }
+      state.highlightedRows.add(row);
     }
 
     // Remove from required contacts if previously recorded
@@ -1221,9 +1230,9 @@
       [REQUIRED_CONTACTS_STORAGE_KEY]: contactsList
     });
 
-    // Only send contacts that have not been synced yet
+    // Only send contacts that have not been synced yet and are not currently in-flight
     const contactsToSync = contactsList
-      .filter(([key]) => !state.syncedLeadKeys.has(key))
+      .filter(([key]) => !state.syncedLeadKeys.has(key) && !state.syncingLeadKeys.has(key))
       .map(([key, c]) => ({
         apollo_id: c.apollo_id || "",
         name: c.name || "",
@@ -1241,7 +1250,7 @@
       }));
 
     if (chrome?.runtime?.sendMessage && contactsToSync.length > 0) {
-      contactsToSync.forEach(c => state.syncedLeadKeys.add(c._key));
+      contactsToSync.forEach(c => state.syncingLeadKeys.add(c._key));
 
       const activeBatch = state.batchName || `batch_${state.batchNumber || 1}`;
       chrome.runtime.sendMessage({
@@ -1250,11 +1259,17 @@
         contacts: contactsToSync,
         replace_all: false
       }, (res) => {
-        if (res?.success) {
+        const lastErr = chrome.runtime?.lastError;
+        if (!lastErr && res?.success) {
+          contactsToSync.forEach(c => {
+            state.syncingLeadKeys.delete(c._key);
+            state.syncedLeadKeys.add(c._key);
+          });
           contactCheckerLog(`Synced ${contactsToSync.length} lead(s) to MySQL apollo_saved_leads under ${activeBatch}`);
         } else {
-          // If error, unmark so it can retry
-          contactsToSync.forEach(c => state.syncedLeadKeys.delete(c._key));
+          // If error or disconnected, release so it can retry later
+          contactsToSync.forEach(c => state.syncingLeadKeys.delete(c._key));
+          contactCheckerLog(`Notice: sync to MySQL delayed or failed: ${lastErr?.message || res?.error || "network unavailable"}`);
         }
       });
     }
@@ -1283,7 +1298,22 @@
 
   function extractRootDomain(rawUrlOrDomain) {
     if (!rawUrlOrDomain) return "";
-    let dom = String(rawUrlOrDomain).trim().toLowerCase();
+    let dom = String(rawUrlOrDomain).trim().toLowerCase().replace(/,/g, ".");
+
+    // Strip mailto: prefix
+    if (dom.startsWith("mailto:")) {
+      dom = dom.slice("mailto:".length);
+    }
+
+    // If an email address is passed, take the domain portion after '@'
+    if (dom.includes("@")) {
+      dom = dom.split("@").pop();
+    }
+
+    // Handle protocol-relative URLs (e.g. '//www.example.com/path')
+    if (dom.startsWith("//")) {
+      dom = dom.replace(/^\/+/, "");
+    }
 
     // Remove protocol and query
     if (dom.includes("://")) {
@@ -1299,6 +1329,8 @@
     dom = dom.split("/")[0].split(":")[0].split("?")[0].trim();
     // Strip leading www.
     dom = dom.replace(/^www\d*\./, "");
+    // Strip trailing FQDN dots (e.g. 'example.com.')
+    dom = dom.replace(/\.+$/, "");
 
     const parts = dom.split(".");
     if (parts.length <= 2) {
@@ -1458,6 +1490,7 @@
       if (row.classList.contains("contact-checker-required-row")) {
         row.classList.remove("contact-checker-required-row");
       }
+      state.highlightedRows.delete(row);
     }
 
     // Passive browsing or re-evaluations must NEVER delete an already-collected
@@ -1579,7 +1612,12 @@
   // ============================================================
 
   function csvEscape(value) {
-    const text = String(value ?? "");
+    let text = String(value ?? "").trim();
+
+    // Prevent CSV formula injection in spreadsheet software (Excel, Sheets)
+    if (/^[=+\-@\t\r]/.test(text)) {
+      text = "'" + text;
+    }
 
     if (/[",\r\n]/.test(text)) {
       return `"${text.replace(/"/g, '""')}"`;
@@ -1843,20 +1881,29 @@
       return;
     }
 
-    const uniqueCompanies = new Map(); // compKey -> key
+    const uniqueCompanies = new Map(); // compKey -> { key, score }
     const duplicateKeys = [];
 
     state.requiredContactsAll.forEach((contact, key) => {
       const compKey = getCompanyDedupeKey(contact.company, contact.domain);
       if (!compKey) {
-        uniqueCompanies.set(key, key);
+        uniqueCompanies.set(key, { key, score: 0 });
         return;
       }
 
+      const score = contact.seniority_score || getSeniorityScore(contact.job_title);
       if (uniqueCompanies.has(compKey)) {
-        duplicateKeys.push(key);
+        const existing = uniqueCompanies.get(compKey);
+        if (score > existing.score) {
+          // Incoming lead is higher-ranking (e.g. CEO vs Manager): discard previous lead
+          duplicateKeys.push(existing.key);
+          uniqueCompanies.set(compKey, { key, score });
+        } else {
+          // Existing lead has equal or higher rank: discard incoming lead
+          duplicateKeys.push(key);
+        }
       } else {
-        uniqueCompanies.set(compKey, key);
+        uniqueCompanies.set(compKey, { key, score });
       }
     });
 
@@ -1870,10 +1917,11 @@
       return;
     }
 
-    // Delete duplicates from state.requiredContactsAll and state.syncedLeadKeys
+    // Delete duplicates from state.requiredContactsAll, state.syncedLeadKeys, and state.syncingLeadKeys
     duplicateKeys.forEach(key => {
       state.requiredContactsAll.delete(key);
       state.syncedLeadKeys.delete(key);
+      state.syncingLeadKeys.delete(key);
     });
 
     // Rebuild state.requiredCompanyMap
@@ -1923,6 +1971,7 @@
     state.requiredContactsAll.clear();
     state.requiredCompanyMap.clear();
     state.syncedLeadKeys.clear();
+    state.syncingLeadKeys.clear();
 
     if (chrome?.storage?.local) {
       chrome.storage.local.set({
@@ -2421,6 +2470,7 @@
 
   // Instant SPA Hash & Route Navigation Hook
   function onPageNavigation() {
+    if (!state.active) return;
     const currentNavKey = `${location.pathname}${location.search}${location.hash}`;
     if (state.lastNavigatedKey === currentNavKey) {
       return; // URL has not changed
@@ -2452,33 +2502,42 @@
     };
   }
 
-  state.observer = new MutationObserver(mutations => {
-    if (state.isUpdatingDom) return;
-    if (mutations.some(mutationNeedsScan)) {
-      scheduleScan(300);
+  function startObserver() {
+    if (state.observer) {
+      state.observer.disconnect();
     }
-  });
+    state.observer = new MutationObserver(mutations => {
+      if (!state.active || state.isUpdatingDom) return;
+      if (mutations.some(mutationNeedsScan)) {
+        scheduleScan(300);
+      }
+    });
 
-  state.observer.observe(document.body, {
-    childList: true,
-    subtree: true
-  });
+    state.observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
 
   // ============================================================
   // CLEANUP / TURN OFF
   // ============================================================
 
-  state.cleanup = function () {
+  state.cleanup = function (persist = true) {
     state.active = false;
+    if (persist && chrome?.storage?.local) {
+      chrome.storage.local.set({ [EXTENSION_ENABLED_STORAGE_KEY]: false });
+    }
 
     if (state.observer) {
       state.observer.disconnect();
+      state.observer = null;
     }
 
-    clearTimeout(
-      state.timer
-    );
+    window.removeEventListener?.("popstate", onPageNavigation);
+    window.removeEventListener?.("hashchange", onPageNavigation);
 
+    clearTimeout(state.timer);
     clearTimeout(state.pageTimer);
     clearTimeout(state.statusTimer);
     clearTimeout(state.storageSaveTimer);
@@ -2486,50 +2545,21 @@
     saveRequiredContactsNow();
     state.pendingContacts.clear();
 
-    state.highlightedRows.forEach(
-      row => {
-        row.classList.remove(
-          "contact-checker-existing"
-        );
-        row.classList.remove(
-          "contact-checker-required-row"
-        );
-      }
-    );
+    state.highlightedRows.forEach(row => {
+      row.classList.remove("contact-checker-existing");
+      row.classList.remove("contact-checker-required-row");
+    });
 
-    document
-      .querySelectorAll(
-        `.contact-checker-existing-badge,
-         .contact-checker-required-badge,
-         .contact-checker-ignored-badge`
-      )
-      .forEach(
-        badge => badge.remove()
-      );
+    document.querySelectorAll(
+      `.contact-checker-existing-badge,
+       .contact-checker-required-badge,
+       .contact-checker-ignored-badge`
+    ).forEach(badge => badge.remove());
 
-    document
-      .getElementById(
-        "contact-checker-style"
-      )
-      ?.remove();
-
-    document
-      .getElementById(
-        "contact-checker-status"
-      )
-      ?.remove();
-
-    document
-      .getElementById(
-        "contact-checker-controls"
-      )
-      ?.remove();
-
-    document
-      .getElementById(
-        "contact-checker-activity-panel"
-      )
-      ?.remove();
+    document.getElementById("contact-checker-style")?.remove();
+    document.getElementById("contact-checker-status")?.remove();
+    document.getElementById("contact-checker-controls")?.remove();
+    document.getElementById("contact-checker-activity-panel")?.remove();
 
     state.activityLog = [];
     state.lastBackendSummary = null;
@@ -2537,46 +2567,54 @@
     state.currentContacts.clear();
     state.requiredCompanyMap.clear();
 
-    delete globalThis[
-      STATE_KEY
-    ];
-
-    console.log(
-      "Contact Database Checker disabled."
-    );
+    console.log("Contact Database Checker disabled.");
   };
 
   // ============================================================
-  // START
+  // ACTIVATION & STARTUP
   // ============================================================
 
-  console.log(
-    "Contact Database Checker enabled — Apollo mode."
-  );
+  function activateExtension(persist = true) {
+    state.active = true;
+    if (persist && chrome?.storage?.local) {
+      chrome.storage.local.set({ [EXTENSION_ENABLED_STORAGE_KEY]: true });
+    }
 
-  addActivity(
-    "EXTENSION_STARTED",
-    "Contact Database Checker enabled in Apollo mode."
-  );
-
-  showStatus(
-    "Contact Checker ON"
-  );
+    console.log("Contact Database Checker enabled — Apollo mode.");
+    addActivity("EXTENSION_STARTED", "Contact Database Checker enabled in Apollo mode.");
+    ensureStylesInjected();
+    renderExportControls();
+    showStatus("Contact Checker ON");
+    startObserver();
+    loadStoredRequiredContacts();
+    scanApollo();
+  }
 
   chrome.runtime.onMessage?.addListener((message, sender, sendResponse) => {
     if (message.type === "TOGGLE_CONTACT_CHECKER") {
-      let controls = document.getElementById("contact-checker-controls");
-      if (!controls) {
-        renderExportControls();
+      if (state.active) {
+        state.cleanup(true);
+        showStatus("Contact Checker OFF");
       } else {
-        controls.style.display = controls.style.display === "none" ? "flex" : "none";
+        activateExtension(true);
       }
       sendResponse({ success: true, active: state.active });
       return true;
     }
   });
 
-  loadStoredRequiredContacts();
-  scanApollo();
+  // Check stored ON/OFF toggle state on initialization
+  if (chrome?.storage?.local) {
+    chrome.storage.local.get([EXTENSION_ENABLED_STORAGE_KEY], (res) => {
+      if (res && res[EXTENSION_ENABLED_STORAGE_KEY] === false) {
+        state.active = false;
+        console.log("Contact Database Checker is currently toggled OFF in settings.");
+        return;
+      }
+      activateExtension(false);
+    });
+  } else {
+    activateExtension(false);
+  }
 
 })();

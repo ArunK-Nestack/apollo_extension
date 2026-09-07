@@ -27,3 +27,11 @@ with open(cache_path, "w", encoding="utf-8") as f:
             f.write(dom.strip().lower() + "\n")
 
 print(f"Saved {len(rows):,} unique domains to {cache_path} in {time.time() - t0:.2f}s!")
+
+# Automatically compile high-performance MARISA-Trie binary
+try:
+    from scripts.build_marisa_trie import build_marisa_trie
+    print("\nCompiling high-speed binary MARISA-Trie...")
+    build_marisa_trie()
+except Exception as ex_m:
+    print(f"Note: Could not build MARISA-Trie binary: {ex_m}")

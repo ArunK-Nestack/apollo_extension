@@ -10,7 +10,9 @@ const mockListeners = [];
 
 global.window = global;
 global.addEventListener = () => {};
+global.removeEventListener = () => {};
 global.window.addEventListener = () => {};
+global.window.removeEventListener = () => {};
 global.document = {
   createElement: (tag) => {
     const el = {

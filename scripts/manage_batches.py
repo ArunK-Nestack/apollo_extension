@@ -23,7 +23,7 @@ try:
 except ImportError:
     PANDAS_AVAILABLE = False
 
-from backend.api import get_connection, extract_root_domain, _s
+from backend.api import get_connection, extract_root_domain, _s, get_seniority_score, get_target_table_schema
 
 CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "domain_slugs_cache.txt")
 
@@ -31,8 +31,10 @@ CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 def get_crm_emails_count(conn):
     """Return total records in master CRM emails table."""
     try:
+        schema = get_target_table_schema(conn)
+        tbl = schema.get("table_name", "emails")
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM emails")
+            cur.execute(f"SELECT COUNT(*) FROM `{tbl}`")
             row = cur.fetchone()
             return row[0] if row else 0
     except Exception:
@@ -147,6 +149,15 @@ def delete_batch_action(batches, conn):
             deleted_rows = cur.rowcount
             conn.commit()
         print(f"\n[SUCCESS] Successfully deleted {deleted_rows:,d} leads from batch '{batch_name}'.")
+
+        # Invalidate running backend server in-memory election cache
+        try:
+            import urllib.request
+            import urllib.parse
+            req = urllib.request.Request(f"http://127.0.0.1:8000/invalidate-batch-cache?batch={urllib.parse.quote(batch_name)}", method="POST")
+            urllib.request.urlopen(req, timeout=0.5)
+        except Exception:
+            pass
     except Exception as e:
         conn.rollback()
         print(f"\n[ERROR] Failed to delete batch: {e}")
@@ -188,37 +199,40 @@ def add_file_to_emails_action(conn):
     ext = os.path.splitext(clean_path)[1].lower()
     print(f"\nScanning file: {fname}...")
 
-    # Read dataframe
-    df = None
+    # Read data safely with or without pandas
+    source_rows = []
+    cols = []
     try:
         if ext in [".xlsx", ".xls"]:
             if not PANDAS_AVAILABLE:
                 print("[ERROR] pandas and openpyxl are required to read Excel files. Run: pip install pandas openpyxl")
                 return
             df = pd.read_excel(clean_path)
+            cols = list(df.columns)
+            source_rows = df.to_dict(orient="records")
         else:
             if PANDAS_AVAILABLE:
                 try:
                     df = pd.read_csv(clean_path, low_memory=False, encoding="utf-8")
                 except UnicodeDecodeError:
                     df = pd.read_csv(clean_path, low_memory=False, encoding="latin1")
+                cols = list(df.columns)
+                source_rows = df.to_dict(orient="records")
             else:
                 # Fallback to standard csv module
                 with open(clean_path, "r", encoding="utf-8", errors="replace") as f:
                     reader = csv.DictReader(f)
-                    rows = list(reader)
-                    import pandas as pd_dummy
-                    df = pd_dummy.DataFrame(rows)
+                    cols = list(reader.fieldnames or [])
+                    source_rows = list(reader)
     except Exception as e:
         print(f"[ERROR] Failed to read file: {e}")
         return
 
-    total_rows = len(df)
+    total_rows = len(source_rows)
     if total_rows == 0:
         print("[ERROR] The selected file is empty.")
         return
 
-    cols = list(df.columns)
     print(f"Found {total_rows:,d} rows and {len(cols)} columns.")
 
     # 1. Identify Email Column
@@ -256,15 +270,26 @@ def add_file_to_emails_action(conn):
     else:
         print("  • Domain column:    Will extract root domain directly from Email (@domain)")
 
+    def _cell(row_dict, col_name):
+        if not col_name:
+            return ""
+        val = row_dict.get(col_name, "")
+        if val is None:
+            return ""
+        if PANDAS_AVAILABLE and hasattr(val, "__iter__") is False and pd.isna(val):
+            return ""
+        s = str(val).strip()
+        return "" if s.lower() == "nan" else s
+
     # Process and extract only the 3 required fields
     print("\nExtracting and normalizing required records...")
     records = []
     seen_emails = set()
     new_domains = set()
 
-    for _, row in df.iterrows():
-        raw_email = str(row.get(email_col, "")).strip().lower()
-        if not raw_email or raw_email == "nan" or "@" not in raw_email:
+    for row in source_rows:
+        raw_email = _cell(row, email_col).lower()
+        if not raw_email or "@" not in raw_email:
             continue
 
         # Handle multiple emails separated by comma or semicolon
@@ -273,16 +298,14 @@ def add_file_to_emails_action(conn):
             continue
 
         # Extract full name
-        raw_fn = str(row.get(fn_col, "")).strip() if fn_col and pd.notna(row.get(fn_col)) else ""
-        raw_ln = str(row.get(ln_col, "")).strip() if ln_col and pd.notna(row.get(ln_col)) else ""
-        if raw_fn.lower() == "nan": raw_fn = ""
-        if raw_ln.lower() == "nan": raw_ln = ""
+        raw_fn = _cell(row, fn_col)
+        raw_ln = _cell(row, ln_col)
+        raw_full = _cell(row, full_name_col)
 
         if raw_fn or raw_ln:
             full_name = f"{raw_fn} {raw_ln}".strip()
-        elif full_name_col and pd.notna(row.get(full_name_col)):
-            full_name = str(row.get(full_name_col, "")).strip()
-            if full_name.lower() == "nan": full_name = "Manager"
+        elif raw_full:
+            full_name = raw_full
         else:
             full_name = "Manager"
 
@@ -295,11 +318,7 @@ def add_file_to_emails_action(conn):
                 continue
             seen_emails.add(em)
 
-            raw_dom = ""
-            if domain_col and pd.notna(row.get(domain_col)):
-                raw_dom = str(row.get(domain_col, "")).strip().lower()
-                if raw_dom == "nan": raw_dom = ""
-
+            raw_dom = _cell(row, domain_col).lower()
             if not raw_dom:
                 raw_dom = em.split("@")[-1]
 
@@ -335,10 +354,16 @@ def add_file_to_emails_action(conn):
 
     print("\nInserting records into `emails` table...")
     try:
+        schema = get_target_table_schema(conn)
+        tbl = schema["table_name"]
+        em_col = schema["email"]
+        nm_col = schema["name"] or "full_name"
+        dm_col = schema["email_domain"]
+        sql = f"INSERT IGNORE INTO `{tbl}` (`{em_col}`, `{nm_col}`, `{dm_col}`) VALUES (%s, %s, %s)"
+
         with conn.cursor() as cur:
             for i in range(0, len(records), chunk_size):
                 chunk = records[i:i + chunk_size]
-                sql = "INSERT IGNORE INTO emails (email, full_name, domain) VALUES (%s, %s, %s)"
                 cur.executemany(sql, chunk)
                 total_inserted += cur.rowcount
             conn.commit()
@@ -356,8 +381,16 @@ def add_file_to_emails_action(conn):
                     for d in sorted(new_domains):
                         f.write(f"{d}\n")
                 print(f"  • Appended {len(new_domains):,d} domains to deduplication cache file.")
+
+                # Recompile MARISA-Trie binary
+                try:
+                    from scripts.build_marisa_trie import build_marisa_trie
+                    build_marisa_trie()
+                except Exception:
+                    pass
             except Exception as ex_cache:
                 print(f"  • Notice: Cache file update error: {ex_cache}")
+
 
     except Exception as e:
         conn.rollback()
@@ -429,23 +462,36 @@ def export_batch_action(batches, conn):
 
         if dedup_domains and PANDAS_AVAILABLE:
             df = pd.DataFrame(rows, columns=headers)
-            df['score'] = 0
-            if 'job_title' in df.columns:
-                df['score'] += df['job_title'].notna().astype(int)
+            # Prioritize higher-ranking decision makers (CEOs, Presidents, VPs) over entry-level staff
+            df['score'] = df['job_title'].apply(lambda x: get_seniority_score(str(x or "")))
             if 'linkedin_url' in df.columns:
-                df['score'] += df['linkedin_url'].notna().astype(int)
+                df['score'] += df['linkedin_url'].apply(lambda x: 5 if x and str(x).strip() and str(x).lower() != "nan" else 0)
             df = df.sort_values(by=['score', 'id'], ascending=[False, True])
-            df_export = df.drop_duplicates(subset=['company_domain'], keep='first').drop(columns=['score'])
+
+            # Deduplicate by domain, falling back to company name or id if domain is missing
+            def _comp_dedupe_key(row):
+                dom = str(row.get('company_domain', '') or '').strip().lower()
+                if dom and dom != 'nan':
+                    return f"dom:{dom}"
+                comp = str(row.get('company', '') or '').strip().lower()
+                if comp and comp != 'nan':
+                    return f"comp:{comp}"
+                return f"id:{row.get('id', '')}"
+
+            df['dedupe_key'] = df.apply(_comp_dedupe_key, axis=1)
+            df_export = df.drop_duplicates(subset=['dedupe_key'], keep='first').drop(columns=['score', 'dedupe_key'])
             export_rows = df_export.values.tolist()
         elif dedup_domains:
-            # Fallback without pandas: deduplicate by domain keeping first with highest title/linkedin score
-            seen_doms = {}
+            # Fallback without pandas: deduplicate by domain/company keeping highest seniority score
+            seen_keys = {}
             for r in rows:
                 dom = str(r[8] or "").strip().lower()
-                score = (1 if r[6] else 0) + (1 if r[11] else 0)
-                if dom not in seen_doms or score > seen_doms[dom][0]:
-                    seen_doms[dom] = (score, r)
-            export_rows = [v[1] for v in seen_doms.values()]
+                comp = str(r[7] or "").strip().lower()
+                key = f"dom:{dom}" if dom else (f"comp:{comp}" if comp else f"id:{r[0]}")
+                score = get_seniority_score(str(r[6] or "")) + (5 if r[11] else 0)
+                if key not in seen_keys or score > seen_keys[key][0]:
+                    seen_keys[key] = (score, r)
+            export_rows = [v[1] for v in seen_keys.values()]
         else:
             export_rows = rows
 
@@ -457,10 +503,19 @@ def export_batch_action(batches, conn):
         custom_path = input(f"Enter output file path (or press Enter for default: '{default_filename}'): ").strip()
         out_path = custom_path.strip('\'"') if custom_path else default_filename
 
+        # Sanitize cells to prevent CSV formula injection in spreadsheet applications (Excel, Sheets)
+        def _sanitize_cell(val):
+            s = str(val) if val is not None else ""
+            if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+                return "'" + s
+            return s
+
+        sanitized_export_rows = [[_sanitize_cell(c) for c in r] for r in export_rows]
+
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(headers)
-            for r in export_rows:
+            for r in sanitized_export_rows:
                 writer.writerow(r)
 
         print(f"\n[SUCCESS] Exported {len(export_rows):,d} leads to: {os.path.abspath(out_path)}")
