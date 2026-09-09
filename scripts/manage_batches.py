@@ -24,6 +24,8 @@ except ImportError:
     PANDAS_AVAILABLE = False
 
 from backend.api import get_connection, extract_root_domain, _s, get_seniority_score, get_target_table_schema
+from scripts.apollo_export_formatter import APOLLO_75_HEADERS, format_apollo_lead_row
+from scripts.lead_guardrails import apply_4_layer_guardrails
 
 CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "domain_slugs_cache.txt")
 
@@ -431,96 +433,102 @@ def export_batch_action(batches, conn):
     batch_name = selected_batch["batch"]
     print(f"\nSelected Batch: '{batch_name}' ({selected_batch['total_leads']:,d} total leads)")
     print("Export Options:")
-    print("  [1] Unique Leads by Domain (Recommended - deduplicates multiple contacts at same domain)")
-    print("  [2] All Raw Leads (No deduplication)")
+    print("  [1] Apollo Official 75-Column Format (4-Layer Guardrails: Strictly Verified Net-New - Recommended)")
+    print("  [2] Apollo Official 75-Column Format (All Raw Leads in Batch, No Deduplication)")
+    print("  [3] Legacy Core Columns (15 columns, Unique by Domain)")
     
-    mode_choice = input("Select mode [1/2, default: 1]: ").strip()
-    dedup_domains = (mode_choice != "2")
+    mode_choice = input("Select mode [1/2/3, default: 1]: ").strip()
+    if not mode_choice:
+        mode_choice = "1"
+
+    use_4_layer_guardrails = (mode_choice == "1")
+    use_75_col_format = (mode_choice in ("1", "2"))
+    dedup_domains = (mode_choice in ("1", "3"))
 
     print("\nQuerying leads from database...")
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, batch, apollo_id, name, first_name, last_name, job_title,
-                       company, company_domain, website_link, location, linkedin_url,
-                       apollo_profile_url, segment, created_at
-                FROM apollo_saved_leads
-                WHERE batch = %s
-                ORDER BY id ASC;
-            """, (batch_name,))
-            rows = cur.fetchall()
+            if use_75_col_format:
+                cur.execute("""
+                    SELECT 
+                        id, batch, apollo_id, name, first_name, last_name, job_title, email, email_status,
+                        company, company_domain, website_link, annual_revenue, employee_count,
+                        industry, tech_stack, keywords, company_phone, hq_address, location, linkedin_url,
+                        company_linkedin_url, apollo_profile_url, segment, account_used, credits_charged,
+                        raw_enrichment_data, enriched_at, created_at
+                    FROM apollo_saved_leads
+                    WHERE batch = %s
+                    ORDER BY id ASC;
+                """, (batch_name,))
+                cols = [c[0] for c in cur.description]
+                raw_rows = cur.fetchall()
+                dict_rows = [dict(zip(cols, r)) for r in raw_rows]
+            else:
+                cur.execute("""
+                    SELECT id, batch, apollo_id, name, first_name, last_name, job_title,
+                           company, company_domain, website_link, location, linkedin_url,
+                           apollo_profile_url, segment, created_at
+                    FROM apollo_saved_leads
+                    WHERE batch = %s
+                    ORDER BY id ASC;
+                """, (batch_name,))
+                raw_rows = cur.fetchall()
+                dict_rows = []
 
-        if not rows:
+        if not raw_rows:
             print(f"[NOTICE] No records found for batch '{batch_name}'.")
             return
 
-        headers = [
-            "id", "batch", "apollo_id", "name", "first_name", "last_name", "job_title",
-            "company", "company_domain", "website_link", "location", "linkedin_url",
-            "apollo_profile_url", "segment", "created_at"
-        ]
-
-        if dedup_domains and PANDAS_AVAILABLE:
-            df = pd.DataFrame(rows, columns=headers)
-            # Prioritize higher-ranking decision makers (CEOs, Presidents, VPs) over entry-level staff
-            df['score'] = df['job_title'].apply(lambda x: get_seniority_score(str(x or "")))
-            if 'linkedin_url' in df.columns:
-                df['score'] += df['linkedin_url'].apply(lambda x: 5 if x and str(x).strip() and str(x).lower() != "nan" else 0)
-            df = df.sort_values(by=['score', 'id'], ascending=[False, True])
-
-            # Deduplicate by domain, falling back to company name or id if domain is missing
-            def _comp_dedupe_key(row):
-                dom = str(row.get('company_domain', '') or '').strip().lower()
-                if dom and dom != 'nan':
-                    return f"dom:{dom}"
-                comp = str(row.get('company', '') or '').strip().lower()
-                if comp and comp != 'nan':
-                    return f"comp:{comp}"
-                return f"id:{row.get('id', '')}"
-
-            df['dedupe_key'] = df.apply(_comp_dedupe_key, axis=1)
-            df_export = df.drop_duplicates(subset=['dedupe_key'], keep='first').drop(columns=['score', 'dedupe_key'])
-            export_rows = df_export.values.tolist()
-        elif dedup_domains:
-            # Fallback without pandas: deduplicate by domain/company keeping highest seniority score
-            seen_keys = {}
-            for r in rows:
-                dom = str(r[8] or "").strip().lower()
-                comp = str(r[7] or "").strip().lower()
-                key = f"dom:{dom}" if dom else (f"comp:{comp}" if comp else f"id:{r[0]}")
-                score = get_seniority_score(str(r[6] or "")) + (5 if r[11] else 0)
-                if key not in seen_keys or score > seen_keys[key][0]:
-                    seen_keys[key] = (score, r)
-            export_rows = [v[1] for v in seen_keys.values()]
+        if use_4_layer_guardrails:
+            # Apply all 4 layers: Intra-batch, CRM exact, Person LCS, MARISA Trie, DNS MX
+            final_leads, metrics = apply_4_layer_guardrails(dict_rows, batch_name, conn, verbose=True)
+            export_rows = [format_apollo_lead_row(lead) for lead in final_leads]
+            headers = APOLLO_75_HEADERS
+            dedup_count = len(dict_rows) - len(final_leads)
+        elif use_75_col_format:
+            # All raw leads, 75-column format
+            export_rows = [format_apollo_lead_row(lead) for lead in dict_rows]
+            headers = APOLLO_75_HEADERS
+            dedup_count = 0
         else:
-            export_rows = rows
+            headers = [
+                "id", "batch", "apollo_id", "name", "first_name", "last_name", "job_title",
+                "company", "company_domain", "website_link", "location", "linkedin_url",
+                "apollo_profile_url", "segment", "created_at"
+            ]
+            if dedup_domains:
+                seen_keys = {}
+                for r in raw_rows:
+                    dom = str(r[8] or "").strip().lower()
+                    comp = str(r[7] or "").strip().lower()
+                    key = f"dom:{dom}" if dom else (f"comp:{comp}" if comp else f"id:{r[0]}")
+                    score = get_seniority_score(str(r[6] or "")) + (5 if r[11] else 0)
+                    if key not in seen_keys or score > seen_keys[key][0]:
+                        seen_keys[key] = (score, r)
+                export_rows = [v[1] for v in seen_keys.values()]
+                dedup_count = len(raw_rows) - len(export_rows)
+            else:
+                export_rows = raw_rows
+                dedup_count = 0
 
         # Destination path
         os.makedirs("exports", exist_ok=True)
         suffix = "unique_leads" if dedup_domains else "all_leads"
-        default_filename = os.path.join("exports", f"{batch_name}_{suffix}.csv")
+        format_tag = "apollo_contacts" if use_75_col_format else "core"
+        default_filename = os.path.join("exports", f"{batch_name}_{format_tag}_{suffix}.csv")
         
         custom_path = input(f"Enter output file path (or press Enter for default: '{default_filename}'): ").strip()
         out_path = custom_path.strip('\'"') if custom_path else default_filename
 
-        # Sanitize cells to prevent CSV formula injection in spreadsheet applications (Excel, Sheets)
-        def _sanitize_cell(val):
-            s = str(val) if val is not None else ""
-            if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
-                return "'" + s
-            return s
-
-        sanitized_export_rows = [[_sanitize_cell(c) for c in r] for r in export_rows]
-
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(headers)
-            for r in sanitized_export_rows:
+            for r in export_rows:
                 writer.writerow(r)
 
-        print(f"\n[SUCCESS] Exported {len(export_rows):,d} leads to: {os.path.abspath(out_path)}")
-        if dedup_domains and len(rows) != len(export_rows):
-            print(f"  • Deduplicated {len(rows) - len(export_rows):,d} redundant domain contacts.")
+        print(f"\n[SUCCESS] Exported {len(export_rows):,d} leads ({'75-Column Apollo Schema' if use_75_col_format else '15-Column Schema'}) to: {os.path.abspath(out_path)}")
+        if dedup_domains and dedup_count > 0:
+            print(f"  • Deduplicated {dedup_count:,d} redundant domain contacts.")
 
     except Exception as e:
         print(f"[ERROR] Export failed: {e}")

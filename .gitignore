@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 
+# Secure Apollo Account Keys
+config/apollo_accounts.json
+.secrets/
+
 # Python Cache & Virtual Environments
 __pycache__/
 */__pycache__/
