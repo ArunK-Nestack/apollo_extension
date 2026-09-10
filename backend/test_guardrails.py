@@ -35,6 +35,7 @@ def test_guardrail_1_domain_check():
             name="Unknown Person 1",
             job_title="VP Engineering",
             company="Deloitte",
+            company_domain="deloitte.com",
             location="New York, US",
             employee_count=50000,
         ),
@@ -43,6 +44,7 @@ def test_guardrail_1_domain_check():
             name="Unknown Person 2",
             job_title="VP Engineering",
             company="BrandNewUniqueAILabs9999",
+            company_domain="brandnewuniqueailabs9999.com",
             location="San Francisco, US",
             employee_count=30,
         ),
@@ -84,6 +86,7 @@ def test_guardrail_2_toggle():
         name="Intern User",
         job_title="Software Engineering Intern",
         company="AnotherBrandNewAIStartupXYZ",
+        company_domain="anotherbrandnewaistartupxyz.com",
         location="San Francisco, US",
         employee_count=25,
     )

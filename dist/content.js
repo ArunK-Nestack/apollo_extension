@@ -55,7 +55,8 @@
     lastBackendSummary: null,
     isEvaluatingBatch: false,
     lastEvaluatedPendingTimestamp: 0,
-    lastNavigatedKey: ""
+    lastNavigatedKey: "",
+    domainColumnWarningLogged: false
   };
 
   globalThis[STATE_KEY] = state;
@@ -122,6 +123,30 @@
       font-weight: 700 !important;
       line-height: 16px !important;
       white-space: nowrap !important;
+    }
+
+    #contact-checker-domain-warning {
+      position: fixed;
+      right: 20px;
+      bottom: 128px;
+      z-index: 2147483647;
+      max-width: 360px;
+      background: #451a03;
+      color: #fef3c7;
+      border: 1px solid #f59e0b;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: Arial, sans-serif;
+      font-size: 12px;
+      line-height: 1.45;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.25);
+    }
+
+    #contact-checker-domain-warning strong {
+      display: block;
+      color: #fde68a;
+      font-size: 12px;
+      margin-bottom: 4px;
     }
 
     #contact-checker-controls {
@@ -744,6 +769,85 @@
   }
 
   // ============================================================
+  // APOLLO DOMAIN COLUMN VISIBILITY
+  // ============================================================
+
+  function isApolloDomainColumnVisible() {
+    const headers = Array.from(
+      document.querySelectorAll('[role="columnheader"], th')
+    );
+
+    for (const header of headers) {
+      const label = cleanText(
+        header.innerText ||
+        header.textContent ||
+        header.getAttribute("aria-label") ||
+        ""
+      ).toLowerCase();
+
+      if (
+        label === "domain" ||
+        label === "company domain" ||
+        label === "email domain" ||
+        label === "primary domain"
+      ) {
+        return true;
+      }
+
+      const dataId = (
+        header.getAttribute("data-id") ||
+        header.closest("[data-id]")?.getAttribute("data-id") ||
+        ""
+      ).toLowerCase();
+
+      if (dataId.includes("domain") || dataId === "account.domain") {
+        return true;
+      }
+    }
+
+    return Boolean(document.querySelector('[data-id="account.domain"]'));
+  }
+
+  function updateDomainColumnWarning() {
+    const bannerId = "contact-checker-domain-warning";
+    let banner = document.getElementById(bannerId);
+    const onPeopleTable = getApolloContactLinks().length > 0;
+    const domainVisible = isApolloDomainColumnVisible();
+
+    if (!state.active || !onPeopleTable || domainVisible) {
+      banner?.remove();
+      state.domainColumnWarningLogged = false;
+      return;
+    }
+
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = bannerId;
+      banner.setAttribute("data-contact-checker", "true");
+      banner.innerHTML = `
+        <strong>Add Apollo Domain column</strong>
+        <span>Open <b>Columns</b> (+) on this table and enable <b>Domain</b>. Duplicate detection uses that column first; website-only is less accurate.</span>
+      `;
+
+      const controls = document.getElementById("contact-checker-controls");
+      if (controls?.parentNode) {
+        controls.parentNode.insertBefore(banner, controls);
+      } else {
+        document.body.appendChild(banner);
+      }
+    }
+
+    if (!state.domainColumnWarningLogged) {
+      state.domainColumnWarningLogged = true;
+      addActivity(
+        "DOMAIN_COLUMN_HIDDEN",
+        "Apollo Domain column is hidden — enable it via Columns (+) for accurate duplicate detection.",
+        "warning"
+      );
+    }
+  }
+
+  // ============================================================
   // FIND CONTACT LINKS
   // ============================================================
 
@@ -940,12 +1044,24 @@
       }
     }
 
-    // 3. Direct Website Domain & Link from Apollo Globe Icon
-    let companyDomain = "";
-    let websiteUrl = "";
+    // 3. Domain column (primary) + website link (fallback / second-pass candidate)
+    let columnDomain = "";
+    const domainCell = row.querySelector('[data-id="account.domain"]');
+    if (domainCell) {
+      const rawColumnDomain = cleanText(
+        domainCell.querySelector(".zp_rVvAa")?.textContent ||
+        domainCell.querySelector("button span")?.textContent ||
+        ""
+      );
+      if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(rawColumnDomain)) {
+        columnDomain = extractRootDomain(rawColumnDomain);
+      }
+    }
 
-    // Primary: the globe icon link with aria-label="website link"
-    const websiteLink = row.querySelector('a[aria-label="website link"]');
+    let websiteUrl = "";
+    const websiteLink =
+      row.querySelector('[data-id="account.social"] a[aria-label="website link"]') ||
+      row.querySelector('a[aria-label="website link"]');
     if (websiteLink) {
       const href = (
         websiteLink.getAttribute("data-href") ||
@@ -954,13 +1070,12 @@
       ).trim();
       if (href) {
         websiteUrl = href;
-        companyDomain = normalizeDomain(href);
       }
     }
 
-    // Fallback: any <a> with .apollo-icon-link child (globe icon without aria-label)
-    if (!companyDomain) {
-      const globeIcon = row.querySelector('a > .apollo-icon-link');
+    // Fallback: globe icon without aria-label
+    if (!websiteUrl) {
+      const globeIcon = row.querySelector("a > .apollo-icon-link");
       if (globeIcon) {
         const parentLink = globeIcon.closest("a");
         const href = (
@@ -970,10 +1085,12 @@
         ).trim();
         if (href && !href.includes("apollo.io")) {
           websiteUrl = href;
-          companyDomain = normalizeDomain(href);
         }
       }
     }
+
+    const websiteDomain = websiteUrl ? extractRootDomain(websiteUrl) : "";
+    const lookupDomain = columnDomain || websiteDomain;
 
     // 4. Email Detection from row (if revealed / mailto link or email text)
     let email = "";
@@ -1057,8 +1174,8 @@
       name,
       job_title: jobTitle,
       company,
-      domain: companyDomain,
-      company_domain: companyDomain,
+      domain: lookupDomain,
+      company_domain: columnDomain,
       website_link: websiteUrl,
       email: email,
       location,
@@ -2183,6 +2300,7 @@
 
     if (!links.length) {
       state.currentContacts.clear();
+      updateDomainColumnWarning();
       renderExportControls();
       return;
     }
@@ -2225,6 +2343,7 @@
     });
 
     state.currentContacts = currentContacts;
+    updateDomainColumnWarning();
 
     if (failedExtractionCount > 0 && currentContacts.size === 0 && links.length > 0) {
       addActivity(
@@ -2418,7 +2537,7 @@
       element.hasAttribute?.("data-contact-checker") ||
       element.closest?.("[data-contact-checker]") ||
       element.id?.startsWith("contact-checker-") ||
-      element.closest?.("#contact-checker-status, #contact-checker-controls, #contact-checker-activity-panel") ||
+      element.closest?.("#contact-checker-status, #contact-checker-controls, #contact-checker-activity-panel, #contact-checker-domain-warning") ||
       element.classList?.contains("contact-checker-existing-badge") ||
       element.classList?.contains("contact-checker-required-badge") ||
       element.classList?.contains("contact-checker-ignored-badge") ||
@@ -2559,6 +2678,7 @@
     document.getElementById("contact-checker-style")?.remove();
     document.getElementById("contact-checker-status")?.remove();
     document.getElementById("contact-checker-controls")?.remove();
+    document.getElementById("contact-checker-domain-warning")?.remove();
     document.getElementById("contact-checker-activity-panel")?.remove();
 
     state.activityLog = [];
