@@ -2183,6 +2183,47 @@ def ensure_apollo_saved_leads_table(conn):
         print(f"[ContactChecker] Notice: ensure apollo_saved_leads table: {e}", flush=True)
 
 
+def _filter_sync_contacts_one_per_domain(contacts: list, batch_tag: str, cur) -> list:
+    """One lead per canonical domain per batch; highest seniority wins (matches extension election)."""
+    winners: dict[str, tuple[int, Any]] = {}
+    no_domain: list[Any] = []
+
+    for c in contacts:
+        target_dom = canonical_lookup_domain(ApolloContact(
+            key="sync_filter",
+            company_domain=(c.company_domain or c.domain or "").strip(),
+            website_link=(c.website_link or "").strip(),
+            email=(c.email or "").strip(),
+        ))
+        if not target_dom:
+            no_domain.append(c)
+            continue
+        dom_l = target_dom.lower()
+        score = get_seniority_score(c.job_title or "")
+        prev = winners.get(dom_l)
+        if not prev or score > prev[0]:
+            winners[dom_l] = (score, c)
+
+    accepted: list[Any] = []
+    for dom_l, (score, c) in winners.items():
+        cur.execute(
+            "SELECT `job_title` FROM `apollo_saved_leads` WHERE `batch` = %s AND LOWER(`company_domain`) = %s",
+            (batch_tag, dom_l),
+        )
+        existing = cur.fetchall()
+        if existing:
+            best_db = max(get_seniority_score(str(r[0] or "")) for r in existing)
+            if score < best_db:
+                continue
+            cur.execute(
+                "DELETE FROM `apollo_saved_leads` WHERE `batch` = %s AND LOWER(`company_domain`) = %s",
+                (batch_tag, dom_l),
+            )
+        accepted.append(c)
+
+    return accepted + no_domain
+
+
 @app.post("/sync-saved-leads")
 def sync_saved_leads(request: SyncSavedLeadsRequest):
     """Direct sync endpoint: immediately persists all collected required leads into MySQL apollo_saved_leads with batch name and website_link."""
@@ -2195,8 +2236,10 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
             if not request.contacts:
                 return {"status": "ok", "synced": 0}
 
+            contacts_to_sync = _filter_sync_contacts_one_per_domain(request.contacts, batch_tag, cur)
+
             rows_to_insert = []
-            for idx, c in enumerate(request.contacts):
+            for idx, c in enumerate(contacts_to_sync):
                 target_dom = canonical_lookup_domain(ApolloContact(
                     key=f"sync_{idx}",
                     company_domain=(c.company_domain or c.domain or "").strip(),
@@ -2247,7 +2290,7 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
             cur.executemany(sql, rows_to_insert)
 
     # Immediately update in-memory trie, CRM domain cache and person cache so re-scrapes are caught instantly
-    for c in request.contacts:
+    for c in contacts_to_sync:
         target_dom = (c.company_domain or c.domain or "").strip().lower()
         if target_dom:
             slug = _strip_tld(target_dom)

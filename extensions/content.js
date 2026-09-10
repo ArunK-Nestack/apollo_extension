@@ -1358,6 +1358,7 @@
         job_title: c.job_title || "",
         company: c.company || "",
         domain: c.domain || "",
+        company_domain: c.company_domain || c.domain || "",
         website_link: c.website_link || (c.domain ? `https://${c.domain}` : ""),
         location: c.location || "",
         linkedin_url: c.linkedin_url || "",
@@ -1511,10 +1512,10 @@
     const nameParts = (contact.name || "").trim().split(/\s+/);
     const firstName = nameParts[0] || "";
     const lastName = nameParts.slice(1).join(" ") || "";
-    const rawDomain = result?.matched_domain || contact.domain || "";
+    const rawDomain = contact.company_domain || contact.domain || result?.matched_domain || "";
     const rootDomain = extractRootDomain(rawDomain);
     const apolloUrl = apolloId ? `https://app.apollo.io/#/people/${apolloId}` : "";
-    const compKey = rootDomain || getCompanyDedupeKey(contact.company);
+    const compKey = getCompanyDedupeKey(contact.company, rawDomain);
     const incomingScore = getSeniorityScore(contact.job_title);
 
     // Seniority-based Lead Election: 1 unique lead per company in local storage
@@ -1545,6 +1546,7 @@
       job_title: contact.job_title,
       company: contact.company,
       domain: rootDomain || rawDomain,
+      company_domain: contact.company_domain || rootDomain || rawDomain,
       website_link: websiteLink,
       location: contact.location || "",
       linkedin_url: contact.linkedin_url || "",
