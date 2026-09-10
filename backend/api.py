@@ -1120,7 +1120,8 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
     contact_candidates: dict[str, list[tuple[str, str]]] = {}
     candidate_domains_set: set[str] = set()
     for c in contacts:
-        contact_candidates[c.key] = _domain_lookup_candidates(c)
+        cands = _domain_lookup_candidates(c)
+        contact_candidates[c.key] = cands
         for _, dom in cands:
             candidate_domains_set.add(dom)
 
