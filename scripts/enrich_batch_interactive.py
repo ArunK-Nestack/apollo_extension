@@ -18,6 +18,7 @@ import os
 import json
 import time
 import csv
+import uuid
 import argparse
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,7 +28,16 @@ import requests
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from backend.api import get_connection, get_seniority_score, normalize_text
+from backend.api import (
+    backfill_enrichment_ledger_from_saved_leads,
+    ensure_batch_enrichment_ledger_table,
+    fetch_unattempted_leads_for_batch,
+    get_batch_enrichment_summary,
+    get_connection,
+    get_seniority_score,
+    normalize_text,
+    record_enrichment_ledger_attempts,
+)
 from scripts.apollo_export_formatter import APOLLO_75_HEADERS, format_apollo_lead_row
 from scripts.lead_guardrails import apply_4_layer_guardrails
 
@@ -274,7 +284,13 @@ def enrich_leads_chunk(api_key: str, chunk: List[Dict[str, Any]], dry_run: bool 
 # DATABASE IN-PLACE UPDATE
 # =====================================================================
 
-def update_leads_in_db(results: List[Dict[str, Any]], account_name: str, batch_tag: str, dry_run: bool = False):
+def update_leads_in_db(
+    results: List[Dict[str, Any]],
+    account_name: str,
+    batch_tag: str,
+    dry_run: bool = False,
+    conn=None,
+):
     """Update enriched columns directly in `apollo_saved_leads` under the same batch."""
     if dry_run or not results:
         return
@@ -320,10 +336,18 @@ def update_leads_in_db(results: List[Dict[str, Any]], account_name: str, batch_t
             batch_tag
         ))
 
-    with get_connection() as conn:
+    if not params:
+        return
+
+    if conn is not None:
         with conn.cursor() as cur:
             cur.executemany(update_sql, params)
-            conn.commit()
+        return
+
+    with get_connection() as own_conn:
+        with own_conn.cursor() as cur:
+            cur.executemany(update_sql, params)
+            own_conn.commit()
 
 # =====================================================================
 # INTERACTIVE CLI WORKFLOW
@@ -345,15 +369,20 @@ def run_interactive_enricher():
     # -------------------------------------------------------------
     print("\n[STEP 1: SELECT BATCH FROM DATABASE]")
     with get_connection() as conn:
+        ensure_batch_enrichment_ledger_table(conn)
+        backfill_enrichment_ledger_from_saved_leads(conn)
+        conn.commit()
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT 
-                    batch, 
-                    COUNT(*) as total_leads,
-                    COUNT(DISTINCT company_domain) as unique_domains,
-                    COUNT(CASE WHEN (email IS NULL OR email = '') AND enriched_at IS NULL THEN 1 END) as unenriched_count
-                FROM apollo_saved_leads
-                GROUP BY batch
+                SELECT
+                    l.batch,
+                    COUNT(*) AS total_leads,
+                    COUNT(DISTINCT l.company_domain) AS unique_domains,
+                    SUM(CASE WHEN e.id IS NULL THEN 1 ELSE 0 END) AS unenriched_count
+                FROM apollo_saved_leads l
+                LEFT JOIN batch_enrichment_ledger e
+                  ON e.batch = l.batch AND e.saved_lead_id = l.id
+                GROUP BY l.batch
                 ORDER BY total_leads DESC;
             """)
             batches = cur.fetchall()
@@ -379,55 +408,29 @@ def run_interactive_enricher():
     # -------------------------------------------------------------
     # FILTER TO UNIQUE DOMAINS (1 LEAD PER COMPANY POLICY)
     # -------------------------------------------------------------
-    print("Loading leads and isolating 1 highest-ranking lead per unique company domain...")
+    print("Loading unattempted leads (ledger) and isolating 1 highest-ranking lead per domain...")
     with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, apollo_id, name, first_name, last_name, job_title, company, company_domain, website_link, segment, email
-                FROM apollo_saved_leads
-                WHERE batch = %s
-                ORDER BY id ASC;
-            """, (selected_batch,))
-            raw_leads = cur.fetchall()
+        raw_leads = fetch_unattempted_leads_for_batch(conn, selected_batch)
+        ledger_before = get_batch_enrichment_summary(conn, selected_batch)
 
     domain_to_lead = {}
-    already_enriched_count = 0
-
-    for r in raw_leads:
-        lead_dict = {
-            "id": r[0], "apollo_id": r[1], "name": r[2], "first_name": r[3],
-            "last_name": r[4], "job_title": r[5], "company": r[6],
-            "company_domain": r[7], "website_link": r[8], "segment": r[9], "email": r[10]
-        }
-        
-        # Skip already enriched leads with valid email
-        if lead_dict["email"]:
-            already_enriched_count += 1
-            continue
-
+    for lead_dict in raw_leads:
         dom = (lead_dict["company_domain"] or "").lower().strip()
         if not dom:
             continue
-
         score = get_seniority_score(lead_dict["job_title"] or "")
-
-        # Seniority Election: Keep lead with highest seniority score for that domain
         if dom not in domain_to_lead or score > domain_to_lead[dom]["score"]:
-            domain_to_lead[dom] = {
-                "lead": lead_dict,
-                "score": score
-            }
+            domain_to_lead[dom] = {"lead": lead_dict, "score": score}
 
     raw_eligible = [v["lead"] for v in domain_to_lead.values()]
-    print(f"✓ Found {len(raw_leads)} total leads in batch.")
-    if already_enriched_count > 0:
-        print(f"  • {already_enriched_count} leads already enriched (skipped).")
+    print(f"✓ {ledger_before['attempted']} lead(s) already attempted in this batch (ledger).")
+    print(f"✓ {len(raw_leads)} unattempted row(s); {len(raw_eligible)} unique domains ready.")
 
     # Run through full 4-layer defense guardrails
     eligible_leads, metrics = apply_4_layer_guardrails(raw_eligible, selected_batch, verbose=True)
 
     if not eligible_leads:
-        print("\nAll leads in this batch are already enriched or collided with existing CRM data! Nothing to do.")
+        print("\nNo unattempted leads left in this batch (ledger) or all collided with CRM. Nothing to do.")
         return
 
     # -------------------------------------------------------------
@@ -489,9 +492,15 @@ def run_interactive_enricher():
     chunk_size = 10
     total_chunks = (len(leads_to_process) + chunk_size - 1) // chunk_size
 
+    login_email = (selected_account.get("email") or "").strip()
+    session_id = str(uuid.uuid4())
+
     print(f"\n✓ Confirmed: Enriching {len(leads_to_process)} leads using account '{selected_account['name']}'.")
-    print(f"  • Chunks of 10: {total_chunks} calls")
-    print(f"  • Rate Throttle: 0.9s per chunk (~600 leads/minute)")
+    print(f"  • Login email:     {login_email or '(not set in config)'}")
+    print(f"  • Session ID:      {session_id}")
+    print(f"  • Chunks of 10:    {total_chunks} calls")
+    print(f"  • Rate Throttle:   0.9s per chunk (~600 leads/minute)")
+    print(f"  • Max credits:     {len(leads_to_process)} (1 per verified email)")
 
     confirm = input("\n>> Ready to execute? Press [Enter] to start (or 'n' to cancel): ").strip()
     if confirm.lower() == 'n':
@@ -514,25 +523,45 @@ def run_interactive_enricher():
 
     for chunk_idx in range(total_chunks):
         chunk = leads_to_process[chunk_idx * chunk_size : (chunk_idx + 1) * chunk_size]
-        
-        # Enrich chunk
+
         results = enrich_leads_chunk(acc_key, chunk, dry_run=args.dry_run)
-        
+
         if not results and not args.dry_run:
             print("\n[Execution Interrupted] No response from Apollo API. Stopping safely.")
             break
 
-        # In-place database update
-        update_leads_in_db(results, selected_account["name"], selected_batch, dry_run=args.dry_run)
+        if not args.dry_run:
+            with get_connection() as conn:
+                record_enrichment_ledger_attempts(
+                    conn,
+                    selected_batch,
+                    session_id,
+                    login_email,
+                    selected_account["name"],
+                    chunk,
+                    results,
+                )
+                update_leads_in_db(
+                    results,
+                    selected_account["name"],
+                    selected_batch,
+                    dry_run=False,
+                    conn=conn,
+                )
+                conn.commit()
 
-        # Statistics
-        for r in results:
-            if r.get("email"):
-                total_enriched_emails += 1
-                total_credits_spent += r.get("credits_charged", 1)
+        for lead in chunk:
+            match = next((r for r in results if r.get("db_id") == lead["id"]), None)
+            if match:
+                all_enriched_records.append(match)
+                if match.get("email"):
+                    total_enriched_emails += 1
+                    total_credits_spent += int(match.get("credits_charged") or 0)
+                else:
+                    total_free_companies_saved += 1
             else:
+                all_enriched_records.append({"db_id": lead["id"], "email": "", "credits_charged": 0})
                 total_free_companies_saved += 1
-            all_enriched_records.append(r)
 
         processed_so_far = min((chunk_idx + 1) * chunk_size, len(leads_to_process))
         pct = (processed_so_far / len(leads_to_process)) * 100
@@ -564,7 +593,13 @@ def run_interactive_enricher():
     print(f"  • Total Email Credits Spent:         {total_credits_spent}")
     print(f"  • Mobile Credits Deducted:           0 (Zero mobile charges)")
     print(f"  • Free Company Firmographics Saved:  {len(all_enriched_records)} Companies (Revenue, Tech Stack, Address, etc.)")
-    print(f"  • Remaining Unenriched in Batch:     {len(eligible_leads) - len(all_enriched_records)}")
+    print(f"  • Remaining Unattempted (ledger):    {max(0, len(eligible_leads) - len(leads_to_process))}")
+    if not args.dry_run:
+        with get_connection() as conn:
+            ledger_after = get_batch_enrichment_summary(conn, selected_batch)
+        print(f"  • Ledger total for batch:            {ledger_after['attempted']} attempted, "
+              f"{ledger_after['emails_found']} emails, {ledger_after['no_email']} no-email, "
+              f"{ledger_after['credits_spent']} credits")
     print("=" * 95)
 
     # Optional CSV export prompt

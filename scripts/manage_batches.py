@@ -6,6 +6,9 @@ Apollo Saved Leads & CRM Database Manager CLI
 2. Provides option to delete an entire batch from `apollo_saved_leads`.
 3. Provides option to upload/import CSV or Excel file directly into master CRM (`emails` table),
    automatically extracting only the required columns: email, full_name, and domain.
+4. Audits a batch for unique domains (guardrails) and domain-column vs website compliance.
+5. Audits job titles (DB lookup + optional LLM) with removal of unwanted leads.
+6. Audits Indian names (local rules + optional LLM) with removal of pure-Indian leads.
 """
 
 import os
@@ -26,6 +29,21 @@ except ImportError:
 from backend.api import get_connection, extract_root_domain, _s, get_seniority_score, get_target_table_schema
 from scripts.apollo_export_formatter import APOLLO_75_HEADERS, format_apollo_lead_row
 from scripts.lead_guardrails import apply_4_layer_guardrails
+from scripts.batch_domain_audit import (
+    audit_batch,
+    get_duplicate_drops,
+    print_batch_audit_report,
+    prompt_delete_duplicate_drops,
+    resolve_batch_name,
+)
+from scripts.batch_qualification_audit import (
+    audit_batch_names,
+    audit_batch_titles,
+    print_name_audit_report,
+    print_title_audit_report,
+    prompt_name_llm_and_delete,
+    prompt_title_llm_and_delete,
+)
 
 CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "domain_slugs_cache.txt")
 
@@ -91,10 +109,12 @@ def display_batch_overview(batches, emails_count):
             name_display = b["batch"]
             if len(name_display) > 38:
                 name_display = name_display[:35] + "..."
-            print(f" {idx:<3} | {name_display:<38} | {b['total_leads']:<8,d} | {b['distinct_domains']:<8,d} | {b['first_added']:<14} | {b['last_added']:<14}")
+            dupe_flag = " !" if b["total_leads"] != b["distinct_domains"] else ""
+            print(f" {idx:<3} | {name_display:<38} | {b['total_leads']:<8,d} | {b['distinct_domains']:<8,d}{dupe_flag} | {b['first_added']:<14} | {b['last_added']:<14}")
 
     print("=" * 92)
     print(f" Total Saved Leads: {total_leads_all:,d} across {len(batches)} batches | Master CRM `emails` Total: {emails_count:,d} records")
+    print(" ! = lead count != distinct domains (run audit [4] for details)")
     print("=" * 92 + "\n")
 
 
@@ -399,6 +419,79 @@ def add_file_to_emails_action(conn):
         print(f"[ERROR] Database insertion failed: {e}")
 
 
+def audit_batch_action(batches, conn):
+    """Audit batch: unique domains per guardrails + domain column vs website."""
+    print("\n--- AUDIT BATCH: UNIQUE DOMAINS & DOMAIN COLUMN ---")
+    user_input = input(
+        "Enter batch NUMBER (1 to %d) or BATCH NAME (partial OK, e.g. rahul_nestack_co_in): "
+        % len(batches)
+    ).strip()
+
+    if not user_input:
+        print("Audit canceled.")
+        return
+
+    batch_name = resolve_batch_name(conn, user_input, batches)
+    if not batch_name:
+        print(f"Batch '{user_input}' not found.")
+        return
+
+    print(f"\nAuditing '{batch_name}' (L0 unique-domain + L1-L4 CRM + domain column check)...")
+    try:
+        report = audit_batch(conn, batch_name, run_guardrails=True)
+        print_batch_audit_report(report)
+        if get_duplicate_drops(report):
+            prompt_delete_duplicate_drops(conn, report)
+        elif not report.get("unique_domains_ok"):
+            print("[ACTION] Duplicates found but no row ids to delete — re-run audit or clean manually.")
+        if not report.get("domain_column_ok"):
+            print("[ACTION] Enable Apollo Domain column in extension; re-scrape affected rows.")
+    except Exception as e:
+        print(f"[ERROR] Audit failed: {e}")
+
+
+def audit_batch_titles_action(batches, conn):
+    """Audit batch job titles: DB guardrails, optional LLM, optional delete."""
+    print("\n--- AUDIT BATCH: JOB TITLES ---")
+    user_input = input(
+        "Enter batch NUMBER (1 to %d) or BATCH NAME: " % len(batches)
+    ).strip()
+    if not user_input:
+        print("Canceled.")
+        return
+    batch_name = resolve_batch_name(conn, user_input, batches)
+    if not batch_name:
+        print(f"Batch '{user_input}' not found.")
+        return
+    try:
+        report = audit_batch_titles(conn, batch_name, run_llm=False)
+        print_title_audit_report(report)
+        prompt_title_llm_and_delete(conn, report)
+    except Exception as e:
+        print(f"[ERROR] Title audit failed: {e}")
+
+
+def audit_batch_names_action(batches, conn):
+    """Audit batch names: local Indian rules, optional LLM, optional delete."""
+    print("\n--- AUDIT BATCH: INDIAN NAMES ---")
+    user_input = input(
+        "Enter batch NUMBER (1 to %d) or BATCH NAME: " % len(batches)
+    ).strip()
+    if not user_input:
+        print("Canceled.")
+        return
+    batch_name = resolve_batch_name(conn, user_input, batches)
+    if not batch_name:
+        print(f"Batch '{user_input}' not found.")
+        return
+    try:
+        report = audit_batch_names(conn, batch_name, run_llm=False)
+        print_name_audit_report(report)
+        prompt_name_llm_and_delete(conn, report)
+    except Exception as e:
+        print(f"[ERROR] Name audit failed: {e}")
+
+
 def export_batch_action(batches, conn):
     """Prompt user to select a batch and export clean/unique leads to CSV."""
     if not batches:
@@ -546,10 +639,13 @@ def main():
                 print("  [1] Delete a batch from Apollo Saved Leads")
                 print("  [2] Add / Upload file data to master CRM (`emails` table)")
                 print("  [3] Export a batch to CSV (Clean & Unique Leads)")
-                print("  [4] Refresh batch statistics")
-                print("  [5] Exit")
+                print("  [4] Audit batch — unique domains & domain column check")
+                print("  [5] Audit batch — job titles (DB + optional LLM)")
+                print("  [6] Audit batch — Indian names (local + optional LLM)")
+                print("  [7] Refresh batch statistics")
+                print("  [8] Exit")
                 
-                choice = input("\nSelect an option (1-5): ").strip()
+                choice = input("\nSelect an option (1-8): ").strip()
 
                 if choice == "1":
                     delete_batch_action(batches, conn)
@@ -561,13 +657,22 @@ def main():
                     export_batch_action(batches, conn)
                     input("\nPress Enter to continue...")
                 elif choice == "4":
+                    audit_batch_action(batches, conn)
+                    input("\nPress Enter to continue...")
+                elif choice == "5":
+                    audit_batch_titles_action(batches, conn)
+                    input("\nPress Enter to continue...")
+                elif choice == "6":
+                    audit_batch_names_action(batches, conn)
+                    input("\nPress Enter to continue...")
+                elif choice == "7":
                     print("\nRefreshing batch statistics...")
                     continue
-                elif choice in ["5", "q", "exit", "quit"]:
+                elif choice in ["8", "q", "exit", "quit"]:
                     print("\nExiting. Goodbye!")
                     break
                 else:
-                    print("\n[Invalid choice. Please select 1, 2, 3, 4, or 5.]")
+                    print("\n[Invalid choice. Please select 1-8.]")
                     input("Press Enter to continue...")
 
         except KeyboardInterrupt:

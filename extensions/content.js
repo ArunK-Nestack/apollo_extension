@@ -1845,13 +1845,13 @@
     state.lastEvaluatedPendingTimestamp = Date.now();
     const titlesList = Array.from(pendingTitles);
     const namesList = Array.from(pendingNames);
-    showStatus(`⚡ 50-Item Batch: Evaluating ${pendingContacts.length} pending titles & names with AI...`, 0, true);
+    showStatus(`⚡ 50-Item Batch: Queuing ${pendingContacts.length} pending titles & names to DB (no AI)...`, 0, true);
     state.isEvaluatingBatch = true;
 
     // Bug #2 Fix: Helper to rescue contacts when AI batch evaluation fails.
     function rescuePendingContacts(reason) {
       state.isEvaluatingBatch = false;
-      addActivity("AI_BATCH_FAILED", `AI evaluation failed (${reason}). Resetting ${pendingContacts.length} contact(s) to re-evaluate on next scan.`, "error");
+      addActivity("AI_BATCH_FAILED", `Pending queue failed (${reason}). Resetting ${pendingContacts.length} contact(s) to re-evaluate on next scan.`, "error");
       pendingContacts.forEach(({ key, contact }) => {
         contact.is_pending_eval = false;
         contact.is_pending_indian_eval = false;
@@ -1859,7 +1859,7 @@
         state.checkedContacts.delete(key);
         state.pendingContacts.delete(key);
       });
-      showStatus(`⚠ AI batch failed — ${pendingContacts.length} contacts reset for retry`, 3000, false);
+      showStatus(`⚠ Pending queue failed — ${pendingContacts.length} contacts reset for retry`, 3000, false);
       if (callback) callback();
     }
 
@@ -1941,7 +1941,7 @@
 
         const totalExcluded = excludedTitlesCount + excludedIndianCount;
         showStatus(`⚡ Evaluated ${pendingContacts.length} contacts: ${keptCount} kept, ${totalExcluded} excluded (${excludedTitlesCount} title, ${excludedIndianCount} demographic)!`, 5000);
-        addActivity("PENDING_BATCH_EVALUATED", `AI Evaluated ${pendingContacts.length} pending contacts: ${keptCount} kept, ${totalExcluded} excluded from local storage (${excludedTitlesCount} non-required titles, ${excludedIndianCount} pure Indian names).`, "info", {
+        addActivity("PENDING_BATCH_EVALUATED", `Queued ${pendingContacts.length} pending contacts to DB: ${keptCount} kept locally, ${totalExcluded} excluded (${excludedTitlesCount} title, ${excludedIndianCount} definite Indian name). Run manage_batches [5]/[6] for LLM audit.`, "info", {
           total_evaluated: pendingContacts.length,
           kept: keptCount,
           excluded_titles: excludedTitlesCount,

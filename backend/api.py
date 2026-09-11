@@ -1413,8 +1413,318 @@ PURE_INDIAN_SURNAMES = {
     "subramanian", "venkataraman", "swamy", "naidu", "shetty", "hegde", "pai",
     "kulkarni", "deshmukh", "patil", "jadhav", "pawar", "shinde", "gaikwad",
     "prasad", "sinha", "srivastava", "chawla", "arora", "sethi", "sood", "puri",
-    "deshpande", "gokhale", "bhave", "apte", "gadgil", "kelkar", "chawla"
+    "deshpande", "gokhale", "bhave", "apte", "gadgil", "kelkar", "chawla",
 }
+
+INDIAN_SURNAMES_XLSX = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data",
+    "indian surnames  (2).xlsx",
+)
+
+_indian_surname_db_set: set[str] = set()
+_indian_surname_db_lock = threading.Lock()
+_indian_surname_db_loaded = False
+
+
+def ensure_indian_name_guardrails_table(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `indian_name_guardrails` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `display_name` VARCHAR(255) NOT NULL,
+                `normalized_name` VARCHAR(255) NOT NULL,
+                `entry_kind` ENUM('surname', 'full_name') NOT NULL DEFAULT 'full_name',
+                `is_indian` TINYINT(1) NULL,
+                `source` VARCHAR(32) NOT NULL DEFAULT 'local',
+                `reason` VARCHAR(255) NULL,
+                `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY `uq_norm_kind` (`normalized_name`, `entry_kind`),
+                INDEX `idx_norm` (`normalized_name`),
+                INDEX `idx_kind_indian` (`entry_kind`, `is_indian`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+        )
+
+
+def ensure_pending_job_titles_table(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `pending_job_titles` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `job_title` VARCHAR(255) NOT NULL,
+                `normalized_title` VARCHAR(255) NOT NULL,
+                `batch` VARCHAR(128) NULL,
+                `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY `uq_norm_title` (`normalized_title`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+        )
+
+
+def _refresh_indian_surname_set(connection) -> None:
+    global _indian_surname_db_loaded
+    ensure_indian_name_guardrails_table(connection)
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT `normalized_name` FROM `indian_name_guardrails` "
+            "WHERE `entry_kind` = 'surname' AND `is_indian` = 1"
+        )
+        db_surnames = {row[0] for row in cur.fetchall() if row[0]}
+    with _indian_surname_db_lock:
+        _indian_surname_db_set.clear()
+        _indian_surname_db_set.update(PURE_INDIAN_SURNAMES)
+        _indian_surname_db_set.update(db_surnames)
+        _indian_surname_db_loaded = True
+
+
+def get_indian_surname_set(connection=None) -> set[str]:
+    if connection and not _indian_surname_db_loaded:
+        _refresh_indian_surname_set(connection)
+    with _indian_surname_db_lock:
+        if _indian_surname_db_set:
+            return set(_indian_surname_db_set)
+    return set(PURE_INDIAN_SURNAMES)
+
+
+def seed_indian_surnames_from_excel(connection, xlsx_path: str | None = None) -> int:
+    """Load definite Indian surnames from Excel into indian_name_guardrails. Returns rows upserted."""
+    path = xlsx_path or INDIAN_SURNAMES_XLSX
+    if not os.path.isfile(path):
+        return 0
+    try:
+        import pandas as pd
+    except ImportError:
+        print(f"[IndianNames] pandas required to seed from {path}", flush=True)
+        return 0
+
+    ensure_indian_name_guardrails_table(connection)
+    df = pd.read_excel(path)
+    col = "surname" if "surname" in df.columns else df.columns[0]
+    rows = []
+    for raw in df[col].dropna().astype(str):
+        surname = raw.strip()
+        norm = normalize_text(surname)
+        if not norm:
+            continue
+        rows.append((surname[:255], norm[:255], "surname", 1, "excel", "Definite Indian surname (Excel seed)"))
+
+    if not rows:
+        return 0
+
+    with connection.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `indian_name_guardrails`
+                (`display_name`, `normalized_name`, `entry_kind`, `is_indian`, `source`, `reason`)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                `display_name` = VALUES(`display_name`),
+                `is_indian` = VALUES(`is_indian`),
+                `source` = VALUES(`source`),
+                `reason` = VALUES(`reason`);
+            """,
+            rows,
+        )
+    connection.commit()
+    _refresh_indian_surname_set(connection)
+    return len(rows)
+
+
+def ensure_indian_surnames_seeded(connection) -> int:
+    """Seed Excel surnames once when the surname table is empty."""
+    ensure_indian_name_guardrails_table(connection)
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM `indian_name_guardrails` WHERE `entry_kind` = 'surname'"
+        )
+        count = int(cur.fetchone()[0] or 0)
+    if count > 0:
+        if not _indian_surname_db_loaded:
+            _refresh_indian_surname_set(connection)
+        return 0
+    inserted = seed_indian_surnames_from_excel(connection)
+    if inserted:
+        print(f"[IndianNames] Seeded {inserted} surnames from Excel into `indian_name_guardrails`.", flush=True)
+    return inserted
+
+
+def lookup_indian_names_batch(full_names: list[str], connection) -> dict[str, dict]:
+    """DB lookup for prior full-name classifications (LLM, audit, pending resolved)."""
+    if not full_names:
+        return {}
+    ensure_indian_surnames_seeded(connection)
+    norm_map = {}
+    for name in full_names:
+        raw = (name or "").strip()
+        if not raw:
+            continue
+        norm_map[normalize_text(raw)] = raw
+
+    if not norm_map:
+        return {}
+
+    results: dict[str, dict] = {}
+    norms = list(norm_map.keys())
+    with connection.cursor() as cur:
+        for i in range(0, len(norms), 200):
+            chunk = norms[i : i + 200]
+            placeholders = ", ".join(["%s"] * len(chunk))
+            cur.execute(
+                f"""
+                SELECT `normalized_name`, `is_indian`, `source`, `reason`
+                FROM `indian_name_guardrails`
+                WHERE `entry_kind` = 'full_name'
+                  AND `is_indian` IS NOT NULL
+                  AND `normalized_name` IN ({placeholders})
+                """,
+                chunk,
+            )
+            for norm_nm, is_ind, source, reason in cur.fetchall():
+                raw = norm_map.get(norm_nm)
+                if raw is None:
+                    continue
+                results[raw] = {
+                    "is_indian": bool(is_ind),
+                    "reason": reason or "",
+                    "source": source or "db",
+                }
+    return results
+
+
+def persist_indian_name_classifications(connection, rows: list[tuple]) -> None:
+    """rows: (display_name, normalized_name, entry_kind, is_indian, source, reason)"""
+    if not rows:
+        return
+    ensure_indian_name_guardrails_table(connection)
+    with connection.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `indian_name_guardrails`
+                (`display_name`, `normalized_name`, `entry_kind`, `is_indian`, `source`, `reason`)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                `is_indian` = VALUES(`is_indian`),
+                `source` = VALUES(`source`),
+                `reason` = VALUES(`reason`);
+            """,
+            rows,
+        )
+
+
+def queue_pending_job_titles(titles: list[str], batch: str, connection) -> int:
+    if not titles:
+        return 0
+    ensure_pending_job_titles_table(connection)
+    rows = []
+    for raw in titles:
+        title = (raw or "").strip()
+        norm = normalize_text(title)
+        if not title or not norm:
+            continue
+        rows.append((title[:255], norm[:255], (batch or "")[:128]))
+    if not rows:
+        return 0
+    with connection.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `pending_job_titles` (`job_title`, `normalized_title`, `batch`)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE `batch` = VALUES(`batch`);
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def queue_pending_names(names: list[str], batch: str, connection) -> int:
+    """Store ambiguous names for later audit LLM (is_indian=NULL until classified)."""
+    if not names:
+        return 0
+    ensure_indian_name_guardrails_table(connection)
+    rows = []
+    for raw in names:
+        name = (raw or "").strip()
+        norm = normalize_text(name)
+        if not name or not norm:
+            continue
+        rows.append(
+            (name[:255], norm[:255], "full_name", None, "pending_scrape", "Queued during scrape — run batch name audit")
+        )
+    if not rows:
+        return 0
+    with connection.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `indian_name_guardrails`
+                (`display_name`, `normalized_name`, `entry_kind`, `is_indian`, `source`, `reason`)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                `source` = IF(`is_indian` IS NULL, VALUES(`source`), `source`),
+                `reason` = IF(`is_indian` IS NULL, VALUES(`reason`), `reason`);
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def classify_name_local(full_name: str, connection=None) -> tuple[str, str]:
+    """
+    Local + DB surname rules. Returns (verdict, reason):
+      indian    — definite pure Indian (filter)
+      foreign   — definite non-Indian (skip LLM)
+      ambiguous — needs LLM in batch audit
+    """
+    if not full_name:
+        return "foreign", "No name specified"
+
+    norm_name = normalize_text(full_name)
+    if not norm_name:
+        return "foreign", "Empty normalized name"
+
+    with _indian_name_cache_lock:
+        if norm_name in _indian_name_cache:
+            is_ind, reason = _indian_name_cache[norm_name]
+            return ("indian" if is_ind else "foreign"), reason
+
+    name_parts = full_name.strip().lower().split()
+    if not name_parts:
+        return "foreign", "Invalid name"
+
+    first_name = name_parts[0]
+    last_name = name_parts[-1] if len(name_parts) > 1 else ""
+    norm_last = normalize_text(last_name)
+    indian_surnames = get_indian_surname_set(connection)
+
+    for safe_sur in SAFE_EDGE_CASE_SURNAMES:
+        if safe_sur in last_name or safe_sur in full_name.lower():
+            reason = f"Safe Edge-Case Origin: '{last_name.title()}' preserved (Goan/Parsi/Global)"
+            with _indian_name_cache_lock:
+                _indian_name_cache[norm_name] = (False, reason)
+            return "foreign", reason
+
+    if first_name in SAFE_GLOBAL_FIRST_NAMES and norm_last not in indian_surnames:
+        reason = f"Foreign / Global Name: '{full_name}' preserved"
+        with _indian_name_cache_lock:
+            _indian_name_cache[norm_name] = (False, reason)
+        return "foreign", reason
+
+    if norm_last in indian_surnames:
+        reason = f"Demographic Filter: Pure Indian Name Origin ('{last_name.title()}')"
+        with _indian_name_cache_lock:
+            _indian_name_cache[norm_name] = (True, reason)
+        return "indian", reason
+
+    for part in name_parts:
+        if normalize_text(part) in indian_surnames:
+            reason = f"Demographic Filter: Pure Indian Name Origin ('{part.title()}')"
+            with _indian_name_cache_lock:
+                _indian_name_cache[norm_name] = (True, reason)
+            return "indian", reason
+
+    return "ambiguous", f"Ambiguous name '{full_name}' — needs LLM audit"
 
 SAFE_EDGE_CASE_SURNAMES = {
     "dsouza", "d souza", "fernandes", "pinto", "pereira", "lobo", "albuquerque",
@@ -1445,55 +1755,23 @@ def is_unambiguous_pure_indian_name(full_name: str, connection=None) -> tuple[bo
     """
     Option 2: Strict Pure Indian Name Origin Evaluation with Edge-Case Protection.
     Returns: (is_pure_indian: bool, reason: str)
-      - True -> Pure Indian Name Origin (Excluded / Ignored)
-      - False -> Foreign / Anglo / Goan Christian / Parsi / Global (Preserved as Required)
+      - True  -> definite Indian (exclude)
+      - False -> foreign or ambiguous (preserve during scrape; ambiguous resolved in batch audit)
     """
-    if not full_name:
-        return False, "No name specified"
-
-    norm_name = normalize_text(full_name)
-    if not norm_name:
-        return False, "Empty normalized name"
-
-    with _indian_name_cache_lock:
-        if norm_name in _indian_name_cache:
-            return _indian_name_cache[norm_name]
-
-    name_parts = full_name.strip().lower().split()
-    if not name_parts:
-        return False, "Invalid name"
-
-    first_name = name_parts[0]
-    last_name = name_parts[-1] if len(name_parts) > 1 else ""
-
-    # 1. Check for Goan Christian / Mangalorean / Parsi / Arab / Global safe exceptions
-    for safe_sur in SAFE_EDGE_CASE_SURNAMES:
-        if safe_sur in last_name or safe_sur in full_name.lower():
-            res = (False, f"Safe Edge-Case Origin: '{last_name.title()}' preserved (Goan/Parsi/Global)")
+    if connection:
+        ensure_indian_surnames_seeded(connection)
+        db_hit = lookup_indian_names_batch([full_name], connection)
+        if full_name in db_hit:
+            is_ind = bool(db_hit[full_name]["is_indian"])
+            reason = db_hit[full_name].get("reason") or ""
             with _indian_name_cache_lock:
-                _indian_name_cache[norm_name] = res
-            return res
+                _indian_name_cache[normalize_text(full_name)] = (is_ind, reason)
+            return is_ind, reason
 
-    # 2. Check for unmistakable Western / Global first names
-    if first_name in SAFE_GLOBAL_FIRST_NAMES and last_name not in PURE_INDIAN_SURNAMES:
-        res = (False, f"Foreign / Global Name: '{full_name}' preserved")
-        with _indian_name_cache_lock:
-            _indian_name_cache[norm_name] = res
-        return res
-
-    # 3. Check for unmistakable Pure Indian surnames
-    for ind_sur in PURE_INDIAN_SURNAMES:
-        if ind_sur == last_name or (len(name_parts) > 1 and ind_sur in [p.lower() for p in name_parts]):
-            res = (True, f"Demographic Filter: Pure Indian Name Origin ('{ind_sur.title()}')")
-            with _indian_name_cache_lock:
-                _indian_name_cache[norm_name] = res
-            return res
-
-    # Default conservative policy: Non-Indian or Ambiguous is PRESERVED
-    res = (False, f"Global Name: '{full_name}' preserved")
-    with _indian_name_cache_lock:
-        _indian_name_cache[norm_name] = res
-    return res
+    verdict, reason = classify_name_local(full_name, connection=connection)
+    if verdict == "indian":
+        return True, reason
+    return False, reason
 
 
 # ============================================================
@@ -1710,12 +1988,29 @@ def classify_names_compact_llm(names: list[str], connection=None) -> tuple[dict[
             continue
 
     classified_dict = {}
+    db_rows = []
     for idx, raw_name in enumerate(names, 1):
         norm_nm = normalize_text(raw_name)
         res = parsed_items.get(idx, {"is_indian": False, "reason": "Global / Foreign Name"})
         classified_dict[raw_name] = res
         with _indian_name_cache_lock:
             _indian_name_cache[norm_nm] = (res["is_indian"], res["reason"])
+        db_rows.append(
+            (
+                raw_name[:255],
+                norm_nm[:255],
+                "full_name",
+                1 if res["is_indian"] else 0,
+                "llm",
+                (res.get("reason") or "")[:255],
+            )
+        )
+
+    if db_rows and connection:
+        try:
+            persist_indian_name_classifications(connection, db_rows)
+        except Exception as e:
+            print(f"[DB Error] Failed to persist LLM name classifications: {e}", flush=True)
 
     return classified_dict, token_stats
 
@@ -1740,7 +2035,7 @@ class BackgroundTitleBatchWorker:
         self._thread.start()
 
     def enqueue(self, job_title: str) -> bool:
-        if not job_title or not OPENAI_API_KEY:
+        if not job_title:
             return False
         raw_title = job_title.strip()
         norm_title = normalize_text(raw_title)
@@ -1778,17 +2073,16 @@ class BackgroundTitleBatchWorker:
 
         try:
             with get_connection() as conn:
-                res_dict, token_stats = classify_novel_titles_compact_llm(titles_to_process, connection=conn)
+                queued = queue_pending_job_titles(titles_to_process, "background", conn)
+                conn.commit()
                 self._processed_batches += 1
                 self._processed_titles += len(titles_to_process)
-                est_cost = (token_stats['prompt_tokens'] * 0.00000015) + (token_stats['completion_tokens'] * 0.0000006)
                 print(
-                    f"\n[BackgroundBatchWorker] Evaluated {len(titles_to_process)} novel titles in {token_stats['latency_ms']}ms "
-                    f"({token_stats['total_tokens']} tokens, ${est_cost:.6f} USD). Persisted to MySQL `job_title_guardrails`.",
-                    flush=True
+                    f"\n[BackgroundBatchWorker] Queued {queued} novel title(s) to `pending_job_titles` (no scrape-time LLM).",
+                    flush=True,
                 )
         except Exception as e:
-            print(f"[BackgroundBatchWorker Error] Failed to process batch of {len(titles_to_process)} titles: {e}", flush=True)
+            print(f"[BackgroundBatchWorker Error] Failed to queue batch of {len(titles_to_process)} titles: {e}", flush=True)
 
     def _worker_loop(self):
         while self._running:
@@ -2005,10 +2299,8 @@ def health_check():
 @app.post("/evaluate-pending-batch")
 def evaluate_pending_titles(request: EvaluatePendingTitlesRequest):
     """
-    50-Item Threshold Batch LLM Evaluator:
-    Receives batch of novel unrecognized titles and candidate names accumulated in local storage,
-    evaluates both with LLM in 1-shot batch, persists classifications to database/caches,
-    and returns decisions so non-required leads and pure Indian names can be excluded.
+    Scrape-time queue only — no LLM. Stores unrecognized titles and ambiguous names in MySQL
+    for manage_batches audit [5]/[6]. Applies only definite local/DB name rules for exclusion.
     """
     titles_to_eval = request.titles or []
     names_to_eval = request.names or []
@@ -2020,83 +2312,66 @@ def evaluate_pending_titles(request: EvaluatePendingTitlesRequest):
             "title_results": {},
             "name_results": {},
             "total_titles_evaluated": 0,
-            "total_names_evaluated": 0
+            "total_names_evaluated": 0,
+            "queued_titles": 0,
+            "queued_names": 0,
         }
 
     final_title_results = {}
     final_name_results = {}
-    total_token_stats = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    queued_titles = 0
+    queued_names = 0
+    batch_tag = (request.batch or "batch_1").strip()
 
     with get_connection() as conn:
-        # 1. Batch Title Evaluation
+        ensure_indian_surnames_seeded(conn)
+        ensure_pending_job_titles_table(conn)
+
         if titles_to_eval:
-            unique_titles = list(set(t.strip() for t in titles_to_eval if t.strip()))
+            unique_titles = list({t.strip() for t in titles_to_eval if t.strip()})
+            queued_titles = queue_pending_job_titles(unique_titles, batch_tag, conn)
             db_res = lookup_job_titles_batch(unique_titles, connection=conn)
-            unresolved = [t for t in unique_titles if db_res.get(t, {}).get("status") == "not_recognized_title"]
-
-            llm_res = {}
-            llm_actually_failed = False
-            if unresolved and OPENAI_API_KEY:
-                llm_res, t_stats = classify_novel_titles_compact_llm(unresolved, connection=conn)
-                for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    total_token_stats[k] += t_stats.get(k, 0)
-                # Bug #3 Fix: Detect a genuine LLM failure — unresolved titles were sent but
-                # nothing came back. This prevents silent approval of unqualified contacts.
-                if not llm_res and unresolved:
-                    llm_actually_failed = True
-                    print(f"[LLM Warning] evaluate_pending_titles: LLM returned empty for {len(unresolved)} titles — marking as llm_failed to prevent silent bypass.", flush=True)
-
             for t in unique_titles:
-                norm_t = normalize_text(t)
-                if norm_t in llm_res:
-                    final_title_results[t] = llm_res[norm_t]
-                elif t in db_res and db_res[t].get("status") != "not_recognized_title":
+                if t in db_res and db_res[t].get("status") != "not_recognized_title":
                     final_title_results[t] = db_res[t]
-                elif llm_actually_failed and t in unresolved:
-                    # Bug #3 Fix: LLM genuinely failed — do NOT silently approve.
-                    # Return a distinct status so the frontend keeps these contacts pending for retry.
-                    final_title_results[t] = {
-                        "required": True,
-                        "status": "llm_failed",
-                        "segment": "Pending_Evaluation",
-                        "reason": "AI evaluation failed — will retry on next batch"
-                    }
                 else:
                     final_title_results[t] = {
                         "required": True,
-                        "status": "qualified",
-                        "segment": "Unclassified_Kept",
-                        "reason": "Preserved provisionally"
+                        "status": "pending_title_eval",
+                        "segment": "Pending_Evaluation",
+                        "reason": "Queued for batch title audit (no scrape-time LLM)",
                     }
 
-        # 2. Batch Demographic Name Evaluation
         if names_to_eval:
-            unique_names = list(set(n.strip() for n in names_to_eval if n.strip()))
-            unresolved_names = []
+            unique_names = list({n.strip() for n in names_to_eval if n.strip()})
+            db_name_hits = lookup_indian_names_batch(unique_names, conn)
+            ambiguous_names = []
             for n in unique_names:
-                norm_n = normalize_text(n)
-                with _indian_name_cache_lock:
-                    if norm_n in _indian_name_cache:
-                        is_ind, reason = _indian_name_cache[norm_n]
-                        final_name_results[n] = {"is_indian": is_ind, "reason": reason}
-                    else:
-                        is_ind, reason = is_unambiguous_pure_indian_name(n, connection=conn)
-                        if is_ind:
-                            final_name_results[n] = {"is_indian": True, "reason": reason}
-                        else:
-                            unresolved_names.append(n)
+                if n in db_name_hits:
+                    info = db_name_hits[n]
+                    final_name_results[n] = {"is_indian": info["is_indian"], "reason": info.get("reason", "")}
+                    continue
+                verdict, reason = classify_name_local(n, connection=conn)
+                if verdict == "indian":
+                    final_name_results[n] = {"is_indian": True, "reason": reason}
+                elif verdict == "foreign":
+                    final_name_results[n] = {"is_indian": False, "reason": reason}
+                else:
+                    ambiguous_names.append(n)
+                    final_name_results[n] = {
+                        "is_indian": False,
+                        "reason": "Queued for batch name audit (no scrape-time LLM)",
+                    }
+            if ambiguous_names:
+                queued_names = queue_pending_names(ambiguous_names, batch_tag, conn)
 
-            if unresolved_names and OPENAI_API_KEY:
-                llm_name_res, n_stats = classify_names_compact_llm(unresolved_names, connection=conn)
-                for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    total_token_stats[k] += n_stats.get(k, 0)
-                for n in unresolved_names:
-                    if n in llm_name_res:
-                        final_name_results[n] = llm_name_res[n]
-                    else:
-                        final_name_results[n] = {"is_indian": False, "reason": "Global Name preserved"}
+        conn.commit()
 
-    print(f"\n[ContactChecker] 50-Threshold LLM Batch: Evaluated {len(titles_to_eval)} titles and {len(names_to_eval)} names via {OPENAI_DOMAIN_MODEL}.", flush=True)
+    print(
+        f"\n[ContactChecker] Pending queue flush: {queued_titles} title(s), {queued_names} name(s) "
+        f"stored in DB (no LLM). Run manage_batches [5]/[6] to classify.",
+        flush=True,
+    )
     return {
         "status": "ok",
         "results": final_title_results,
@@ -2104,7 +2379,9 @@ def evaluate_pending_titles(request: EvaluatePendingTitlesRequest):
         "name_results": final_name_results,
         "total_titles_evaluated": len(titles_to_eval),
         "total_names_evaluated": len(names_to_eval),
-        "token_stats": total_token_stats
+        "queued_titles": queued_titles,
+        "queued_names": queued_names,
+        "token_stats": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
 
@@ -2181,6 +2458,196 @@ def ensure_apollo_saved_leads_table(conn):
                 pass
     except Exception as e:
         print(f"[ContactChecker] Notice: ensure apollo_saved_leads table: {e}", flush=True)
+
+
+def ensure_batch_enrichment_ledger_table(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `batch_enrichment_ledger` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `batch` VARCHAR(64) NOT NULL,
+                `saved_lead_id` BIGINT UNSIGNED NOT NULL,
+                `apollo_id` VARCHAR(128) DEFAULT '',
+                `company_domain` VARCHAR(255) DEFAULT '',
+                `login_email` VARCHAR(255) NOT NULL DEFAULT '',
+                `account_name` VARCHAR(128) DEFAULT '',
+                `session_id` VARCHAR(36) NOT NULL DEFAULT '',
+                `outcome` ENUM('email_found', 'no_email', 'no_match', 'api_error') NOT NULL,
+                `email` VARCHAR(255) DEFAULT '',
+                `email_status` VARCHAR(64) DEFAULT '',
+                `credits_charged` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                `attempted_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY `uq_batch_lead` (`batch`, `saved_lead_id`),
+                INDEX `idx_batch_login` (`batch`, `login_email`),
+                INDEX `idx_batch_outcome` (`batch`, `outcome`),
+                INDEX `idx_session` (`session_id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+        )
+
+
+def backfill_enrichment_ledger_from_saved_leads(conn) -> int:
+    """Seed ledger from rows that already have enriched_at (one-time / idempotent)."""
+    ensure_batch_enrichment_ledger_table(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO `batch_enrichment_ledger` (
+                `batch`, `saved_lead_id`, `apollo_id`, `company_domain`,
+                `login_email`, `account_name`, `session_id`, `outcome`,
+                `email`, `email_status`, `credits_charged`, `attempted_at`
+            )
+            SELECT
+                `batch`,
+                `id`,
+                COALESCE(`apollo_id`, ''),
+                COALESCE(`company_domain`, ''),
+                COALESCE(NULLIF(`account_used`, ''), 'unknown'),
+                COALESCE(`account_used`, ''),
+                'backfill',
+                IF(COALESCE(`email`, '') != '', 'email_found', 'no_email'),
+                COALESCE(`email`, ''),
+                COALESCE(`email_status`, ''),
+                COALESCE(`credits_charged`, 0),
+                COALESCE(`enriched_at`, NOW())
+            FROM `apollo_saved_leads`
+            WHERE `enriched_at` IS NOT NULL
+            ON DUPLICATE KEY UPDATE `saved_lead_id` = `saved_lead_id`
+            """
+        )
+        inserted = cur.rowcount
+    conn.commit()
+    return int(inserted or 0)
+
+
+def record_enrichment_ledger_attempts(
+    conn,
+    batch: str,
+    session_id: str,
+    login_email: str,
+    account_name: str,
+    chunk_leads: list[dict],
+    api_results: list[dict],
+) -> int:
+    """Write one ledger row per lead in chunk (matched or not)."""
+    if not chunk_leads:
+        return 0
+    ensure_batch_enrichment_ledger_table(conn)
+    by_db_id = {r["db_id"]: r for r in api_results if r.get("db_id")}
+    rows = []
+    for lead in chunk_leads:
+        db_id = lead.get("id")
+        if not db_id:
+            continue
+        match = by_db_id.get(db_id)
+        if match:
+            email = (match.get("email") or "").strip()
+            email_status = (match.get("email_status") or "").strip()
+            credits = int(match.get("credits_charged") or 0)
+            outcome = "email_found" if email and email_status != "unavailable" else "no_email"
+        else:
+            email = ""
+            email_status = ""
+            credits = 0
+            outcome = "no_match"
+        rows.append(
+            (
+                str(batch or "")[:64],
+                int(db_id),
+                str(lead.get("apollo_id") or "")[:128],
+                str(lead.get("company_domain") or "")[:255],
+                str(login_email or "")[:255],
+                str(account_name or "")[:128],
+                str(session_id or "")[:36],
+                outcome,
+                email[:255],
+                email_status[:64],
+                credits,
+            )
+        )
+    if not rows:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `batch_enrichment_ledger` (
+                `batch`, `saved_lead_id`, `apollo_id`, `company_domain`,
+                `login_email`, `account_name`, `session_id`, `outcome`,
+                `email`, `email_status`, `credits_charged`
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                `login_email` = VALUES(`login_email`),
+                `account_name` = VALUES(`account_name`),
+                `session_id` = VALUES(`session_id`),
+                `outcome` = VALUES(`outcome`),
+                `email` = VALUES(`email`),
+                `email_status` = VALUES(`email_status`),
+                `credits_charged` = VALUES(`credits_charged`),
+                `attempted_at` = CURRENT_TIMESTAMP
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def fetch_unattempted_leads_for_batch(conn, batch: str) -> list[dict[str, Any]]:
+    """Leads in batch with no row in batch_enrichment_ledger."""
+    ensure_batch_enrichment_ledger_table(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT l.id, l.apollo_id, l.name, l.first_name, l.last_name,
+                   l.job_title, l.company, l.company_domain, l.website_link, l.segment, l.email
+            FROM `apollo_saved_leads` l
+            LEFT JOIN `batch_enrichment_ledger` e
+              ON e.batch = l.batch AND e.saved_lead_id = l.id
+            WHERE l.batch = %s AND e.id IS NULL
+            ORDER BY l.id ASC
+            """,
+            (batch,),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "id": r[0],
+            "apollo_id": r[1],
+            "name": r[2],
+            "first_name": r[3],
+            "last_name": r[4],
+            "job_title": r[5],
+            "company": r[6],
+            "company_domain": r[7],
+            "website_link": r[8],
+            "segment": r[9],
+            "email": r[10],
+        }
+        for r in rows
+    ]
+
+
+def get_batch_enrichment_summary(conn, batch: str) -> dict[str, Any]:
+    ensure_batch_enrichment_ledger_table(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                COUNT(*) AS attempted,
+                SUM(`credits_charged`) AS credits,
+                SUM(`outcome` = 'email_found') AS emails_found,
+                SUM(`outcome` IN ('no_email', 'no_match')) AS no_email
+            FROM `batch_enrichment_ledger`
+            WHERE `batch` = %s
+            """,
+            (batch,),
+        )
+        row = cur.fetchone() or (0, 0, 0, 0)
+    return {
+        "attempted": int(row[0] or 0),
+        "credits_spent": int(row[1] or 0),
+        "emails_found": int(row[2] or 0),
+        "no_email": int(row[3] or 0),
+    }
 
 
 def _filter_sync_contacts_one_per_domain(contacts: list, batch_tag: str, cur) -> list:
