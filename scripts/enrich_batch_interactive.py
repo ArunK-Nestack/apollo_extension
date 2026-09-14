@@ -381,7 +381,7 @@ def run_interactive_enricher():
                     SUM(CASE WHEN e.id IS NULL THEN 1 ELSE 0 END) AS unenriched_count
                 FROM apollo_saved_leads l
                 LEFT JOIN batch_enrichment_ledger e
-                  ON e.batch = l.batch AND e.saved_lead_id = l.id
+                  ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
                 GROUP BY l.batch
                 ORDER BY total_leads DESC;
             """)

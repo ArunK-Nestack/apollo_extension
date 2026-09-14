@@ -44,6 +44,7 @@ from scripts.batch_qualification_audit import (
     prompt_name_llm_and_delete,
     prompt_title_llm_and_delete,
 )
+from scripts.clean_enriched_export import export_clean_enriched_login_action
 
 CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "domain_slugs_cache.txt")
 
@@ -642,10 +643,11 @@ def main():
                 print("  [4] Audit batch — unique domains & domain column check")
                 print("  [5] Audit batch — job titles (DB + optional LLM)")
                 print("  [6] Audit batch — Indian names (local + optional LLM)")
-                print("  [7] Refresh batch statistics")
-                print("  [8] Exit")
+                print("  [7] Clean & Export enriched leads by login (Sales-Ready -> Downloads)")
+                print("  [8] Refresh batch statistics")
+                print("  [9] Exit")
                 
-                choice = input("\nSelect an option (1-8): ").strip()
+                choice = input("\nSelect an option (1-9): ").strip()
 
                 if choice == "1":
                     delete_batch_action(batches, conn)
@@ -666,13 +668,16 @@ def main():
                     audit_batch_names_action(batches, conn)
                     input("\nPress Enter to continue...")
                 elif choice == "7":
+                    export_clean_enriched_login_action(conn)
+                    input("\nPress Enter to continue...")
+                elif choice == "8":
                     print("\nRefreshing batch statistics...")
                     continue
-                elif choice in ["8", "q", "exit", "quit"]:
+                elif choice in ["9", "q", "exit", "quit"]:
                     print("\nExiting. Goodbye!")
                     break
                 else:
-                    print("\n[Invalid choice. Please select 1-8.]")
+                    print("\n[Invalid choice. Please select 1-9.]")
                     input("Press Enter to continue...")
 
         except KeyboardInterrupt:

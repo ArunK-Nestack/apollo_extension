@@ -85,8 +85,8 @@ def test_guardrail_2_toggle():
         key="test-intern-new-domain",
         name="Intern User",
         job_title="Software Engineering Intern",
-        company="AnotherBrandNewAIStartupXYZ",
-        company_domain="anotherbrandnewaistartupxyz.com",
+        company="BrandNewUniqueInternStartup9999",
+        company_domain="brandnewuniqueinternstartup9999.com",
         location="San Francisco, US",
         employee_count=25,
     )

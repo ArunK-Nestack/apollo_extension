@@ -438,7 +438,7 @@ SHARED_MAIL_PROVIDERS = {
 }
 
 
-def _resolve_mx_root_domain(domain: str) -> str:
+def _resolve_mx_root_domain(domain: str, timeout: float = 0.35) -> str:
     """
     Query DNS MX record for `domain` and extract the canonical mail root domain.
     e.g. MX for cortesecyclesales.com -> 'corteseauto-com.mail.protection.outlook.com'
@@ -455,7 +455,7 @@ def _resolve_mx_root_domain(domain: str) -> str:
 
     result = ""
     try:
-        answers = _dns_resolver.resolve(domain, "MX", lifetime=1.0)
+        answers = _dns_resolver.resolve(domain, "MX", lifetime=timeout)
         for rdata in answers:
             mx_host = str(rdata.exchange).rstrip(".").lower()
             # Pattern 1: Microsoft 365 tenant encoding
@@ -521,8 +521,8 @@ def prefetch_mx_records(domains: list[str]):
         return
     import concurrent.futures
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(to_resolve), 8)) as executor:
-            list(executor.map(_resolve_mx_root_domain, to_resolve))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(to_resolve), 15)) as executor:
+            list(executor.map(lambda d: _resolve_mx_root_domain(d, timeout=0.35), to_resolve))
     except Exception:
         pass
 
@@ -987,7 +987,10 @@ def _try_domain_layers(
                 }
 
     if prim_d and _DNS_AVAILABLE:
-        mx_root = _resolve_mx_root_domain(prim_d)
+        with _mx_cache_lock:
+            mx_root = _mx_cache.get(prim_d)
+        if mx_root is None:
+            mx_root = _resolve_mx_root_domain(prim_d, timeout=0.2)
         if mx_root and mx_root != prim_d:
             with _crm_domain_cache_lock:
                 mx_in_cache = _crm_domain_cache.get(mx_root)
@@ -1130,8 +1133,10 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
         return {}
 
     # Parallel asynchronous DNS MX prefetch (runs concurrently while MySQL queries execute)
+    mx_prefetch_thread = None
     if _DNS_AVAILABLE and candidate_domains:
-        threading.Thread(target=prefetch_mx_records, args=(candidate_domains,), daemon=True).start()
+        mx_prefetch_thread = threading.Thread(target=prefetch_mx_records, args=(candidate_domains,), daemon=True)
+        mx_prefetch_thread.start()
 
     # ----------------------------------------------------------
     # LAYER 1: Exact domain batch query (emails + apollo_saved_leads)
@@ -1276,6 +1281,9 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
         else:
             with get_connection() as conn:
                 _fetch_person_domains(conn)
+
+    if mx_prefetch_thread and mx_prefetch_thread.is_alive():
+        mx_prefetch_thread.join(timeout=0.35)
 
     # ----------------------------------------------------------
     # Evaluate each contact through all 4 layers
@@ -1533,22 +1541,34 @@ def seed_indian_surnames_from_excel(connection, xlsx_path: str | None = None) ->
     return len(rows)
 
 
+_indian_surnames_seeded_checked = False
+_indian_surnames_seeded_lock = threading.Lock()
+
+
 def ensure_indian_surnames_seeded(connection) -> int:
     """Seed Excel surnames once when the surname table is empty."""
-    ensure_indian_name_guardrails_table(connection)
-    with connection.cursor() as cur:
-        cur.execute(
-            "SELECT COUNT(*) FROM `indian_name_guardrails` WHERE `entry_kind` = 'surname'"
-        )
-        count = int(cur.fetchone()[0] or 0)
-    if count > 0:
-        if not _indian_surname_db_loaded:
-            _refresh_indian_surname_set(connection)
+    global _indian_surnames_seeded_checked
+    if _indian_surnames_seeded_checked:
         return 0
-    inserted = seed_indian_surnames_from_excel(connection)
-    if inserted:
-        print(f"[IndianNames] Seeded {inserted} surnames from Excel into `indian_name_guardrails`.", flush=True)
-    return inserted
+    with _indian_surnames_seeded_lock:
+        if _indian_surnames_seeded_checked:
+            return 0
+        ensure_indian_name_guardrails_table(connection)
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM `indian_name_guardrails` WHERE `entry_kind` = 'surname'"
+            )
+            count = int(cur.fetchone()[0] or 0)
+        if count > 0:
+            if not _indian_surname_db_loaded:
+                _refresh_indian_surname_set(connection)
+            _indian_surnames_seeded_checked = True
+            return 0
+        inserted = seed_indian_surnames_from_excel(connection)
+        if inserted:
+            print(f"[IndianNames] Seeded {inserted} surnames from Excel into `indian_name_guardrails`.", flush=True)
+        _indian_surnames_seeded_checked = True
+        return inserted
 
 
 def lookup_indian_names_batch(full_names: list[str], connection) -> dict[str, dict]:
@@ -1751,21 +1771,38 @@ SAFE_GLOBAL_FIRST_NAMES = {
 }
 
 
-def is_unambiguous_pure_indian_name(full_name: str, connection=None) -> tuple[bool, str]:
+def is_unambiguous_pure_indian_name(full_name: str, connection=None, prefetched_db_hits: dict | None = None) -> tuple[bool, str]:
     """
     Option 2: Strict Pure Indian Name Origin Evaluation with Edge-Case Protection.
     Returns: (is_pure_indian: bool, reason: str)
       - True  -> definite Indian (exclude)
       - False -> foreign or ambiguous (preserve during scrape; ambiguous resolved in batch audit)
     """
-    if connection:
+    if not full_name:
+        return False, "No name specified"
+
+    norm_name = normalize_text(full_name)
+    with _indian_name_cache_lock:
+        if norm_name in _indian_name_cache:
+            is_ind, reason = _indian_name_cache[norm_name]
+            return is_ind, reason
+
+    if prefetched_db_hits and (full_name in prefetched_db_hits or norm_name in prefetched_db_hits):
+        hit = prefetched_db_hits.get(full_name) or prefetched_db_hits.get(norm_name)
+        is_ind = bool(hit["is_indian"])
+        reason = hit.get("reason") or ""
+        with _indian_name_cache_lock:
+            _indian_name_cache[norm_name] = (is_ind, reason)
+        return is_ind, reason
+
+    if connection and not prefetched_db_hits:
         ensure_indian_surnames_seeded(connection)
         db_hit = lookup_indian_names_batch([full_name], connection)
         if full_name in db_hit:
             is_ind = bool(db_hit[full_name]["is_indian"])
             reason = db_hit[full_name].get("reason") or ""
             with _indian_name_cache_lock:
-                _indian_name_cache[normalize_text(full_name)] = (is_ind, reason)
+                _indian_name_cache[norm_name] = (is_ind, reason)
             return is_ind, reason
 
     verdict, reason = classify_name_local(full_name, connection=connection)
@@ -1791,29 +1828,31 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
             "low_conf": 0,
         }
 
-    client = OpenAI(api_key=OPENAI_API_KEY, timeout=8.0)
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=35.0)
     user_prompt = "Classify these titles:\n" + "\n".join(f"{i+1}. {t}" for i, t in enumerate(novel_titles))
 
     t0 = time.perf_counter()
-    try:
-        response = client.chat.completions.create(
-            model=OPENAI_DOMAIN_MODEL,
-            messages=[
-                {"role": "system", "content": LLM_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=1500,
-            temperature=0.0
-        )
-        latency_ms = (time.perf_counter() - t0) * 1000
-        raw_text = response.choices[0].message.content or ""
-        raw_text = raw_text.replace("```csv", "").replace("```", "").strip()
-        usage = response.usage
-        prompt_tokens = usage.prompt_tokens
-        comp_tokens = usage.completion_tokens
-        total_tokens = usage.total_tokens
-    except Exception as e:
-        print(f"[LLM Error] Failed to classify novel titles with {OPENAI_DOMAIN_MODEL}: {e}", flush=True)
+    response = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=OPENAI_DOMAIN_MODEL,
+                messages=[
+                    {"role": "system", "content": LLM_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=1500,
+                temperature=0.0
+            )
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1.0)
+
+    if not response:
+        print(f"[LLM Error] Failed to classify novel titles with {OPENAI_DOMAIN_MODEL}: {last_err}", flush=True)
         return {}, {
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -1823,6 +1862,14 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
             "med_conf": 0,
             "low_conf": 0,
         }
+
+    latency_ms = (time.perf_counter() - t0) * 1000
+    raw_text = response.choices[0].message.content or ""
+    raw_text = raw_text.replace("```csv", "").replace("```", "").strip()
+    usage = response.usage
+    prompt_tokens = usage.prompt_tokens
+    comp_tokens = usage.completion_tokens
+    total_tokens = usage.total_tokens
 
     parsed_items = {}
     csv_reader = csv.reader(io.StringIO(raw_text))
@@ -1944,32 +1991,42 @@ def classify_names_compact_llm(names: list[str], connection=None) -> tuple[dict[
     if not names or not OPENAI_API_KEY:
         return {}, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0}
 
-    client = OpenAI(api_key=OPENAI_API_KEY, timeout=8.0)
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=35.0)
     user_prompt = "Classify these names:\n" + "\n".join(f"{i+1}. {n}" for i, n in enumerate(names))
 
     t0 = time.perf_counter()
-    try:
-        response = client.chat.completions.create(
-            model=OPENAI_DOMAIN_MODEL,
-            messages=[
-                {"role": "system", "content": DEMOGRAPHIC_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=1500,
-            temperature=0.0
-        )
-        latency_ms = (time.perf_counter() - t0) * 1000
-        raw_text = (response.choices[0].message.content or "").replace("```csv", "").replace("```", "").strip()
-        usage = response.usage
-        token_stats = {
-            "prompt_tokens": usage.prompt_tokens,
-            "completion_tokens": usage.completion_tokens,
-            "total_tokens": usage.total_tokens,
-            "latency_ms": round(latency_ms, 1)
-        }
-    except Exception as e:
-        print(f"[LLM Error] Failed to classify names with {OPENAI_DOMAIN_MODEL}: {e}", flush=True)
+    response = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=OPENAI_DOMAIN_MODEL,
+                messages=[
+                    {"role": "system", "content": DEMOGRAPHIC_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=1500,
+                temperature=0.0
+            )
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1.0)
+
+    if not response:
+        print(f"[LLM Error] Failed to classify names with {OPENAI_DOMAIN_MODEL}: {last_err}", flush=True)
         return {}, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0}
+
+    latency_ms = (time.perf_counter() - t0) * 1000
+    raw_text = (response.choices[0].message.content or "").replace("```csv", "").replace("```", "").strip()
+    usage = response.usage
+    token_stats = {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        "latency_ms": round(latency_ms, 1)
+    }
 
     parsed_items = {}
     csv_reader = csv.reader(io.StringIO(raw_text))
@@ -2482,9 +2539,13 @@ def ensure_batch_enrichment_ledger_table(conn) -> None:
                 INDEX `idx_batch_login` (`batch`, `login_email`),
                 INDEX `idx_batch_outcome` (`batch`, `outcome`),
                 INDEX `idx_session` (`session_id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """
         )
+        try:
+            cur.execute("ALTER TABLE `batch_enrichment_ledger` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
+        except Exception:
+            pass
 
 
 def backfill_enrichment_ledger_from_saved_leads(conn) -> int:
@@ -2601,7 +2662,7 @@ def fetch_unattempted_leads_for_batch(conn, batch: str) -> list[dict[str, Any]]:
                    l.job_title, l.company, l.company_domain, l.website_link, l.segment, l.email
             FROM `apollo_saved_leads` l
             LEFT JOIN `batch_enrichment_ledger` e
-              ON e.batch = l.batch AND e.saved_lead_id = l.id
+              ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
             WHERE l.batch = %s AND e.id IS NULL
             ORDER BY l.id ASC
             """,
@@ -2973,6 +3034,12 @@ def match_apollo(request: ApolloMatchRequest):
         # --------------------------------------------------------
         # STEP 4: DECISION LOGIC, DEMOGRAPHIC & 1/COMPANY LIMIT
         # --------------------------------------------------------
+        prefetched_indian_db = {}
+        if indian_filter_active and net_new_contacts:
+            all_names_to_check = [c.name.strip() for c in net_new_contacts if c.name and c.name.strip()]
+            if all_names_to_check:
+                prefetched_indian_db = lookup_indian_names_batch(all_names_to_check, connection=conn)
+
         for idx, contact in enumerate(net_new_contacts, 1):
             comp_name = contact.company.strip()
             prim_d = contact_primary_domain.get(contact.key, "")
@@ -2980,7 +3047,9 @@ def match_apollo(request: ApolloMatchRequest):
 
             # 4.1 Option 2 Pure Indian Name Demographic Filter
             if indian_filter_active:
-                is_ind, ind_reason = is_unambiguous_pure_indian_name(contact.name or "", connection=conn)
+                is_ind, ind_reason = is_unambiguous_pure_indian_name(
+                    contact.name or "", connection=conn, prefetched_db_hits=prefetched_indian_db
+                )
                 if is_ind:
                     ignored_count += 1
                     results[contact.key] = {

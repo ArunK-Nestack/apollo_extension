@@ -27,7 +27,7 @@ from backend.api import (
 )
 from scripts.batch_domain_audit import fetch_batch_leads, resolve_batch_name
 
-LLM_BATCH_SIZE = 50
+LLM_BATCH_SIZE = 25
 
 
 def _chunked(items: list[str], size: int = LLM_BATCH_SIZE) -> list[list[str]]:
