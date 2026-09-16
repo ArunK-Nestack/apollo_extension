@@ -204,21 +204,42 @@ python scripts/cleanup_saved_leads.py
 
 ---
 
+## 9. Apollo Direct Search & CRM Qualification CLI (Hands-Free Pipeline)
+
+Direct, automated search and qualification from Python using Apollo's official REST API—completely bypassing the Chrome Extension and manual browser clicking.
+
+```powershell
+python scripts/apollo_search_direct.py
+```
+
+### **Features & Workflow:**
+1. **Engine Banner:** Displays connection status across all 5 lookup vaults (AWS RDS 7.28M CRM, 64K Titles, 28K Indian Surnames Trie, LLM Auto-Cache, and MySQL Staging).
+2. **Account Selection:** Prompts to select today's active account from `config/apollo_accounts.json` with masked keys and health checks.
+3. **Saved Search Inspection:** Lists your saved web searches, displays active filters (locations, titles, employee bands), and probes total data volume in the base pool.
+4. **Keyword Refinement:** Prompts for search bar keywords (e.g. "Fintech", "Cybersecurity") to narrow search pools and stay safely under Apollo's 100-page limit.
+5. **10-Lead Preview Table:** Verifies all 8 extension columns before starting.
+6. **Streaming Qualification:** Paces at 1.5s per page (40 req/min, zero 429 errors) and applies all 4 layers in real-time (RDS CRM Domain Check, Indian Demographic Origin Filter, 64K Titles, and 1/Company Deduplication).
+7. **Continuous Loop:** Automatically prompts for the next keyword upon completion.
+8. **Apollo-Compliant Export:** Automatically exports 75-column standard CSVs to `dist/exports/`.
+
+---
+
 ## Operational Workflow Cheat Sheet
 
 ```
 Daily Operations Flow:
 ─────────────────────────────────────────────────────────────────────────────
-1. Start Backend Server:
-   └─► python -m uvicorn backend.api:app --port 8000
+Option A: Hands-Free Backend Pipeline (Recommended)
+   └─► python scripts/apollo_search_direct.py
    
-2. Scrape Leads on Apollo:
-   └─► Open Chrome -> app.apollo.io -> Extension auto-evaluates rows
-   
-3. Manage Batches / Delete Test Runs / Export CSVs:
+Option B: Chrome Extension Browser Flow
+   1. Start Backend Server:
+      └─► python -m uvicorn backend.api:app --port 8000
+   2. Scrape Leads on Apollo:
+      └─► Open Chrome -> app.apollo.io -> Extension auto-evaluates rows
+      
+Common Management & Auditing:
    └─► python scripts/manage_batches.py
-   
-4. Verify Accuracy / Run Health Suite:
    └─► python tests/run_all_testers.py
 ─────────────────────────────────────────────────────────────────────────────
 ```

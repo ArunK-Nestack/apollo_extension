@@ -399,6 +399,7 @@ def test_batch_match_apollo_endpoint():
             name="Alice Chen",
             job_title="CEO",
             company="Alpha AI",
+            company_domain="alphaai.com",
             location="San Francisco, US",
             employee_count=40,
         ),
@@ -407,6 +408,7 @@ def test_batch_match_apollo_endpoint():
             name="Bob Smith",
             job_title="Product Manager",
             company="Beta Corp",
+            company_domain="betacorp.com",
             location="Seattle, US",
             employee_count=120,
         ),
@@ -415,6 +417,7 @@ def test_batch_match_apollo_endpoint():
             name="Charlie Intern",
             job_title="Engineering Intern",
             company="Gamma Systems",
+            company_domain="gammasystems.com",
             location="Austin, US",
             employee_count=200,
         ),
@@ -447,20 +450,20 @@ def test_guardrail_3_indian_name_filter():
 
     contacts = [
         # Pure Indian Names (Must be excluded when guardrail ON)
-        ApolloContact(key="ind-1", name="Rahul Sharma", job_title="CEO", company="SharmaTechXYZ99", location="Mumbai, IN"),
-        ApolloContact(key="ind-2", name="Priya Patel", job_title="VP Engineering", company="PatelCloudXYZ99", location="Bangalore, IN"),
-        ApolloContact(key="ind-3", name="Venkatesh Rao", job_title="Director", company="RaoSolutionsXYZ99", location="Hyderabad, IN"),
-        ApolloContact(key="ind-4", name="Debashis Mukherjee", job_title="Founder", company="MukherjeeAIXYZ99", location="Kolkata, IN"),
+        ApolloContact(key="ind-1", name="Rahul Sharma", job_title="CEO", company="SharmaTechXYZ99", company_domain="unique-test-sharma-tech.com", location="Mumbai, IN"),
+        ApolloContact(key="ind-2", name="Priya Patel", job_title="VP Engineering", company="PatelCloudXYZ99", company_domain="unique-test-patel-cloud.com", location="Bangalore, IN"),
+        ApolloContact(key="ind-3", name="Venkatesh Rao", job_title="Director", company="RaoSolutionsXYZ99", company_domain="unique-test-rao-solutions.com", location="Hyderabad, IN"),
+        ApolloContact(key="ind-4", name="Debashis Mukherjee", job_title="Founder", company="MukherjeeAIXYZ99", company_domain="unique-test-mukherjee-ai.com", location="Kolkata, IN"),
 
         # Edge Cases & Ambiguous Names (MUST NOT BE EXCLUDED — Conservative Policy: Treated as Foreign/Lead)
-        ApolloContact(key="edge-1", name="Peter D'Souza", job_title="CEO", company="DSouzaLogisticsXYZ99", location="Goa, IN"),
-        ApolloContact(key="edge-2", name="Kevin Fernandes", job_title="Director", company="FernandesTradingXYZ99", location="Singapore"),
-        ApolloContact(key="edge-3", name="Tariq Sheikh", job_title="VP Product", company="SheikhEnterprisesXYZ99", location="Dubai, UAE"),
-        ApolloContact(key="edge-4", name="Maya Lin", job_title="Founder", company="LinCreativeXYZ99", location="San Francisco, US"),
+        ApolloContact(key="edge-1", name="Peter D'Souza", job_title="CEO", company="DSouzaLogisticsXYZ99", company_domain="unique-test-dsouza-logistics.com", location="Goa, IN"),
+        ApolloContact(key="edge-2", name="Kevin Fernandes", job_title="Director", company="FernandesTradingXYZ99", company_domain="unique-test-fernandes-trading.com", location="Singapore"),
+        ApolloContact(key="edge-3", name="Tariq Sheikh", job_title="VP Product", company="SheikhEnterprisesXYZ99", company_domain="unique-test-sheikh-enterprises.com", location="Dubai, UAE"),
+        ApolloContact(key="edge-4", name="Maya Lin", job_title="Founder", company="LinCreativeXYZ99", company_domain="unique-test-lin-creative.com", location="San Francisco, US"),
 
         # Standard Foreign Names (MUST NOT BE EXCLUDED)
-        ApolloContact(key="foreign-1", name="Alice Chen", job_title="CEO", company="ChenRoboticsXYZ99", location="San Francisco, US"),
-        ApolloContact(key="foreign-2", name="John Miller", job_title="CTO", company="MillerDataXYZ99", location="London, UK"),
+        ApolloContact(key="foreign-1", name="Alice Chen", job_title="CEO", company="ChenRoboticsXYZ99", company_domain="unique-test-chen-robotics.com", location="San Francisco, US"),
+        ApolloContact(key="foreign-2", name="Bjoern Van Der Bilt", job_title="CTO", company="NordicQuantumXYZ99", company_domain="unique-test-nordic-quantum.com", location="Oslo, NO"),
     ]
 
     # Run with Indian Guardrail ON

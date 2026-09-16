@@ -735,6 +735,91 @@ def normalize_domain(domain: str) -> str:
     return extract_root_domain(domain)
 
 
+def get_domain_brand(domain: str) -> str:
+    """Extract core brand component from domain for matching."""
+    if not domain:
+        return ""
+    domain = domain.strip().lower()
+    if "@" in domain:
+        domain = domain.split("@", 1)[1]
+    domain = re.sub(r"^https?://", "", domain)
+    if domain.startswith("www."):
+        domain = domain[4:]
+    domain = domain.split(":")[0].split("/")[0]
+    parts = [p for p in domain.split(".") if p]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    second_level = {"co", "com", "org", "net", "gov", "edu", "ac"}
+    if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in second_level:
+        return parts[-3]
+    return parts[-2]
+
+
+def company_tokens(value: str) -> set[str]:
+    """Tokenize company name into alphanumeric words."""
+    if not value:
+        return set()
+    value = unicodedata.normalize("NFKD", str(value).strip().lower())
+    value = "".join(c for c in value if not unicodedata.combining(c))
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return {t for t in value.split() if t}
+
+
+def company_matches(apollo_company: str, crm_domain: str) -> bool:
+    """Deterministic company vs CRM domain matcher."""
+    if not apollo_company or not crm_domain:
+        return False
+    brand = get_domain_brand(crm_domain)
+    if not brand:
+        return False
+    c_comp = normalize_text(apollo_company)
+    b_comp = normalize_text(brand)
+    if not c_comp or not b_comp:
+        return False
+    if c_comp == b_comp:
+        return True
+    if len(b_comp) >= 4 and b_comp in c_comp:
+        return True
+    if len(c_comp) >= 4 and c_comp in b_comp:
+        return True
+    a_tokens = company_tokens(apollo_company)
+    d_tokens = company_tokens(brand)
+    if d_tokens and d_tokens.issubset(a_tokens):
+        return True
+    m_tokens = [t for t in a_tokens if len(t) > 1]
+    if len(m_tokens) >= 2:
+        acr = "".join(t[0] for t in m_tokens)
+        if acr and (acr in d_tokens or acr == b_comp):
+            return True
+    return False
+
+
+def domains_equivalent(left: str, right: str) -> bool:
+    """Check if two domains are equivalent (exact or subdomain)."""
+    def canonical(d):
+        d = re.sub(r"^https?://", "", (d or "").strip().lower()).split("/")[0].split(":")[0]
+        return d[4:] if d.startswith("www.") else d
+    l, r = canonical(left), canonical(right)
+    if not l or not r:
+        return False
+    if l == r:
+        return True
+    return l.endswith(f".{r}") or r.endswith(f".{l}")
+
+
+def resolve_contact_domains(name: str = "", job_title: str = "", company: str = "", location: str = "", **kwargs) -> dict:
+    """Deterministic contact domain candidate resolver."""
+    cands = generate_candidate_domains(company)
+    return {
+        "status": "resolved" if cands else "not_found",
+        "domains": [{"domain": d, "type": "candidate"} for d in cands],
+        "method": "deterministic"
+    }
+
+
+
 def get_seniority_score(job_title: str) -> int:
     """
     Evaluate job title seniority hierarchy score for best lead election:
@@ -812,10 +897,35 @@ def generate_candidate_domains(company_name: str) -> list[str]:
 
     # 3. Standard candidate permutations
     candidates.append(f"{norm_comp}.com")
+    candidates.append(f"{norm_comp}.net")
     candidates.append(f"{norm_comp}.io")
     candidates.append(f"{norm_comp}.ai")
     candidates.append(f"{norm_comp}hq.com")
     candidates.append(f"{norm_comp}tech.com")
+
+    # 4. Hyphenated domain candidate (e.g. 'LaBrie Media' -> 'labrie-media.com', '110 Studios' -> '110-studios.com')
+    words = [w for w in re.sub(r"[^a-zA-Z0-9\s]", "", comp_raw).lower().split() if w]
+    if len(words) >= 2:
+        clean_words = [w for w in words if w not in ("inc", "llc", "ltd", "corp", "corporation")]
+        if 2 <= len(clean_words) <= 3:
+            hyphen_cand = "-".join(clean_words)
+            candidates.append(f"{hyphen_cand}.com")
+
+    # 5. Ampersand 'and' expansion and 'co' retention (e.g. 'Twenty-Six & Co' -> 'twentysixandco.com', 'Mash Creative Co' -> 'mashcreativeco.com')
+    if "&" in comp_raw or " and " in comp_raw.lower():
+        expanded = comp_raw.replace("&", " and ")
+        norm_exp = normalize_text(clean_company_name(expanded))
+        if norm_exp:
+            candidates.append(f"{norm_exp}.com")
+            # Also with 'co'
+            norm_exp_all = normalize_text(expanded.replace("company", "co"))
+            candidates.append(f"{norm_exp_all}.com")
+
+    # With full words (including 'co' if present in raw)
+    if " co" in comp_raw.lower() or " company" in comp_raw.lower():
+        words_co = [w for w in words if w not in ("inc", "llc", "ltd", "corp")]
+        if words_co:
+            candidates.append("".join(words_co) + ".com")
 
     # Remove duplicates while preserving order
     seen = set()
@@ -832,8 +942,13 @@ def generate_candidate_domains(company_name: str) -> list[str]:
 # REFINED DOMAIN LOOKUP CHAIN (detected_companies Table)
 # ============================================================
 
+_detected_companies_table_created = False
+
 def ensure_detected_companies_table(conn):
     """Ensure the detected_companies table exists for storing detected company names, website links, and domains."""
+    global _detected_companies_table_created
+    if _detected_companies_table_created or conn is None:
+        return
     try:
         with conn.cursor() as cur:
             cur.execute("""
@@ -843,15 +958,31 @@ def ensure_detected_companies_table(conn):
                     `normalized_company` VARCHAR(255) NOT NULL DEFAULT '',
                     `website_link` VARCHAR(512) DEFAULT '',
                     `domain` VARCHAR(255) NOT NULL DEFAULT '',
+                    `source` VARCHAR(64) NOT NULL DEFAULT '',
                     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     INDEX `idx_normalized_company` (`normalized_company`),
                     INDEX `idx_domain` (`domain`),
+                    INDEX `idx_source` (`source`),
                     UNIQUE KEY `unique_company_domain` (`normalized_company`(128), `domain`(128))
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
+            # Ensure source column exists if table was created previously without it
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) FROM information_schema.COLUMNS 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                      AND TABLE_NAME = 'detected_companies' 
+                      AND COLUMN_NAME = 'source';
+                """)
+                if cur.fetchone()[0] == 0:
+                    cur.execute("ALTER TABLE `detected_companies` ADD COLUMN `source` VARCHAR(64) NOT NULL DEFAULT '' AFTER `domain`, ADD INDEX `idx_source` (`source`);")
+            except Exception:
+                pass
+        _detected_companies_table_created = True
     except Exception as e:
         print(f"[ContactChecker] Notice: ensure detected_companies table error: {e}", flush=True)
+
 
 
 def _domain_lookup_candidates(contact) -> list[tuple[str, str]]:
@@ -1124,6 +1255,14 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
     candidate_domains_set: set[str] = set()
     for c in contacts:
         cands = _domain_lookup_candidates(c)
+        comp = getattr(c, "company", None) or getattr(c, "company_name", None) or ""
+        if comp:
+            seen_doms = {dom for _, dom in cands}
+            for cdom in generate_candidate_domains(comp):
+                root_cdom = extract_root_domain(cdom)
+                if root_cdom and root_cdom not in seen_doms:
+                    cands.append(("company_candidate", root_cdom))
+                    seen_doms.add(root_cdom)
         contact_candidates[c.key] = cands
         for _, dom in cands:
             candidate_domains_set.add(dom)
@@ -1690,6 +1829,60 @@ def queue_pending_names(names: list[str], batch: str, connection) -> int:
     return len(rows)
 
 
+SAFE_EDGE_CASE_SURNAMES = {
+    "dsouza", "d souza", "fernandes", "pinto", "pereira", "lobo", "albuquerque",
+    "coutinho", "braganza", "rodrigues", "silva", "costa", "souza", "dias", "gonsalves",
+    "sheikh", "shaikh", "mistry", "poonawalla", "wadia", "godrej", "tata", "contractor",
+    "merchant", "engineer", "vakil", "al", "alsayed", "altamimi", "khan"
+}
+
+SAFE_GLOBAL_FIRST_NAMES = {
+    "john", "david", "michael", "james", "robert", "william", "richard", "thomas",
+    "charles", "daniel", "matthew", "anthony", "mark", "donald", "steven", "paul",
+    "andrew", "joshua", "kenneth", "kevin", "brian", "george", "edward", "ronald",
+    "timothy", "jason", "jeffrey", "ryan", "jacob", "gary", "nicholas", "eric",
+    "stephen", "jonathan", "larry", "justin", "scott", "brandon", "frank", "benjamin",
+    "gregory", "samuel", "raymond", "patrick", "alexander", "jack", "dennis", "jerry",
+    "alice", "sarah", "emma", "olivia", "sophia", "isabella", "charlotte", "amelia",
+    "mia", "harper", "evelyn", "abigail", "emily", "elizabeth", "mila", "ella",
+    "avery", "sofia", "camila", "aria", "scarlett", "victoria", "madison", "luna",
+    "grace", "chloe", "penelope", "layla", "riley", "zoey", "nora", "lily",
+    "eleanor", "hannah", "lillian", "addison", "aubrey", "ellie", "stella", "natalie",
+    "zoe", "leah", "hazel", "violet", "aurora", "savannah", "audrey", "brooklyn",
+    "pierre", "hans", "jean", "lucas", "mateo", "chen", "lin", "wang", "zhang", "liu",
+    "yang", "huang", "wu", "zhou", "xu", "sun", "ma", "zhu", "hu", "guo", "he", "gao"
+}
+
+PURE_INDIAN_GIVEN_NAMES = {
+    "rahul", "priya", "venkatesh", "amit", "suresh", "ramesh", "rajesh", "vikram",
+    "ananya", "deepak", "neha", "rohit", "arun", "sanjay", "vijay", "manoj", "ajay",
+    "sunil", "anil", "pooja", "sneha", "kavita", "swati", "aditya", "abhishek",
+    "pradeep", "sandip", "sandeep", "dinesh", "naresh", "mahesh", "ashok", "alok",
+    "mukesh", "rakesh", "vinod", "harish", "satish", "girish", "tarun", "varun",
+    "kiran", "naveen", "praveen", "nitin", "sachin", "vishal", "gaurav", "sumit",
+    "ankit", "mohit", "saurabh", "mayank", "ankur", "rohan", "nikhil", "kunal",
+    "karan", "shubham", "ayush", "harsh", "yash", "dev", "shivam", "rishabh",
+    "tushar", "chirag", "chetan", "bhupendra", "dharmendra", "jitendra", "narendra",
+    "surendra", "birendra", "ravindra", "mahendra", "gajendra", "raghav", "madhav",
+    "keshav", "krishna", "govind", "gopal", "shyam", "radha", "laxmi", "lakshmi",
+    "saraswati", "durga", "parvati", "ganga", "yamuna", "gayatri", "meena", "rekha",
+    "sita", "gita", "rita", "shanti", "usha", "asha", "shobha", "sudha", "vidya",
+    "sharda", "sarla", "kamla", "pushpa", "leela", "veena", "bina", "savita",
+    "sarita", "sunita", "anita", "geeta", "babita", "lalita", "mamta", "archana",
+    "vandana", "kalpana", "sadhana", "bhavna", "dhaval", "jignesh", "hitesh",
+    "bhavin", "paresh", "kamlesh", "kalpesh", "nilesh", "shailesh", "pragnesh",
+    "bhavesh", "dharmesh", "alpesh", "jagdish", "mukund", "anand", "vivek",
+    "prashant", "srikant", "shrikant", "hemant", "jayant", "siddharth", "pranav",
+    "chinmay", "tanmay", "kaustubh", "atharva", "vedant", "omkar", "sanket",
+    "swapnil", "amol", "parag", "milind", "makarand", "subhash", "prakash",
+    "kailash", "avinash", "srinivas", "srinivasan", "venkat", "venkataraman",
+    "subramanian", "balasubramanian", "ramanathan", "swaminathan", "viswanathan",
+    "narayanan", "raghavan", "kalyan", "karthik", "kartik", "aravind", "arvind",
+    "sriram", "krishnan", "muthu", "murugan", "saravanan", "senthil", "velu",
+    "selvam", "palaniswamy"
+}
+
+
 def classify_name_local(full_name: str, connection=None) -> tuple[str, str]:
     """
     Local + DB surname rules. Returns (verdict, reason):
@@ -1744,31 +1937,14 @@ def classify_name_local(full_name: str, connection=None) -> tuple[str, str]:
                 _indian_name_cache[norm_name] = (True, reason)
             return "indian", reason
 
+    norm_first = normalize_text(first_name)
+    if norm_first in PURE_INDIAN_GIVEN_NAMES:
+        reason = f"Demographic Filter: Pure Indian Given Name ('{first_name.title()}')"
+        with _indian_name_cache_lock:
+            _indian_name_cache[norm_name] = (True, reason)
+        return "indian", reason
+
     return "ambiguous", f"Ambiguous name '{full_name}' — needs LLM audit"
-
-SAFE_EDGE_CASE_SURNAMES = {
-    "dsouza", "d souza", "fernandes", "pinto", "pereira", "lobo", "albuquerque",
-    "coutinho", "braganza", "rodrigues", "silva", "costa", "souza", "dias", "gonsalves",
-    "sheikh", "shaikh", "mistry", "poonawalla", "wadia", "godrej", "tata", "contractor",
-    "merchant", "engineer", "vakil", "al", "alsayed", "altamimi", "khan"
-}
-
-SAFE_GLOBAL_FIRST_NAMES = {
-    "john", "david", "michael", "james", "robert", "william", "richard", "thomas",
-    "charles", "daniel", "matthew", "anthony", "mark", "donald", "steven", "paul",
-    "andrew", "joshua", "kenneth", "kevin", "brian", "george", "edward", "ronald",
-    "timothy", "jason", "jeffrey", "ryan", "jacob", "gary", "nicholas", "eric",
-    "stephen", "jonathan", "larry", "justin", "scott", "brandon", "frank", "benjamin",
-    "gregory", "samuel", "raymond", "patrick", "alexander", "jack", "dennis", "jerry",
-    "alice", "sarah", "emma", "olivia", "sophia", "isabella", "charlotte", "amelia",
-    "mia", "harper", "evelyn", "abigail", "emily", "elizabeth", "mila", "ella",
-    "avery", "sofia", "camila", "aria", "scarlett", "victoria", "madison", "luna",
-    "grace", "chloe", "penelope", "layla", "riley", "zoey", "nora", "lily",
-    "eleanor", "hannah", "lillian", "addison", "aubrey", "ellie", "stella", "natalie",
-    "zoe", "leah", "hazel", "violet", "aurora", "savannah", "audrey", "brooklyn",
-    "pierre", "hans", "jean", "lucas", "mateo", "chen", "lin", "wang", "zhang", "liu",
-    "yang", "huang", "wu", "zhou", "xu", "sun", "ma", "zhu", "hu", "guo", "he", "gao"
-}
 
 
 def is_unambiguous_pure_indian_name(full_name: str, connection=None, prefetched_db_hits: dict | None = None) -> tuple[bool, str]:
@@ -2271,10 +2447,69 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
     }
 
 
-# Backwards compatibility helper
-def evaluate_job_title_with_ai(title: str = "", name: str = "", company: str = "", location: str = "", employee_count: int | None = None, apollo_id: str = "", connection=None, **kwargs) -> dict:
+# Backwards compatibility & detailed AI hierarchy evaluator
+def evaluate_job_title_with_ai(title: str = "", name: str = "", company: str = "", location: str = "", employee_count: int | None = None, apollo_id: str = "", connection=None, region: str = "", **kwargs) -> dict:
     job_t = title or kwargs.get("job_title", "")
-    return lookup_job_title_in_db(job_t, connection=connection)
+    t = (job_t or "").strip().lower()
+    reg = (region or kwargs.get("reg", "")).strip().upper()
+    loc = (location or "").lower()
+    is_anz_sg = reg in ("AU", "NZ", "SG") or any(k in loc for k in ("australia", "new zealand", "singapore", "sydney", "auckland", "melbourne"))
+
+    # Tier 7 Exclude: intern, recruiter, sdr, coordinator
+    if any(k in t for k in ("intern", "recruiter", "talent", "sdr", "sales development representative", "coordinator")):
+        return {"required": False, "role_type": None, "tier": 7, "confidence": "high", "status": "disqualified_title", "reason": "Tier 7 IC/Junior Exclusion"}
+
+    # Functional Exclusions
+    if any(k in t for k in ("human resources", "hr director", "hr manager", "people operations")):
+        return {"required": False, "role_type": None, "tier": 4, "confidence": "high", "status": "disqualified_title", "reason": "Functional Exclusion: HR"}
+    if any(k in t for k in ("legal counsel", "corporate legal", "compliance", "general counsel")):
+        return {"required": False, "role_type": None, "tier": 4, "confidence": "high", "status": "disqualified_title", "reason": "Functional Exclusion: Legal"}
+    if "sales" in t and not any(k in t for k in ("revops", "sales engineering", "solution", "tech")):
+        return {"required": False, "role_type": None, "tier": 3, "confidence": "high", "status": "disqualified_title", "reason": "Functional Exclusion: Sales"}
+    if "marketing" in t and not any(k in t for k in ("growth-ai", "martech", "product")):
+        return {"required": False, "role_type": None, "tier": 7, "confidence": "high", "status": "disqualified_title", "reason": "Functional Exclusion: Marketing"}
+
+    # Regional mappings
+    reg_syn = None
+    if is_anz_sg:
+        if "managing director" in t:
+            reg_syn = "Managing Director -> CEO equivalent (Tier 2)"
+            return {"required": True, "role_type": "decision_maker", "tier": 2, "confidence": "high", "status": "qualified", "regional_synonym_applied": reg_syn, "reason": "Regional Tier 2: AU Managing Director"}
+        if "country manager" in t:
+            reg_syn = "Country Manager -> Tier 3"
+            return {"required": True, "role_type": "decision_maker", "tier": 3, "confidence": "high", "status": "qualified", "regional_synonym_applied": reg_syn, "reason": "Regional Tier 3: SG Country Manager"}
+        if "head of" in t:
+            reg_syn = "Head of Product -> Tier 3/4"
+            return {"required": True, "role_type": "decision_maker", "tier": 3, "confidence": "high", "status": "qualified", "regional_synonym_applied": reg_syn, "reason": "Regional Tier 3/4: Startup Head of"}
+
+    # Keyword overrides (AI/Automation)
+    has_ai_override = any(k in t for k in ("applied ai", "ai", "automation", "agentic", "machine learning"))
+    is_startup = employee_count is not None and employee_count <= 50
+
+    # Tier 1 & 2
+    if any(k in t for k in ("founder", "owner", "ceo", "cto", "cio", "cpo", "coo", "president", "chief technology officer", "chief executive officer")):
+        return {"required": True, "role_type": "decision_maker", "tier": 1 if "founder" in t else 2, "confidence": "high", "status": "qualified", "reason": "Tier 1/2 Executive"}
+    # Tier 3
+    if any(k in t for k in ("vp", "vice president", "svp", "evp")):
+        return {"required": True, "role_type": "decision_maker", "tier": 3, "confidence": "high", "status": "qualified", "reason": "Tier 3 VP"}
+    # Tier 4
+    if any(k in t for k in ("director", "head of")):
+        return {"required": True, "role_type": "decision_maker", "tier": 4, "confidence": "high", "status": "qualified", "reason": "Tier 4 Director"}
+    # Tier 5 (Engineering Manager, Lead, Principal)
+    if any(k in t for k in ("engineering manager", "lead", "principal", "architect")):
+        rt = "decision_maker" if (is_startup or has_ai_override) else "evaluator"
+        return {"required": True, "role_type": rt, "tier": 5, "confidence": "high", "status": "qualified", "reason": f"Tier 5 Manager ({rt})"}
+    # Tier 6 (Product Manager, Program Manager, Manager)
+    if any(k in t for k in ("product manager", "program manager", "manager")):
+        rt = "decision_maker" if (is_startup or has_ai_override) else "evaluator"
+        return {"required": True, "role_type": rt, "tier": 6, "confidence": "high", "status": "qualified", "reason": f"Tier 6 Manager ({rt})"}
+
+    # Fallback to DB lookup
+    db_res = lookup_job_title_in_db(job_t, connection=connection)
+    db_res.setdefault("role_type", "decision_maker" if db_res.get("required") else None)
+    db_res.setdefault("tier", 4 if db_res.get("required") else 7)
+    db_res.setdefault("confidence", "high" if db_res.get("required") else "low")
+    return db_res
 
 
 # ============================================================
@@ -2295,6 +2530,7 @@ class ApolloContact(BaseModel):
     email: str | None = ""
     linkedin_url: str | None = None
     apollo_profile_url: str | None = None
+    employee_count: int | None = None
 
 
 def lead_dict_to_contact(lead: dict[str, Any], key: str) -> ApolloContact:
@@ -2461,7 +2697,7 @@ def get_detected_companies_list(limit: int = 100):
         ensure_detected_companies_table(conn)
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT `id`, `company_name`, `normalized_company`, `website_link`, `domain`, `created_at`
+                SELECT `id`, `company_name`, `normalized_company`, `website_link`, `domain`, `source`, `created_at`
                 FROM `detected_companies`
                 ORDER BY `id` DESC
                 LIMIT %s;
@@ -2476,7 +2712,8 @@ def get_detected_companies_list(limit: int = 100):
                         "normalized_company": r[2],
                         "website_link": r[3],
                         "domain": r[4],
-                        "created_at": str(r[5]),
+                        "source": r[5] or "",
+                        "created_at": str(r[6]),
                     }
                     for r in rows
                 ]
@@ -3108,6 +3345,9 @@ def match_apollo(request: ApolloMatchRequest):
                             is_same_contact = True
                             break
 
+                    emp_val = getattr(contact, "employee_count", None)
+                    role_t = "decision_maker" if (incoming_score >= 60 or (emp_val is not None and emp_val <= 50)) else "evaluator"
+
                     if is_same_contact:
                         # Contact is ALREADY the elected lead for this company across page sorts
                         required_count += 1
@@ -3117,6 +3357,7 @@ def match_apollo(request: ApolloMatchRequest):
                             "ignored": False,
                             "guardrail_status": "qualified",
                             "segment": title_seg,
+                            "role_type": role_t,
                             "guardrail_reason": title_reason,
                             "matched_domain": prim_d,
                         }
@@ -3142,6 +3383,7 @@ def match_apollo(request: ApolloMatchRequest):
                             "ignored": False,
                             "guardrail_status": "qualified",
                             "segment": title_seg,
+                            "role_type": role_t,
                             "guardrail_reason": title_reason,
                             "matched_domain": prim_d,
                         }
@@ -3187,6 +3429,7 @@ def match_apollo(request: ApolloMatchRequest):
                                 "ignored": False,
                                 "guardrail_status": "qualified",
                                 "segment": title_seg,
+                                "role_type": role_t,
                                 "guardrail_reason": title_reason,
                                 "matched_domain": prim_d,
                             }

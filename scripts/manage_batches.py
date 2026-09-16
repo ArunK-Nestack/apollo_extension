@@ -45,6 +45,12 @@ from scripts.batch_qualification_audit import (
     prompt_title_llm_and_delete,
 )
 from scripts.clean_enriched_export import export_clean_enriched_login_action
+from scripts.sync_batch_to_apollo_list import (
+    load_apollo_accounts,
+    get_batch_leads,
+    sync_batch_to_apollo_api,
+    export_split_csvs_for_batch,
+)
 
 CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "domain_slugs_cache.txt")
 
@@ -628,6 +634,81 @@ def export_batch_action(batches, conn):
         print(f"[ERROR] Export failed: {e}")
 
 
+def sync_batch_to_apollo_list_action(batches, conn):
+    """Interactive CLI menu option to sync any batch into Apollo Web 'My lists' at 0 credits."""
+    if not batches:
+        print("\nNo batches available.")
+        return
+
+    print("\n" + "=" * 92)
+    print("           SYNC BATCH TO APOLLO WEB 'MY LISTS' (0 CREDITS / $0.00)")
+    print("=" * 92)
+    user_input = input(f"Enter the batch NUMBER (1 to {len(batches)}) or exact BATCH NAME to sync (or press Enter to cancel): ").strip()
+    if not user_input:
+        print("Sync canceled.")
+        return
+
+    selected_batch = None
+    if user_input.isdigit():
+        idx = int(user_input) - 1
+        if 0 <= idx < len(batches):
+            selected_batch = batches[idx]
+        else:
+            print("Invalid batch number.")
+            return
+    else:
+        for b in batches:
+            if b["batch"].lower() == user_input.lower():
+                selected_batch = b
+                break
+
+    if not selected_batch:
+        print(f"Batch '{user_input}' not found.")
+        return
+
+    batch_name = selected_batch["batch"]
+    leads = get_batch_leads(batch_name)
+    if not leads:
+        print(f"[!] No leads found for batch '{batch_name}'.")
+        return
+
+    print(f"\n[✓] Selected Batch: '{batch_name}' ({len(leads):,d} total leads)")
+
+    # 1. Select Apollo Account
+    accounts = load_apollo_accounts()
+    if not accounts:
+        print("[!] No active Apollo accounts configured in config/apollo_accounts.json.")
+        return
+
+    print("\nSelect Target Apollo Account:")
+    for idx, acc in enumerate(accounts, 1):
+        print(f"  [{idx}] {acc.get('name', 'Default')} ({acc.get('email', '')})")
+    acc_choice = input(f"Select Account [1-{len(accounts)}] (default 1): ").strip()
+    try:
+        acc_idx = int(acc_choice) - 1 if acc_choice else 0
+        selected_account = accounts[acc_idx]
+    except Exception:
+        selected_account = accounts[0]
+
+    api_key = selected_account["api_key"]
+    print(f"[✓] Using Account: {selected_account.get('name', 'Default')}")
+
+    # 2. Target List Name
+    list_name_input = input(f"\nEnter Target Apollo List Name (default: '{batch_name}'): ").strip()
+    target_list_name = list_name_input if list_name_input else batch_name
+
+    # 3. Delivery Mode
+    print("\nDelivery Modes:")
+    print("  [1] Direct API Stream into Apollo Web 'My lists' (Instant, Multi-threaded, 0 credits)")
+    print("  [2] Export Split CSVs (5,000 rows max per file for manual Apollo Web CSV Import)")
+    mode_choice = input("Select mode [1/2, default 1]: ").strip()
+
+    if mode_choice == "2":
+        export_split_csvs_for_batch(leads, batch_name)
+    else:
+        sync_batch_to_apollo_api(api_key, leads, target_list_name)
+
+
 def main():
     while True:
         try:
@@ -644,10 +725,11 @@ def main():
                 print("  [5] Audit batch — job titles (DB + optional LLM)")
                 print("  [6] Audit batch — Indian names (local + optional LLM)")
                 print("  [7] Clean & Export enriched leads by login (Sales-Ready -> Downloads)")
-                print("  [8] Refresh batch statistics")
-                print("  [9] Exit")
+                print("  [8] Sync batch to Apollo Web 'My lists' (0 Credits / $0.00)")
+                print("  [9] Refresh batch statistics")
+                print("  [10] Exit")
                 
-                choice = input("\nSelect an option (1-9): ").strip()
+                choice = input("\nSelect an option (1-10): ").strip()
 
                 if choice == "1":
                     delete_batch_action(batches, conn)
@@ -671,13 +753,16 @@ def main():
                     export_clean_enriched_login_action(conn)
                     input("\nPress Enter to continue...")
                 elif choice == "8":
+                    sync_batch_to_apollo_list_action(batches, conn)
+                    input("\nPress Enter to continue...")
+                elif choice == "9":
                     print("\nRefreshing batch statistics...")
                     continue
-                elif choice in ["9", "q", "exit", "quit"]:
+                elif choice in ["10", "q", "exit", "quit"]:
                     print("\nExiting. Goodbye!")
                     break
                 else:
-                    print("\n[Invalid choice. Please select 1-9.]")
+                    print("\n[Invalid choice. Please select 1-10.]")
                     input("Press Enter to continue...")
 
         except KeyboardInterrupt:

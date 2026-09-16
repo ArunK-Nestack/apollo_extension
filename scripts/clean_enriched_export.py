@@ -225,21 +225,28 @@ def fetch_enriched_logins_summary(conn) -> List[Dict[str, Any]]:
     return logins
 
 
-def fetch_enriched_leads_for_login(conn, login_id: str, account_name: str = "") -> List[Dict[str, Any]]:
-    """Fetch all leads associated with the given login/account that have verified emails."""
+def fetch_batches_for_login(conn, login_id: str, account_name: str = "") -> List[Dict[str, Any]]:
+    """Fetch all distinct batches belonging to this login with lead & email counts."""
     with conn.cursor() as cur:
         if login_id == "__ALL__":
             cur.execute("""
-                SELECT l.*, COALESCE(e.login_email, l.account_used) AS resolved_login
+                SELECT 
+                    l.batch,
+                    COUNT(DISTINCT l.id) AS total_enriched,
+                    COUNT(DISTINCT CASE WHEN l.email IS NOT NULL AND l.email != '' AND l.email != 'nan' THEN l.id END) AS verified_emails,
+                    MAX(l.created_at) AS last_added
                 FROM apollo_saved_leads l
-                LEFT JOIN batch_enrichment_ledger e 
-                  ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
                 WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
-                ORDER BY l.id ASC;
+                GROUP BY l.batch
+                ORDER BY MAX(l.created_at) DESC;
             """)
         else:
             cur.execute("""
-                SELECT l.*, COALESCE(e.login_email, l.account_used) AS resolved_login
+                SELECT 
+                    l.batch,
+                    COUNT(DISTINCT l.id) AS total_enriched,
+                    COUNT(DISTINCT CASE WHEN l.email IS NOT NULL AND l.email != '' AND l.email != 'nan' THEN l.id END) AS verified_emails,
+                    MAX(l.created_at) AS last_added
                 FROM apollo_saved_leads l
                 LEFT JOIN batch_enrichment_ledger e 
                   ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
@@ -249,8 +256,58 @@ def fetch_enriched_leads_for_login(conn, login_id: str, account_name: str = "") 
                       OR COALESCE(NULLIF(e.account_name, ''), NULLIF(l.account_used, ''), 'Unknown') = %s
                       OR l.account_used = %s
                   )
-                ORDER BY l.id ASC;
+                GROUP BY l.batch
+                ORDER BY MAX(l.created_at) DESC;
             """, (login_id, account_name or login_id, account_name or login_id))
+
+        rows = cur.fetchall()
+        return [
+            {
+                "batch": str(r[0] or "unnamed"),
+                "total_enriched": int(r[1] or 0),
+                "verified_emails": int(r[2] or 0),
+                "last_added": str(r[3])[:16] if r[3] else "N/A",
+            }
+            for r in rows
+        ]
+
+
+def fetch_enriched_leads_for_login(
+    conn, 
+    login_id: str, 
+    account_name: str = "",
+    batch_name: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Fetch all leads associated with the given login/account and optional batch that have verified emails."""
+    with conn.cursor() as cur:
+        query_conditions = ["(l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))"]
+        params = []
+
+        if login_id != "__ALL__":
+            query_conditions.append("""
+                (
+                    COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') = %s
+                    OR COALESCE(NULLIF(e.account_name, ''), NULLIF(l.account_used, ''), 'Unknown') = %s
+                    OR l.account_used = %s
+                )
+            """)
+            params.extend([login_id, account_name or login_id, account_name or login_id])
+
+        if batch_name and batch_name != "__ALL__":
+            query_conditions.append("l.batch = %s")
+            params.append(batch_name)
+
+        where_clause = " AND ".join(query_conditions)
+
+        query = f"""
+            SELECT l.*, COALESCE(e.login_email, l.account_used) AS resolved_login
+            FROM apollo_saved_leads l
+            LEFT JOIN batch_enrichment_ledger e 
+              ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
+            WHERE {where_clause}
+            ORDER BY l.id ASC;
+        """
+        cur.execute(query, tuple(params))
 
         cols = [c[0] for c in cur.description]
         raw_rows = cur.fetchall()
@@ -307,12 +364,47 @@ def export_clean_enriched_login_action(conn) -> None:
         print("Invalid choice, please select a valid number or 'A'.")
 
     print(f"\n✓ Selected Login: '{label}'")
+
+    # Discover and prompt for batch selection for this login
+    batches = fetch_batches_for_login(conn, selected_login, selected_acc_name)
+    if not batches:
+        print(f"[NOTICE] No batches found with enriched leads for login '{label}'.")
+        return
+
+    total_batch_leads = sum(b["total_enriched"] for b in batches)
+    total_batch_emails = sum(b["verified_emails"] for b in batches)
+
+    print("\n" + "-" * 95)
+    print(f"BATCH SELECTION FOR LOGIN: {label}")
+    print("-" * 95)
+    print(f"{'#':<4} | {'Batch Name':<42} | {'Enriched Leads':<15} | {'Verified Emails':<16} | {'Last Added'}")
+    print("-" * 95)
+    print(f"[A ] | {'[ALL BATCHES COMBINED]':<42} | {total_batch_leads:<15,d} | {total_batch_emails:<16,d} | (all batches)")
+    for b_idx, b in enumerate(batches, 1):
+        b_name_disp = b['batch'] if len(b['batch']) <= 42 else b['batch'][:39] + "..."
+        print(f"[{b_idx:<2}] | {b_name_disp:<42} | {b['total_enriched']:<15,d} | {b['verified_emails']:<16,d} | {b['last_added']}")
+    print("-" * 95)
+
+    while True:
+        b_sel = input(f"\n>> Select Batch [1-{len(batches)}] or 'A' for all batches (default A): ").strip()
+        if not b_sel or b_sel.upper() == "A":
+            selected_batch = "__ALL__"
+            batch_label = "All Batches Combined"
+            break
+        elif b_sel.isdigit() and 1 <= int(b_sel) <= len(batches):
+            picked_b = batches[int(b_sel) - 1]
+            selected_batch = picked_b["batch"]
+            batch_label = picked_b["batch"]
+            break
+        print("Invalid choice, please select a valid batch number or 'A'.")
+
+    print(f"\n✓ Selected Batch: '{batch_label}'")
     print("  Fetching lead records and firmographic payloads from database...")
 
     t0 = time.perf_counter()
-    lead_dicts = fetch_enriched_leads_for_login(conn, selected_login, selected_acc_name)
+    lead_dicts = fetch_enriched_leads_for_login(conn, selected_login, selected_acc_name, batch_name=selected_batch)
     if not lead_dicts:
-        print(f"[NOTICE] No leads with emails found for login '{label}'.")
+        print(f"[NOTICE] No leads with emails found for batch '{batch_label}'.")
         return
 
     print(f"  ✓ Fetched {len(lead_dicts):,d} leads from database in {time.perf_counter() - t0:.2f}s.")
@@ -342,8 +434,12 @@ def export_clean_enriched_login_action(conn) -> None:
     # DOWNLOAD / SAVE SELECTION
     # -------------------------------------------------------------
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", selected_acc_name if selected_login != "__ALL__" else "All_Accounts").strip("_")
-    default_filename = f"{safe_slug}_cleaned_sales_leads_{timestamp_str}.csv"
+    acc_slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", selected_acc_name if selected_login != "__ALL__" else "All_Accounts").strip("_")
+    if selected_batch and selected_batch != "__ALL__":
+        batch_slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", selected_batch).strip("_")
+        default_filename = f"{acc_slug}_{batch_slug}_cleaned_sales_leads_{timestamp_str}.csv"
+    else:
+        default_filename = f"{acc_slug}_cleaned_sales_leads_{timestamp_str}.csv"
 
     downloads_dir = get_default_downloads_dir()
     default_downloads_path = os.path.join(downloads_dir, default_filename)
@@ -378,6 +474,7 @@ def export_clean_enriched_login_action(conn) -> None:
     print("                    CLEANING & EXPORT SUMMARY")
     print("=" * 95)
     print(f"  • Selected Login:                  {label}")
+    print(f"  • Selected Batch:                  {batch_label}")
     print(f"  • Total Enriched Leads Fetched:    {stats['initial_count']:,d}")
     print(f"  • Leads with Valid Emails:         {stats['valid_email_count']:,d}")
     print(f"  • Email Duplicates Removed:        {stats['duplicates_removed']:,d}")
