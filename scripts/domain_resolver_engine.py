@@ -133,7 +133,7 @@ def _verify_homepage_brand(domain: str, company_name: str) -> bool:
                 url, 
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             )
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
+            with urllib.request.urlopen(req, timeout=0.8) as resp:
                 chunk = resp.read(8192).decode("utf-8", errors="ignore")
                 m = re.search(r"<title[^>]*>(.*?)</title>", chunk, re.IGNORECASE | re.DOTALL)
                 if not m:
@@ -149,6 +149,10 @@ def _verify_homepage_brand(domain: str, company_name: str) -> bool:
                         return True
                     return False
                 return True
+        except (TimeoutError, urllib.error.URLError) as ex:
+            if "timed out" in str(ex).lower() or isinstance(ex, TimeoutError):
+                break
+            continue
         except Exception:
             continue
     return False
@@ -292,6 +296,13 @@ def resolve_domain_multi_tier(
             found_domain = cand_dns
             source = "dns_candidate"
 
+    # Tier 5: Fallback deterministic candidate
+    if not found_domain:
+        cands = generate_candidate_domains(cleaned)
+        if cands:
+            found_domain = cands[0]
+            source = "deterministic_candidate"
+
     if found_domain:
         web = f"https://{found_domain}"
         res = {
@@ -329,7 +340,7 @@ def resolve_domain_multi_tier(
 def batch_resolve_domains_high_accuracy(
     company_names: List[str],
     conn=None,
-    max_workers: int = 5
+    max_workers: int = 15
 ) -> Dict[str, Dict[str, Any]]:
     """
     Batch-resolve company domains concurrently using the 5-tier high accuracy engine.

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enrich.so Station - Apollo Operations</title>
+  <link rel="stylesheet" href="/static/css/common.css">
+</head>
+<body>
+
+  <!-- Global Header -->
+  <header class="header-shell">
+    <div class="header-top">
+      <div class="brand-area">
+        <span class="brand-badge">APOLLO OPS</span>
+        <span class="brand-title">Operations <span>Cockpit</span></span>
+      </div>
+      <nav class="nav-links">
+        <a href="/batches" class="nav-link"><span>📋</span> Batches</a>
+        <a href="/search-studio" class="nav-link"><span>⚡</span> Search Studio</a>
+        <a href="/fleet" class="nav-link"><span>👥</span> Fleet & Quotas</a>
+        <a href="/guardrails" class="nav-link"><span>🛡️</span> Guardrails</a>
+        <a href="/verifier" class="nav-link"><span>✅</span> MillionVerifier</a>
+        <a href="/freshsales-sync" class="nav-link"><span>🔄</span> Freshsales CRM</a>
+        <a href="/enrich" class="nav-link active"><span>✨</span> Enrich.so</a>
+      </nav>
+    </div>
+    <div class="telemetry-strip">
+      <div class="telemetry-group">
+        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>RDS MySQL:</strong> <span id="hud-db-count">7.28M Emails</span></div>
+        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>MARISA-Trie:</strong> <span id="hud-trie-nodes">2.56M Slugs (0.4ms)</span></div>
+      </div>
+      <div class="telemetry-group" id="hud-fleet-strip"></div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="app-container">
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title"><span>✨</span> Enrich.so Lead Finder & Auto-Paginator Station</h2>
+        <span class="badge badge-blue">Router: /match-enrich, /enrich-batches</span>
+      </div>
+      <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+        Integrates with the Enrich.so Chrome Extension (Manifest V3 in <code>extensions_enrich/</code>), performing instant CRM domain checks, seniority election for highest-ranking executives, and demographic filtering.
+      </p>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+        
+        <!-- Left: Match Tester -->
+        <div style="background: var(--bg-surface); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
+          <h3 style="font-size: 0.95rem; color: #fff; margin-bottom: 0.75rem;">Test /match-enrich API Endpoint</h3>
+          <div style="margin-bottom: 0.85rem;">
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 0.25rem;">Company Domain</label>
+            <input type="text" id="enrich-domain" value="cloudcorp.io" style="width: 100%; background: var(--bg-card); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
+          </div>
+          <div style="margin-bottom: 0.85rem;">
+            <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 0.25rem;">Job Title</label>
+            <input type="text" id="enrich-title" value="Vice President of Engineering" style="width: 100%; background: var(--bg-card); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="testEnrichMatch()">
+            <span>⚡</span> Test Match Payload
+          </button>
+
+          <div id="enrich-match-result" style="display: none; margin-top: 1rem; background: #05080f; padding: 0.75rem; border-radius: 6px; font-family: monospace; font-size: 0.75rem; color: #7dd3fc;"></div>
+        </div>
+
+        <!-- Right: Saved Companies & Export -->
+        <div style="background: var(--bg-surface); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+            <h3 style="font-size: 0.95rem; color: #fff;">Saved Enriched Companies</h3>
+            <button class="btn btn-success btn-sm" onclick="alert('Exporting Enrich Companies to CSV (scripts/export_enrich_companies.py)...')">
+              <span>📥</span> Export CSV
+            </button>
+          </div>
+          <p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 1rem;">
+            Captures company name, verified domain, employee range, and industry from Enrich.so search grids into MySQL table <code>enrich_companies</code>.
+          </p>
+
+          <div class="ops-table-wrapper">
+            <table class="ops-table">
+              <thead>
+                <tr>
+                  <th>Company Name</th>
+                  <th>Domain</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>CloudCorp Technologies</strong></td>
+                  <td><code>cloudcorp.io</code></td>
+                  <td><span class="badge badge-green">Net-New</span></td>
+                </tr>
+                <tr>
+                  <td><strong>Venture Labs Inc.</strong></td>
+                  <td><code>venturelabs.com</code></td>
+                  <td><span class="badge badge-green">Net-New</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- Persistent Task Drawer -->
+  <div class="task-drawer minimized" id="task-drawer">
+    <div class="task-drawer-header" onclick="toggleTaskDrawer()"><div class="task-drawer-status"><span class="pulse-dot green"></span><span id="task-drawer-text">System Idle</span></div></div>
+    <div class="task-drawer-body"><div class="task-terminal" id="task-terminal">No active tasks running.</div></div>
+  </div>
+
+  <script src="/static/js/shell.js"></script>
+  <script>
+    async function testEnrichMatch() {
+      const dom = document.getElementById('enrich-domain').value;
+      const title = document.getElementById('enrich-title').value;
+      const resBox = document.getElementById('enrich-match-result');
+      resBox.style.display = 'block';
+      resBox.textContent = `Testing /match-enrich for ${dom}...`;
+      try {
+        const res = await fetch('/match-enrich', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contacts: [{ key: 'c1', company_domain: dom, job_title: title, name: 'Sample Lead' }]
+          })
+        });
+        const data = await res.json();
+        resBox.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        resBox.textContent = 'Result: ' + e.message;
+      }
+    }
+  </script>
+</body>
+</html>

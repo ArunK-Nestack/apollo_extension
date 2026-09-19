@@ -1,0 +1,10 @@
+{
+  "python.analysis.extraPaths": [
+    "./freshsales_agent",
+    "./millionverifier_agent_step1"
+  ],
+  "python.autoComplete.extraPaths": [
+    "./freshsales_agent",
+    "./millionverifier_agent_step1"
+  ]
+}

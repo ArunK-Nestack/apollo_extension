@@ -45,12 +45,16 @@ from scripts.batch_qualification_audit import (
     prompt_title_llm_and_delete,
 )
 from scripts.clean_enriched_export import export_clean_enriched_login_action
+from scripts.send_to_millionverifier import send_to_millionverifier_action
 from scripts.sync_batch_to_apollo_list import (
     load_apollo_accounts,
     get_batch_leads,
     sync_batch_to_apollo_api,
     export_split_csvs_for_batch,
 )
+from scripts.export_enrich_companies import main as export_enrich_companies_action
+from scripts.apollo_search_optimizer import run_apollo_search_optimizer
+from scripts.freshsales_bridge import freshsales_agent_menu_action
 
 CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "domain_slugs_cache.txt")
 
@@ -68,17 +72,18 @@ def get_crm_emails_count(conn):
         return 0
 
 
-def fetch_batches(conn):
+def fetch_batches(conn, table_name="apollo_saved_leads"):
     """Fetch all distinct batches with lead count, distinct domains, and timestamps."""
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(f"""
             SELECT 
                 batch,
                 COUNT(*) as total_leads,
                 COUNT(DISTINCT company_domain) as distinct_domains,
                 MIN(created_at) as first_added,
                 MAX(created_at) as last_added
-            FROM apollo_saved_leads
+            FROM `{target_table}`
             GROUP BY batch
             ORDER BY MAX(created_at) DESC;
         """)
@@ -96,10 +101,12 @@ def fetch_batches(conn):
     return batches
 
 
-def display_batch_overview(batches, emails_count):
+def display_batch_overview(batches, emails_count, table_name="apollo_saved_leads"):
     """Print clean ASCII table of all current batches."""
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
+    table_label = "ENRICH.SO SAVED LEADS" if target_table == "enrich_saved_leads" else "APOLLO SAVED LEADS"
     print("\n" + "=" * 92)
-    print("                      APOLLO SAVED LEADS - CURRENT BATCHES")
+    print(f"                      {table_label} - CURRENT BATCHES")
     print("=" * 92)
     print(f" {'#':<3} | {'Batch Name':<38} | {'Leads':<8} | {'Domains':<8} | {'First Added':<14} | {'Last Added':<14}")
     print("-" * 92)
@@ -108,7 +115,7 @@ def display_batch_overview(batches, emails_count):
     total_domains_approx = 0
 
     if not batches:
-        print("  [No batches found in apollo_saved_leads table]")
+        print(f"  [No batches found in `{target_table}` table]")
     else:
         for idx, b in enumerate(batches, 1):
             total_leads_all += b["total_leads"]
@@ -120,18 +127,19 @@ def display_batch_overview(batches, emails_count):
             print(f" {idx:<3} | {name_display:<38} | {b['total_leads']:<8,d} | {b['distinct_domains']:<8,d}{dupe_flag} | {b['first_added']:<14} | {b['last_added']:<14}")
 
     print("=" * 92)
-    print(f" Total Saved Leads: {total_leads_all:,d} across {len(batches)} batches | Master CRM `emails` Total: {emails_count:,d} records")
+    print(f" Total Leads in `{target_table}`: {total_leads_all:,d} across {len(batches)} batches | Master CRM `emails`: {emails_count:,d} records")
     print(" ! = lead count != distinct domains (run audit [4] for details)")
     print("=" * 92 + "\n")
 
 
-def delete_batch_action(batches, conn):
-    """Prompt user to select a batch and delete its records from apollo_saved_leads."""
+def delete_batch_action(batches, conn, table_name="apollo_saved_leads"):
+    """Prompt user to select a batch and delete its records from the active table."""
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
     if not batches:
-        print("No batches available to delete.")
+        print(f"No batches available to delete in `{target_table}`.")
         return
 
-    print("\n--- DELETE BATCH FROM `apollo_saved_leads` ---")
+    print(f"\n--- DELETE BATCH FROM `{target_table}` ---")
     user_input = input("Enter the batch NUMBER (1 to %d) or exact BATCH NAME to delete (or press Enter to cancel): " % len(batches)).strip()
     
     if not user_input:
@@ -161,32 +169,33 @@ def delete_batch_action(batches, conn):
     domain_count = selected_batch["distinct_domains"]
 
     print("\n" + "!" * 65)
-    print(f" WARNING: You are about to permanently delete batch:")
+    print(f" WARNING: You are about to permanently delete batch from `{target_table}`:")
     print(f"   Batch:            {batch_name}")
     print(f"   Total Leads:      {lead_count:,d}")
     print(f"   Distinct Domains: {domain_count:,d}")
     print("!" * 65)
 
-    confirm = input(f"Type 'yes' to confirm permanent deletion of batch '{batch_name}': ").strip().lower()
+    confirm = input(f"Type 'yes' to confirm permanent deletion of batch '{batch_name}' from `{target_table}`: ").strip().lower()
     if confirm != "yes":
         print("Deletion aborted. No changes made.")
         return
 
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM apollo_saved_leads WHERE batch = %s", (batch_name,))
+            cur.execute(f"DELETE FROM `{target_table}` WHERE batch = %s", (batch_name,))
             deleted_rows = cur.rowcount
             conn.commit()
-        print(f"\n[SUCCESS] Successfully deleted {deleted_rows:,d} leads from batch '{batch_name}'.")
+        print(f"\n[SUCCESS] Successfully deleted {deleted_rows:,d} leads from batch '{batch_name}' in `{target_table}`.")
 
-        # Invalidate running backend server in-memory election cache
-        try:
-            import urllib.request
-            import urllib.parse
-            req = urllib.request.Request(f"http://127.0.0.1:8000/invalidate-batch-cache?batch={urllib.parse.quote(batch_name)}", method="POST")
-            urllib.request.urlopen(req, timeout=0.5)
-        except Exception:
-            pass
+        # Invalidate running backend server in-memory election cache if apollo
+        if target_table == "apollo_saved_leads":
+            try:
+                import urllib.request
+                import urllib.parse
+                req = urllib.request.Request(f"http://127.0.0.1:8000/invalidate-batch-cache?batch={urllib.parse.quote(batch_name)}", method="POST")
+                urllib.request.urlopen(req, timeout=0.5)
+            except Exception:
+                pass
     except Exception as e:
         conn.rollback()
         print(f"\n[ERROR] Failed to delete batch: {e}")
@@ -426,11 +435,12 @@ def add_file_to_emails_action(conn):
         print(f"[ERROR] Database insertion failed: {e}")
 
 
-def audit_batch_action(batches, conn):
+def audit_batch_action(batches, conn, table_name="apollo_saved_leads"):
     """Audit batch: unique domains per guardrails + domain column vs website."""
-    print("\n--- AUDIT BATCH: UNIQUE DOMAINS & DOMAIN COLUMN ---")
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
+    print(f"\n--- AUDIT BATCH: UNIQUE DOMAINS & DOMAIN COLUMN (Table: `{target_table}`) ---")
     user_input = input(
-        "Enter batch NUMBER (1 to %d) or BATCH NAME (partial OK, e.g. rahul_nestack_co_in): "
+        "Enter batch NUMBER (1 to %d) or BATCH NAME (partial OK, e.g. enrich_sample): "
         % len(batches)
     ).strip()
 
@@ -438,74 +448,75 @@ def audit_batch_action(batches, conn):
         print("Audit canceled.")
         return
 
-    batch_name = resolve_batch_name(conn, user_input, batches)
+    batch_name = resolve_batch_name(conn, user_input, batches, table_name=target_table)
     if not batch_name:
-        print(f"Batch '{user_input}' not found.")
+        print(f"Batch '{user_input}' not found in `{target_table}`.")
         return
 
-    print(f"\nAuditing '{batch_name}' (L0 unique-domain + L1-L4 CRM + domain column check)...")
+    print(f"\nAuditing '{batch_name}' in `{target_table}` (ignoring already enriched leads; unique domain + 4-layer CRM guardrails)...")
     try:
-        report = audit_batch(conn, batch_name, run_guardrails=True)
+        report = audit_batch(conn, batch_name, run_guardrails=True, table_name=target_table, ignore_enriched=True)
         print_batch_audit_report(report)
         if get_duplicate_drops(report):
-            prompt_delete_duplicate_drops(conn, report)
-        elif not report.get("unique_domains_ok"):
-            print("[ACTION] Duplicates found but no row ids to delete — re-run audit or clean manually.")
-        if not report.get("domain_column_ok"):
-            print("[ACTION] Enable Apollo Domain column in extension; re-scrape affected rows.")
+            prompt_delete_duplicate_drops(conn, report, table_name=target_table)
     except Exception as e:
         print(f"[ERROR] Audit failed: {e}")
 
 
-def audit_batch_titles_action(batches, conn):
+def audit_batch_titles_action(batches, conn, table_name="apollo_saved_leads"):
     """Audit batch job titles: DB guardrails, optional LLM, optional delete."""
-    print("\n--- AUDIT BATCH: JOB TITLES ---")
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
+    print(f"\n--- AUDIT BATCH: JOB TITLES (Table: `{target_table}`) ---")
     user_input = input(
         "Enter batch NUMBER (1 to %d) or BATCH NAME: " % len(batches)
     ).strip()
     if not user_input:
         print("Canceled.")
         return
-    batch_name = resolve_batch_name(conn, user_input, batches)
+    batch_name = resolve_batch_name(conn, user_input, batches, table_name=target_table)
     if not batch_name:
-        print(f"Batch '{user_input}' not found.")
+        print(f"Batch '{user_input}' not found in `{target_table}`.")
         return
+    print(f"\nAuditing job titles for '{batch_name}' in `{target_table}` (ignoring already enriched leads)...")
     try:
-        report = audit_batch_titles(conn, batch_name, run_llm=False)
+        report = audit_batch_titles(conn, batch_name, run_llm=False, table_name=target_table, ignore_enriched=True)
         print_title_audit_report(report)
-        prompt_title_llm_and_delete(conn, report)
+        prompt_title_llm_and_delete(conn, report, table_name=target_table)
     except Exception as e:
         print(f"[ERROR] Title audit failed: {e}")
 
 
-def audit_batch_names_action(batches, conn):
+def audit_batch_names_action(batches, conn, table_name="apollo_saved_leads"):
     """Audit batch names: local Indian rules, optional LLM, optional delete."""
-    print("\n--- AUDIT BATCH: INDIAN NAMES ---")
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
+    print(f"\n--- AUDIT BATCH: INDIAN NAMES (Table: `{target_table}`) ---")
     user_input = input(
         "Enter batch NUMBER (1 to %d) or BATCH NAME: " % len(batches)
     ).strip()
     if not user_input:
         print("Canceled.")
         return
-    batch_name = resolve_batch_name(conn, user_input, batches)
+    batch_name = resolve_batch_name(conn, user_input, batches, table_name=target_table)
     if not batch_name:
-        print(f"Batch '{user_input}' not found.")
+        print(f"Batch '{user_input}' not found in `{target_table}`.")
         return
+    print(f"\nAuditing Indian names for '{batch_name}' in `{target_table}` (ignoring already enriched leads)...")
     try:
-        report = audit_batch_names(conn, batch_name, run_llm=False)
+        report = audit_batch_names(conn, batch_name, run_llm=False, table_name=target_table, ignore_enriched=True)
         print_name_audit_report(report)
-        prompt_name_llm_and_delete(conn, report)
+        prompt_name_llm_and_delete(conn, report, table_name=target_table)
     except Exception as e:
         print(f"[ERROR] Name audit failed: {e}")
 
 
-def export_batch_action(batches, conn):
+def export_batch_action(batches, conn, table_name="apollo_saved_leads"):
     """Prompt user to select a batch and export clean/unique leads to CSV."""
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
     if not batches:
-        print("No batches available to export.")
+        print(f"No batches available to export in `{target_table}`.")
         return
 
-    print("\n--- EXPORT BATCH TO CSV ---")
+    print(f"\n--- EXPORT BATCH TO CSV (Table: `{target_table}`) ---")
     user_input = input("Enter the batch NUMBER (1 to %d) or exact BATCH NAME to export (or press Enter to cancel): " % len(batches)).strip()
     
     if not user_input:
@@ -527,11 +538,11 @@ def export_batch_action(batches, conn):
                 break
 
     if not selected_batch:
-        print(f"Batch '{user_input}' not found.")
+        print(f"Batch '{user_input}' not found in `{target_table}`.")
         return
 
     batch_name = selected_batch["batch"]
-    print(f"\nSelected Batch: '{batch_name}' ({selected_batch['total_leads']:,d} total leads)")
+    print(f"\nSelected Batch: '{batch_name}' ({selected_batch['total_leads']:,d} total leads in `{target_table}`)")
     print("Export Options:")
     print("  [1] Apollo Official 75-Column Format (4-Layer Guardrails: Strictly Verified Net-New - Recommended)")
     print("  [2] Apollo Official 75-Column Format (All Raw Leads in Batch, No Deduplication)")
@@ -548,35 +559,63 @@ def export_batch_action(batches, conn):
     print("\nQuerying leads from database...")
     try:
         with conn.cursor() as cur:
-            if use_75_col_format:
-                cur.execute("""
-                    SELECT 
-                        id, batch, apollo_id, name, first_name, last_name, job_title, email, email_status,
-                        company, company_domain, website_link, annual_revenue, employee_count,
-                        industry, tech_stack, keywords, company_phone, hq_address, location, linkedin_url,
-                        company_linkedin_url, apollo_profile_url, segment, account_used, credits_charged,
-                        raw_enrichment_data, enriched_at, created_at
-                    FROM apollo_saved_leads
-                    WHERE batch = %s
-                    ORDER BY id ASC;
-                """, (batch_name,))
-                cols = [c[0] for c in cur.description]
-                raw_rows = cur.fetchall()
-                dict_rows = [dict(zip(cols, r)) for r in raw_rows]
+            if target_table == "enrich_saved_leads":
+                if use_75_col_format:
+                    cur.execute("""
+                        SELECT 
+                            id, batch, '' as apollo_id, name, first_name, last_name, job_title, '' as email, '' as email_status,
+                            company, company_domain, website_link, '' as annual_revenue, '' as employee_count,
+                            '' as industry, '' as tech_stack, '' as keywords, '' as company_phone, '' as hq_address, location, linkedin_url,
+                            '' as company_linkedin_url, '' as apollo_profile_url, segment, '' as account_used, 0 as credits_charged,
+                            '' as raw_enrichment_data, NULL as enriched_at, created_at
+                        FROM `enrich_saved_leads`
+                        WHERE batch = %s
+                        ORDER BY id ASC;
+                    """, (batch_name,))
+                    cols = [c[0] for c in cur.description]
+                    raw_rows = cur.fetchall()
+                    dict_rows = [dict(zip(cols, r)) for r in raw_rows]
+                else:
+                    cur.execute("""
+                        SELECT id, batch, '' as apollo_id, name, first_name, last_name, job_title,
+                               company, company_domain, website_link, location, linkedin_url,
+                               '' as apollo_profile_url, segment, created_at
+                        FROM `enrich_saved_leads`
+                        WHERE batch = %s
+                        ORDER BY id ASC;
+                    """, (batch_name,))
+                    raw_rows = cur.fetchall()
+                    dict_rows = []
             else:
-                cur.execute("""
-                    SELECT id, batch, apollo_id, name, first_name, last_name, job_title,
-                           company, company_domain, website_link, location, linkedin_url,
-                           apollo_profile_url, segment, created_at
-                    FROM apollo_saved_leads
-                    WHERE batch = %s
-                    ORDER BY id ASC;
-                """, (batch_name,))
-                raw_rows = cur.fetchall()
-                dict_rows = []
+                if use_75_col_format:
+                    cur.execute("""
+                        SELECT 
+                            id, batch, apollo_id, name, first_name, last_name, job_title, email, email_status,
+                            company, company_domain, website_link, annual_revenue, employee_count,
+                            industry, tech_stack, keywords, company_phone, hq_address, location, linkedin_url,
+                            company_linkedin_url, apollo_profile_url, segment, account_used, credits_charged,
+                            raw_enrichment_data, enriched_at, created_at
+                        FROM `apollo_saved_leads`
+                        WHERE batch = %s
+                        ORDER BY id ASC;
+                    """, (batch_name,))
+                    cols = [c[0] for c in cur.description]
+                    raw_rows = cur.fetchall()
+                    dict_rows = [dict(zip(cols, r)) for r in raw_rows]
+                else:
+                    cur.execute("""
+                        SELECT id, batch, apollo_id, name, first_name, last_name, job_title,
+                               company, company_domain, website_link, location, linkedin_url,
+                               apollo_profile_url, segment, created_at
+                        FROM `apollo_saved_leads`
+                        WHERE batch = %s
+                        ORDER BY id ASC;
+                    """, (batch_name,))
+                    raw_rows = cur.fetchall()
+                    dict_rows = []
 
         if not raw_rows:
-            print(f"[NOTICE] No records found for batch '{batch_name}'.")
+            print(f"[NOTICE] No records found for batch '{batch_name}' in `{target_table}`.")
             return
 
         if use_4_layer_guardrails:
@@ -615,7 +654,8 @@ def export_batch_action(batches, conn):
         os.makedirs("exports", exist_ok=True)
         suffix = "unique_leads" if dedup_domains else "all_leads"
         format_tag = "apollo_contacts" if use_75_col_format else "core"
-        default_filename = os.path.join("exports", f"{batch_name}_{format_tag}_{suffix}.csv")
+        prefix_tbl = "enrich" if target_table == "enrich_saved_leads" else "apollo"
+        default_filename = os.path.join("exports", f"{prefix_tbl}_{batch_name}_{format_tag}_{suffix}.csv")
         
         custom_path = input(f"Enter output file path (or press Enter for default: '{default_filename}'): ").strip()
         out_path = custom_path.strip('\'"') if custom_path else default_filename
@@ -634,14 +674,15 @@ def export_batch_action(batches, conn):
         print(f"[ERROR] Export failed: {e}")
 
 
-def sync_batch_to_apollo_list_action(batches, conn):
+def sync_batch_to_apollo_list_action(batches, conn, table_name="apollo_saved_leads"):
     """Interactive CLI menu option to sync any batch into Apollo Web 'My lists' at 0 credits."""
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
     if not batches:
-        print("\nNo batches available.")
+        print(f"\nNo batches available in `{target_table}`.")
         return
 
     print("\n" + "=" * 92)
-    print("           SYNC BATCH TO APOLLO WEB 'MY LISTS' (0 CREDITS / $0.00)")
+    print(f"      SYNC BATCH TO APOLLO WEB 'MY LISTS' (0 CREDITS / $0.00) [Table: `{target_table}`]")
     print("=" * 92)
     user_input = input(f"Enter the batch NUMBER (1 to {len(batches)}) or exact BATCH NAME to sync (or press Enter to cancel): ").strip()
     if not user_input:
@@ -663,16 +704,16 @@ def sync_batch_to_apollo_list_action(batches, conn):
                 break
 
     if not selected_batch:
-        print(f"Batch '{user_input}' not found.")
+        print(f"Batch '{user_input}' not found in `{target_table}`.")
         return
 
     batch_name = selected_batch["batch"]
-    leads = get_batch_leads(batch_name)
+    leads = get_batch_leads(batch_name, table_name=target_table)
     if not leads:
-        print(f"[!] No leads found for batch '{batch_name}'.")
+        print(f"[!] No leads found for batch '{batch_name}' in `{target_table}`.")
         return
 
-    print(f"\n[✓] Selected Batch: '{batch_name}' ({len(leads):,d} total leads)")
+    print(f"\n[✓] Selected Batch: '{batch_name}' ({len(leads):,d} total leads from `{target_table}`)")
 
     # 1. Select Apollo Account
     accounts = load_apollo_accounts()
@@ -710,59 +751,113 @@ def sync_batch_to_apollo_list_action(batches, conn):
 
 
 def main():
+    active_table = "apollo_saved_leads"
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg in ("--table", "-t") and i < len(sys.argv) - 1:
+            val = sys.argv[i + 1].strip().lower()
+            if "enrich" in val:
+                active_table = "enrich_saved_leads"
+            elif "apollo" in val:
+                active_table = "apollo_saved_leads"
+        elif "--table=" in arg:
+            val = arg.split("=", 1)[1].strip().lower()
+            if "enrich" in val:
+                active_table = "enrich_saved_leads"
+            elif "apollo" in val:
+                active_table = "apollo_saved_leads"
+        elif "enrich" in arg.lower() and not arg.endswith(".py"):
+            active_table = "enrich_saved_leads"
+
     while True:
         try:
             with get_connection() as conn:
-                batches = fetch_batches(conn)
+                batches = fetch_batches(conn, table_name=active_table)
                 emails_count = get_crm_emails_count(conn)
-                display_batch_overview(batches, emails_count)
+                display_batch_overview(batches, emails_count, table_name=active_table)
 
                 print("AVAILABLE ACTIONS:")
-                print("  [1] Delete a batch from Apollo Saved Leads")
+                print(f"  [T] Switch Active Table (Current: {active_table})")
+                print("  [C] Manage & Export Enrich.so Unique Companies (For Apollo Account Lists)")
+                print(f"  [1] Delete a batch from `{active_table}`")
                 print("  [2] Add / Upload file data to master CRM (`emails` table)")
                 print("  [3] Export a batch to CSV (Clean & Unique Leads)")
                 print("  [4] Audit batch — unique domains & domain column check")
                 print("  [5] Audit batch — job titles (DB + optional LLM)")
                 print("  [6] Audit batch — Indian names (local + optional LLM)")
                 print("  [7] Clean & Export enriched leads by login (Sales-Ready -> Downloads)")
-                print("  [8] Sync batch to Apollo Web 'My lists' (0 Credits / $0.00)")
-                print("  [9] Refresh batch statistics")
-                print("  [10] Exit")
+                print("  [8] Send to MillionVerifier (Clean -> Bulk Verify -> Download Good/Bad/Risky)")
+                print("  [9] Sync batch to Apollo Web 'My lists' (0 Credits / $0.00)")
+                print("  [10] Search Optimizer & AI Slicer (0 Credits -> Find 100-page keywords)")
+                print("  [W] Daily WhatsApp Expiry Alert (0 Credits / Free CallMeBot)")
+                print("  [F] Freshsales CRM Agent — Sync Verified Good Leads (Auto-Merge Tags / Non-Overwrite)")
+                print("  [11] Refresh batch statistics")
+                print("  [12] Exit")
                 
-                choice = input("\nSelect an option (1-10): ").strip()
+                choice = input("\nSelect an option (1-12, T, C, O, W, or F): ").strip()
 
-                if choice == "1":
-                    delete_batch_action(batches, conn)
+                if choice.upper() == "T":
+                    active_table = "enrich_saved_leads" if active_table == "apollo_saved_leads" else "apollo_saved_leads"
+                    print(f"\n[✓] Switched active source table to: `{active_table}`")
+                    continue
+                elif choice.upper() == "C":
+                    export_enrich_companies_action()
+                    continue
+                elif choice.upper() == "O" or choice == "10":
+                    run_apollo_search_optimizer()
+                    input("\nPress Enter to continue...")
+                elif choice.upper() == "W":
+                    from scripts.send_apollo_expiry_alert import fetch_all_account_expiries, format_whatsapp_expiry_message, send_whatsapp_alert, setup_windows_scheduler
+                    print("\n[DAILY WHATSAPP EXPIRY ALERT CENTER]")
+                    print("  [1] Send alert now (Live to WhatsApp)")
+                    print("  [2] Preview alert (Dry Run)")
+                    print("  [3] Register daily 8:30 AM alert in Windows Task Scheduler")
+                    w_choice = input("Select [1-3, default 2]: ").strip()
+                    if w_choice == "3":
+                        setup_windows_scheduler(hour=8, minute=30)
+                    else:
+                        is_dry = (w_choice != "1")
+                        data = fetch_all_account_expiries()
+                        msg = format_whatsapp_expiry_message(data)
+                        send_whatsapp_alert(msg, dry_run=is_dry)
+                    input("\nPress Enter to continue...")
+                elif choice.upper() == "F":
+                    freshsales_agent_menu_action(conn)
+                    input("\nPress Enter to continue...")
+                elif choice == "1":
+                    delete_batch_action(batches, conn, table_name=active_table)
                     input("\nPress Enter to continue...")
                 elif choice == "2":
                     add_file_to_emails_action(conn)
                     input("\nPress Enter to continue...")
                 elif choice == "3":
-                    export_batch_action(batches, conn)
+                    export_batch_action(batches, conn, table_name=active_table)
                     input("\nPress Enter to continue...")
                 elif choice == "4":
-                    audit_batch_action(batches, conn)
+                    audit_batch_action(batches, conn, table_name=active_table)
                     input("\nPress Enter to continue...")
                 elif choice == "5":
-                    audit_batch_titles_action(batches, conn)
+                    audit_batch_titles_action(batches, conn, table_name=active_table)
                     input("\nPress Enter to continue...")
                 elif choice == "6":
-                    audit_batch_names_action(batches, conn)
+                    audit_batch_names_action(batches, conn, table_name=active_table)
                     input("\nPress Enter to continue...")
                 elif choice == "7":
-                    export_clean_enriched_login_action(conn)
+                    export_clean_enriched_login_action(conn, table_name=active_table)
                     input("\nPress Enter to continue...")
                 elif choice == "8":
-                    sync_batch_to_apollo_list_action(batches, conn)
+                    send_to_millionverifier_action(conn, table_name=active_table)
                     input("\nPress Enter to continue...")
                 elif choice == "9":
+                    sync_batch_to_apollo_list_action(batches, conn, table_name=active_table)
+                    input("\nPress Enter to continue...")
+                elif choice == "11":
                     print("\nRefreshing batch statistics...")
                     continue
-                elif choice in ["10", "q", "exit", "quit"]:
+                elif choice in ["12", "q", "exit", "quit"]:
                     print("\nExiting. Goodbye!")
                     break
                 else:
-                    print("\n[Invalid choice. Please select 1-10.]")
+                    print("\n[Invalid choice. Please select 1-12, T, C, O, W, or F.]")
                     input("Press Enter to continue...")
 
         except KeyboardInterrupt:

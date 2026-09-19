@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fleet & Quotas - Apollo Operations</title>
+  <link rel="stylesheet" href="/static/css/common.css">
+</head>
+<body>
+
+  <!-- Global Header -->
+  <header class="header-shell">
+    <div class="header-top">
+      <div class="brand-area">
+        <span class="brand-badge">APOLLO OPS</span>
+        <span class="brand-title">Operations <span>Cockpit</span></span>
+      </div>
+      <nav class="nav-links">
+        <a href="/batches" class="nav-link"><span>📋</span> Batches</a>
+        <a href="/search-studio" class="nav-link"><span>⚡</span> Search Studio</a>
+        <a href="/fleet" class="nav-link active"><span>👥</span> Fleet & Quotas</a>
+        <a href="/guardrails" class="nav-link"><span>🛡️</span> Guardrails</a>
+        <a href="/verifier" class="nav-link"><span>✅</span> MillionVerifier</a>
+        <a href="/freshsales-sync" class="nav-link"><span>🔄</span> Freshsales CRM</a>
+        <a href="/enrich" class="nav-link"><span>✨</span> Enrich.so</a>
+      </nav>
+    </div>
+    <div class="telemetry-strip">
+      <div class="telemetry-group">
+        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>RDS MySQL:</strong> <span id="hud-db-count">7.28M Emails</span></div>
+        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>MARISA-Trie:</strong> <span id="hud-trie-nodes">2.56M Slugs (0.4ms)</span></div>
+      </div>
+      <div class="telemetry-group" id="hud-fleet-strip"></div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="app-container">
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title"><span>👥</span> Apollo Account Fleet Manager</h2>
+        <span class="badge badge-green">Multi-Account Credit Arbitrage Active</span>
+      </div>
+      <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+        Monitors shifting daily quotas, manages cookie sessions, tracks 429 rate-limit backoffs, and safeguards accounts against sudden credit exhaustion.
+      </p>
+
+      <div id="fleet-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.25rem;">
+        <!-- Injected via fleet.js -->
+        <div style="color: var(--text-muted); padding: 2rem;">Loading account fleet...</div>
+      </div>
+    </div>
+
+    <!-- WhatsApp Alerting Card -->
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title"><span>📱</span> WhatsApp Morning Expiry Alerts (CallMeBot)</h3>
+        <span class="badge badge-blue">100% Free Notification Channel</span>
+      </div>
+      <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 1rem;">
+        Sends automated warnings to your phone when cookies approach expiration or daily credits reset.
+      </p>
+
+      <div style="display: flex; gap: 1rem; align-items: flex-end;">
+        <div style="flex: 1;">
+          <label style="font-size: 0.76rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">WhatsApp Recipient Phone (e.g. +919876543210)</label>
+          <input type="text" id="wa-phone" placeholder="+919876543210" value="+919876543210" style="width: 100%; background: var(--bg-surface); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
+        </div>
+        <div style="flex: 1;">
+          <label style="font-size: 0.76rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">CallMeBot API Key</label>
+          <input type="password" id="wa-key" placeholder="Enter CallMeBot API Key" value="configured" style="width: 100%; background: var(--bg-surface); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
+        </div>
+        <button class="btn btn-primary" onclick="window.launchTask('whatsapp_alert', 'alert_test')">
+          <span>📲</span> Send Test Alert Now
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <!-- Persistent Task Drawer -->
+  <div class="task-drawer minimized" id="task-drawer">
+    <div class="task-drawer-header" onclick="toggleTaskDrawer()">
+      <div class="task-drawer-status"><span class="pulse-dot green"></span><span id="task-drawer-text">System Idle - Background task worker ready</span></div>
+      <div style="display: flex; align-items: center; gap: 0.75rem;"><span style="font-size: 0.75rem; color: var(--text-secondary);">Logs</span><span>▲</span></div>
+    </div>
+    <div class="task-drawer-body">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="task-progress-fill" style="width: 0%;"></div></div>
+      <div class="task-terminal" id="task-terminal">No active tasks running.</div>
+      <div class="task-actions" id="task-completion-actions" style="display: none;">
+        <div style="font-size: 0.84rem; color: var(--accent-emerald); font-weight: 600;">✓ Fleet action completed.</div>
+        <button class="btn btn-secondary btn-sm" onclick="toggleTaskDrawer()">Dismiss</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/shell.js"></script>
+  <script src="/static/js/fleet.js"></script>
+</body>
+</html>

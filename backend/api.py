@@ -29,6 +29,7 @@ import pymysql
 from dotenv import load_dotenv
 from openai import OpenAI
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
@@ -844,6 +845,21 @@ def get_seniority_score(job_title: str) -> int:
     return 20
 
 
+BUSINESS_NOISE_SUFFIXES = {
+    "technologies", "technology", "tech", "services", "solutions", "group",
+    "holdings", "holding", "enterprises", "consulting", "international", "global",
+    "systems", "media", "labs", "partners"
+}
+
+GENERIC_STOP_WORDS = {
+    "first", "national", "american", "united", "general", "global", "standard",
+    "all", "one", "pro", "sun", "star", "apex", "summit", "advance", "advanced",
+    "central", "pacific", "atlantic", "metro", "city", "premier", "elite",
+    "prime", "total", "direct", "select", "choice", "group", "home", "service",
+    "services", "auto", "care", "top", "best", "new", "the"
+}
+
+
 def clean_company_name(company: str) -> str:
     """Clean company name for heuristic matching (e.g. 'Datadog, Inc. · 50 employees' -> 'Datadog')."""
     if not company:
@@ -858,6 +874,40 @@ def clean_company_name(company: str) -> str:
     while words and words[-1].lower().rstrip(".") in LEGAL_SUFFIXES:
         words.pop()
     return " ".join(words).strip() or text
+
+
+def normalize_company_stem(name: str) -> str:
+    """Extract core company stem stripping legal and business noise words."""
+    if not name:
+        return ""
+    cleaned = clean_company_name(name).lower()
+    words = re.sub(r"[^\w\s]", " ", cleaned).split()
+    while words and (words[-1] in LEGAL_SUFFIXES or words[-1] in BUSINESS_NOISE_SUFFIXES):
+        words.pop()
+    return " ".join(words).strip() or cleaned
+
+
+def generate_company_lookup_variants(raw_name: str) -> list[str]:
+    """Generate high-probability variants for exact B-Tree SQL lookup."""
+    if not raw_name:
+        return []
+    variants = set()
+    raw = str(raw_name).strip()
+    cleaned = clean_company_name(raw).strip()
+    stem = normalize_company_stem(raw)
+
+    variants.add(raw)
+    if cleaned:
+        variants.add(cleaned)
+    if stem:
+        variants.add(stem)
+        variants.add(stem.title())
+        for suffix in ["Inc", "LLC", "Corp", "Ltd", "Technologies", "Services", "Solutions", "Group"]:
+            variants.add(f"{stem.title()} {suffix}")
+            variants.add(f"{stem.title()}, {suffix}")
+            variants.add(f"{stem.title()}, {suffix}.")
+
+    return [v for v in variants if v]
 
 
 def generate_candidate_domains(company_name: str) -> list[str]:
@@ -1065,6 +1115,10 @@ def _try_domain_layers(
             "domain_source": domain_source,
         }
 
+    # Candidate permutations are only checked for direct CRM existence (Layer 1)
+    if domain_source == "company_candidate":
+        return None
+
     if contact.name and prim_d:
         with _person_domain_cache_lock:
             db_domains_for_person = list(_person_domain_cache.get(norm_c_name, []))
@@ -1237,10 +1291,100 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
             return do_query(conn)
 
 
-def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain: dict[str, str], connection=None, active_batch: str | None = None) -> dict[str, dict]:
+def check_company_names_in_crm_batch(company_names: list[str], connection=None) -> set[str]:
+    """
+    Pre-Check Layer 0: Direct Company Name Lookup in CRM `emails` table.
+    Performs normalized multi-variant and bounded prefix lookup on `emails.company_name`.
+    Handles legal suffix variations (Nestack, Nestack Inc, Nestack LLC, Nestack, Inc.)
+    and business noise suffixes (Nestack Technologies, Nestack Solutions).
+    Returns a set of lowercase normalized company names and stems that exist in the CRM.
+    """
+    if not company_names:
+        return set()
+
+    variant_to_inputs: dict[str, set[str]] = {}
+    stem_to_inputs: dict[str, set[str]] = {}
+    matched_inputs: set[str] = set()
+
+    for raw in company_names:
+        if not raw:
+            continue
+        raw_clean = str(raw).strip()
+        raw_lower = raw_clean.lower()
+        cleaned_lower = clean_company_name(raw_clean).lower()
+        stem_lower = normalize_company_stem(raw_clean).lower()
+
+        # Track mapping from forms to raw_lower
+        for form in [raw_clean, cleaned_lower, stem_lower]:
+            if form:
+                variant_to_inputs.setdefault(form.lower(), set()).add(raw_lower)
+
+        for v in generate_company_lookup_variants(raw_clean):
+            variant_to_inputs.setdefault(v.lower(), set()).add(raw_lower)
+
+        if stem_lower and len(stem_lower) >= 4 and stem_lower not in GENERIC_STOP_WORDS and not stem_lower.isdigit():
+            stem_to_inputs.setdefault(stem_lower, set()).add(raw_lower)
+
+    if not variant_to_inputs:
+        return set()
+
+    def do_query(conn):
+        try:
+            with conn.cursor() as cur:
+                # Phase 1: Batched Exact IN lookup on all generated variants
+                unique_variants = list(variant_to_inputs.keys())
+                chunk_size = 500
+                for i in range(0, len(unique_variants), chunk_size):
+                    chunk = unique_variants[i:i + chunk_size]
+                    fmt = ",".join(["%s"] * len(chunk))
+                    # Direct query utilizing idx_emails_company_name (case-insensitive in MySQL)
+                    cur.execute(f"SELECT DISTINCT company_name FROM emails WHERE company_name IN ({fmt});", tuple(chunk))
+                    for (db_cname,) in cur.fetchall():
+                        if not db_cname:
+                            continue
+                        db_clean = str(db_cname).strip()
+                        db_lower = db_clean.lower()
+                        db_cleaned = clean_company_name(db_clean).lower()
+                        db_stem = normalize_company_stem(db_clean).lower()
+
+                        for key in [db_lower, db_cleaned, db_stem]:
+                            if key in variant_to_inputs:
+                                for matched_raw in variant_to_inputs[key]:
+                                    matched_inputs.add(matched_raw)
+                                    matched_inputs.add(clean_company_name(matched_raw).lower())
+                                    matched_inputs.add(normalize_company_stem(matched_raw).lower())
+
+                # Phase 2: Bounded Prefix Range Scan for unmatched distinctive stems
+                unmatched_stems = {s: raw_set for s, raw_set in stem_to_inputs.items() if not raw_set.issubset(matched_inputs)}
+                for stem, raw_set in unmatched_stems.items():
+                    cur.execute("""
+                        SELECT company_name FROM emails 
+                        WHERE company_name = %s 
+                           OR company_name LIKE %s 
+                           OR company_name LIKE %s 
+                        LIMIT 1;
+                    """, (stem, f"{stem} %", f"{stem},%"))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        for r in raw_set:
+                            matched_inputs.add(r)
+                            matched_inputs.add(clean_company_name(r).lower())
+                            matched_inputs.add(normalize_company_stem(r).lower())
+        except Exception as ex:
+            print(f"[ContactChecker] Notice: company_name CRM lookup error: {ex}", flush=True)
+        return matched_inputs
+
+    if connection:
+        return do_query(connection)
+    else:
+        with get_connection() as conn:
+            return do_query(conn)
+
+
+def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain: dict[str, str], connection=None, active_batch: str | None = None, active_table: str = "apollo_saved_leads") -> dict[str, dict]:
     """
     4-Layer Deduplication Engine:
-      Layer 1 – Exact domain match in emails + apollo_saved_leads (excluding active batch).
+      Layer 1 – Exact domain match in emails + apollo_saved_leads + enrich_saved_leads (excluding active batch).
       Layer 2 – Person-name anchor: looks up full_name in DB and computes LCS ratio
                 between the DB email domain and the Apollo-displayed domain.
       Layer 3 – Database-driven prefix trie: checks if the incoming domain slug is
@@ -1271,14 +1415,16 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
     if not candidate_domains:
         return {}
 
-    # Parallel asynchronous DNS MX prefetch (runs concurrently while MySQL queries execute)
+    # Parallel asynchronous DNS MX prefetch (only prefetch authentic domains, never tens of thousands of candidate strings)
     mx_prefetch_thread = None
     if _DNS_AVAILABLE and candidate_domains:
-        mx_prefetch_thread = threading.Thread(target=prefetch_mx_records, args=(candidate_domains,), daemon=True)
-        mx_prefetch_thread.start()
+        real_domains = list({dom for c in contacts for src, dom in contact_candidates.get(c.key, []) if src != "company_candidate" and dom})
+        if real_domains:
+            mx_prefetch_thread = threading.Thread(target=prefetch_mx_records, args=(real_domains,), daemon=True)
+            mx_prefetch_thread.start()
 
     # ----------------------------------------------------------
-    # LAYER 1: Exact domain batch query (emails + apollo_saved_leads)
+    # LAYER 1: Exact domain batch query (emails + apollo_saved_leads + enrich_saved_leads)
     # ----------------------------------------------------------
     def do_query(conn):
         schema = get_target_table_schema(conn)
@@ -1291,32 +1437,16 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
 
         try:
             with conn.cursor() as cur:
-                format_strings = ",".join(["%s"] * len(candidate_domains))
+                chunk_size = 1000
+                for i in range(0, len(candidate_domains), chunk_size):
+                    chunk = candidate_domains[i:i + chunk_size]
+                    format_strings = ",".join(["%s"] * len(chunk))
 
-                # Layer 1a: Query CRM emails table by exact domain
-                query1 = f"SELECT `{domain_col}`, `{name_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings});"
-                cur.execute(query1, tuple(candidate_domains))
-                rows1 = cur.fetchall()
-                for r in rows1:
-                    dom = str(r[0] or "").strip().lower()
-                    raw_nm = str(r[1] or "").strip()
-                    norm_nm = normalize_text(raw_nm)
-                    if dom:
-                        matched_domains.add(dom)
-                        if norm_nm:
-                            matched_records[(norm_nm, dom)] = raw_nm
-
-                # Layer 1b: Query apollo_saved_leads by exact domain (exclude active batch to prevent self-matching during rescrapes)
-                if active_batch:
-                    query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) AND `batch` != %s;"
-                    params2 = tuple(candidate_domains) + (active_batch,)
-                else:
-                    query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings});"
-                    params2 = tuple(candidate_domains)
-                try:
-                    cur.execute(query2, params2)
-                    rows2 = cur.fetchall()
-                    for r in rows2:
+                    # Layer 1a: Query CRM emails table by exact domain
+                    query1 = f"SELECT `{domain_col}`, `{name_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings});"
+                    cur.execute(query1, tuple(chunk))
+                    rows1 = cur.fetchall()
+                    for r in rows1:
                         dom = str(r[0] or "").strip().lower()
                         raw_nm = str(r[1] or "").strip()
                         norm_nm = normalize_text(raw_nm)
@@ -1324,8 +1454,48 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                             matched_domains.add(dom)
                             if norm_nm:
                                 matched_records[(norm_nm, dom)] = raw_nm
-                except Exception as ex2:
-                    print(f"[ContactChecker] Notice: apollo_saved_leads lookup error: {ex2}", flush=True)
+
+                    # Layer 1b: Query apollo_saved_leads by exact domain (exclude active batch if auditing apollo_saved_leads)
+                    if active_batch and active_table == "apollo_saved_leads":
+                        query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) AND `batch` != %s;"
+                        params2 = tuple(chunk) + (active_batch,)
+                    else:
+                        query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings});"
+                        params2 = tuple(chunk)
+                    try:
+                        cur.execute(query2, params2)
+                        rows2 = cur.fetchall()
+                        for r in rows2:
+                            dom = str(r[0] or "").strip().lower()
+                            raw_nm = str(r[1] or "").strip()
+                            norm_nm = normalize_text(raw_nm)
+                            if dom:
+                                matched_domains.add(dom)
+                                if norm_nm:
+                                    matched_records[(norm_nm, dom)] = raw_nm
+                    except Exception as ex2:
+                        print(f"[ContactChecker] Notice: apollo_saved_leads lookup error: {ex2}", flush=True)
+
+                    # Layer 1c: Query enrich_saved_leads by exact domain (exclude active batch if auditing enrich_saved_leads)
+                    try:
+                        if active_batch and active_table == "enrich_saved_leads":
+                            query3 = f"SELECT `company_domain`, `name` FROM `enrich_saved_leads` WHERE `company_domain` IN ({format_strings}) AND `batch` != %s;"
+                            params3 = tuple(chunk) + (active_batch,)
+                        else:
+                            query3 = f"SELECT `company_domain`, `name` FROM `enrich_saved_leads` WHERE `company_domain` IN ({format_strings});"
+                            params3 = tuple(chunk)
+                        cur.execute(query3, params3)
+                        rows3 = cur.fetchall()
+                        for r in rows3:
+                            dom = str(r[0] or "").strip().lower()
+                            raw_nm = str(r[1] or "").strip()
+                            norm_nm = normalize_text(raw_nm)
+                            if dom:
+                                matched_domains.add(dom)
+                                if norm_nm:
+                                    matched_records[(norm_nm, dom)] = raw_nm
+                    except Exception as ex3:
+                        pass
 
         except Exception as e:
             print(f"[ContactChecker] Notice: CRM lookup error: {e}", flush=True)
@@ -1340,7 +1510,7 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
 
     # ----------------------------------------------------------
     # LAYER 2 PREP: Fetch DB domains for each contact's full name
-    # (batch query: all unique names at once)
+    # (batch query: all unique names at once across CRM, Apollo & Enrich)
     # ----------------------------------------------------------
     unique_names_needed = set()
     for c in contacts:
@@ -1383,9 +1553,9 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                                 if dom not in _person_domain_cache[norm_nm]:
                                     _person_domain_cache[norm_nm].append(dom)
 
-                    # 2. Query apollo_saved_leads (excluding active batch to prevent self-matching)
+                    # 2. Query apollo_saved_leads (excluding active batch if apollo_saved_leads)
                     try:
-                        if active_batch:
+                        if active_batch and active_table == "apollo_saved_leads":
                             sql_saved = f"SELECT `name`, `company_domain` FROM `apollo_saved_leads` WHERE `name` IN ({fmt}) AND `batch` != %s;"
                             params_saved = tuple(unique_names_needed) + (active_batch,)
                         else:
@@ -1395,6 +1565,29 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                         rows_saved = cur.fetchall()
                         with _person_domain_cache_lock:
                             for row in rows_saved:
+                                raw_nm = str(row[0] or "").strip()
+                                dom = str(row[1] or "").strip().lower()
+                                norm_nm = normalize_text(raw_nm)
+                                if norm_nm and dom:
+                                    if norm_nm not in _person_domain_cache:
+                                        _person_domain_cache[norm_nm] = []
+                                    if dom not in _person_domain_cache[norm_nm]:
+                                        _person_domain_cache[norm_nm].append(dom)
+                    except Exception:
+                        pass
+
+                    # 3. Query enrich_saved_leads (excluding active batch if enrich_saved_leads)
+                    try:
+                        if active_batch and active_table == "enrich_saved_leads":
+                            sql_enrich = f"SELECT `name`, `company_domain` FROM `enrich_saved_leads` WHERE `name` IN ({fmt}) AND `batch` != %s;"
+                            params_enrich = tuple(unique_names_needed) + (active_batch,)
+                        else:
+                            sql_enrich = f"SELECT `name`, `company_domain` FROM `enrich_saved_leads` WHERE `name` IN ({fmt});"
+                            params_enrich = tuple(unique_names_needed)
+                        cur.execute(sql_enrich, params_enrich)
+                        rows_enrich = cur.fetchall()
+                        with _person_domain_cache_lock:
+                            for row in rows_enrich:
                                 raw_nm = str(row[0] or "").strip()
                                 dom = str(row[1] or "").strip().lower()
                                 norm_nm = normalize_text(raw_nm)
@@ -2785,12 +2978,13 @@ def ensure_batch_enrichment_ledger_table(conn) -> None:
             pass
 
 
-def backfill_enrichment_ledger_from_saved_leads(conn) -> int:
+def backfill_enrichment_ledger_from_saved_leads(conn, table_name: str = "apollo_saved_leads") -> int:
     """Seed ledger from rows that already have enriched_at (one-time / idempotent)."""
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
     ensure_batch_enrichment_ledger_table(conn)
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             INSERT INTO `batch_enrichment_ledger` (
                 `batch`, `saved_lead_id`, `apollo_id`, `company_domain`,
                 `login_email`, `account_name`, `session_id`, `outcome`,
@@ -2809,7 +3003,7 @@ def backfill_enrichment_ledger_from_saved_leads(conn) -> int:
                 COALESCE(`email_status`, ''),
                 COALESCE(`credits_charged`, 0),
                 COALESCE(`enriched_at`, NOW())
-            FROM `apollo_saved_leads`
+            FROM `{target_table}`
             WHERE `enriched_at` IS NOT NULL
             ON DUPLICATE KEY UPDATE `saved_lead_id` = `saved_lead_id`
             """
@@ -2889,15 +3083,16 @@ def record_enrichment_ledger_attempts(
     return len(rows)
 
 
-def fetch_unattempted_leads_for_batch(conn, batch: str) -> list[dict[str, Any]]:
+def fetch_unattempted_leads_for_batch(conn, batch: str, table_name: str = "apollo_saved_leads") -> list[dict[str, Any]]:
     """Leads in batch with no row in batch_enrichment_ledger."""
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
     ensure_batch_enrichment_ledger_table(conn)
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT l.id, l.apollo_id, l.name, l.first_name, l.last_name,
                    l.job_title, l.company, l.company_domain, l.website_link, l.segment, l.email
-            FROM `apollo_saved_leads` l
+            FROM `{target_table}` l
             LEFT JOIN `batch_enrichment_ledger` e
               ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
             WHERE l.batch = %s AND e.id IS NULL
@@ -3564,8 +3759,38 @@ def get_batch_worker_status():
     }
 
 
+# Include standalone Enrich.so Lead Finder router
+try:
+    try:
+        from backend.enrich_api import enrich_router
+    except ModuleNotFoundError:
+        from enrich_api import enrich_router
+    app.include_router(enrich_router)
+    print("[ContactChecker] Successfully loaded Enrich.so router (/match-enrich, /enrich-batches)", flush=True)
+except Exception as _ex_enrich:
+    print(f"[ContactChecker] Notice: enrich_router import: {_ex_enrich}", flush=True)
+
+# Mount Multi-Page Dashboard Static Assets & Router
+try:
+    from pathlib import Path
+    _static_dir = Path(__file__).resolve().parent / "static"
+    _static_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+    try:
+        from backend.dashboard_routes import dashboard_router
+    except ModuleNotFoundError:
+        from dashboard_routes import dashboard_router
+    app.include_router(dashboard_router)
+    print("[ContactChecker] Successfully loaded Multi-Page Operations Hub router", flush=True)
+except Exception as _ex_dash:
+    print(f"[ContactChecker] Notice: dashboard_router import: {_ex_dash}", flush=True)
+
+
+
 if __name__ == "__main__":
     print("\n" + "=" * 70)
     print(">>> [ContactChecker API] Starting Lead Processing Engine (Port 8000)")
     print("=" * 70 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

@@ -8,10 +8,11 @@
     "package": "node scripts/package.js",
     "dev": "python backend/api.py",
     "test": "python tests/run_all_testers.py",
+    "test:pytest": "pytest",
     "test:guardrails": "python tests/test_hard_guardrails.py",
     "test:runtime": "node tests/test_extension_runtime.js",
     "test:34": "node tests/test_34_page_simulation.js",
-    "test:all": "node scripts/build.js && node tests/test_extension_runtime.js && node tests/test_34_page_simulation.js && python tests/test_hard_guardrails.py && python tests/run_all_testers.py"
+    "test:all": "node scripts/build.js && node tests/test_extension_runtime.js && node tests/test_34_page_simulation.js && python tests/test_hard_guardrails.py && pytest"
   },
   "keywords": [
     "apollo",

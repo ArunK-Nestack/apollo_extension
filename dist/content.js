@@ -33,6 +33,7 @@
     batchName: "batch_1",
     titleGuardrailEnabled: true,
     indianGuardrailEnabled: true,
+    hasUnsavedRequiredContacts: false,
     isUpdatingDom: false,
     observer: null,
     timer: null,
@@ -905,31 +906,50 @@
 
 
   // ============================================================
-  // FIND A ROW CELL BY APOLLO COLUMN HEADER
+  // FIND A ROW CELL BY APOLLO COLUMN HEADER (Cached Snapshot O(1))
   // ============================================================
 
-  function findCellByHeader(
-    row,
-    cells,
-    acceptedHeaders
-  ) {
+  function getApolloHeadersList() {
     const headers = Array.from(
       document.querySelectorAll(
         '[role="columnheader"], th'
       )
     );
 
+    return headers.map((header, idx) => ({
+      element: header,
+      index: idx,
+      ariaColumnIndex: header.getAttribute("aria-colindex"),
+      label: cleanText(
+        header.innerText ||
+        header.textContent ||
+        header.getAttribute("aria-label") ||
+        ""
+      ).toLowerCase()
+    }));
+  }
+
+  function findCellByHeader(
+    row,
+    cells,
+    acceptedHeaders,
+    headersList = null
+  ) {
+    const headers = headersList || getApolloHeadersList();
+
     const accepted = acceptedHeaders.map(
       value => cleanText(value).toLowerCase()
     );
 
     const header = headers.find(item => {
-      const label = cleanText(
-        item.innerText ||
-        item.textContent ||
-        item.getAttribute("aria-label") ||
-        ""
-      ).toLowerCase();
+      const label = item.label !== undefined
+        ? item.label
+        : cleanText(
+            item.innerText ||
+            item.textContent ||
+            item.getAttribute("aria-label") ||
+            ""
+          ).toLowerCase();
 
       return accepted.some(
         expected =>
@@ -944,8 +964,9 @@
 
     // Prefer ARIA column indices because Apollo can have a
     // checkbox/actions column before the visible data columns.
-    const ariaColumnIndex =
-      header.getAttribute("aria-colindex");
+    const ariaColumnIndex = header.ariaColumnIndex !== undefined
+      ? header.ariaColumnIndex
+      : header.getAttribute?.("aria-colindex");
 
     if (ariaColumnIndex) {
       const indexedCell = row.querySelector(
@@ -958,8 +979,7 @@
     }
 
     // Fallback: use visible header order.
-    const headerIndex =
-      headers.indexOf(header);
+    const headerIndex = header.index !== undefined ? header.index : headers.indexOf(header);
 
     return (
       headerIndex >= 0
@@ -972,7 +992,7 @@
   // EXTRACT APOLLO ROW (Flexible & Resilient to Custom Column Layouts)
   // ============================================================
 
-  function extractContact(link, index) {
+  function extractContact(link, index, headersList = null) {
     const row = link.closest('[role="row"], tr');
 
     if (!row) {
@@ -1007,7 +1027,8 @@
     let titleCell = findCellByHeader(
       row,
       cells,
-      ["title", "job title", "position", "role"]
+      ["title", "job title", "position", "role"],
+      headersList
     );
     if (!titleCell && nameCellIndex !== -1 && nameCellIndex + 1 < cells.length) {
       titleCell = cells[nameCellIndex + 1];
@@ -1017,7 +1038,8 @@
     let companyCell = findCellByHeader(
       row,
       cells,
-      ["company", "company name", "organization", "account"]
+      ["company", "company name", "organization", "account"],
+      headersList
     );
     if (!companyCell) {
       const compLink = row.querySelector('a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]');
@@ -1099,7 +1121,7 @@
       email = (mailtoLink.getAttribute("href") || "").replace(/^mailto:/i, "").split("?")[0].trim();
     }
     if (!email) {
-      const emailMatch = (row.innerText || "").match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+      const emailMatch = (row.textContent || "").match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
       if (emailMatch) {
         email = emailMatch[0].trim();
       }
@@ -1115,7 +1137,8 @@
         "headquarters",
         "headquarters location",
         "hq location"
-      ]
+      ],
+      headersList
     );
 
     const location = cleanText(
@@ -1134,12 +1157,13 @@
         "number of employees",
         "company size",
         "num employees"
-      ]
+      ],
+      headersList
     );
 
     let employeeCount = null;
     if (employeesCell) {
-      const empText = cleanText(employeesCell.innerText || employeesCell.textContent || "");
+      const empText = cleanText(employeesCell.textContent || "");
       const empMatch = empText.replace(/,/g, "").match(/\d+/);
       if (empMatch) {
         employeeCount = parseInt(empMatch[0], 10);
@@ -1343,9 +1367,12 @@
       state.requiredContactsAll.entries()
     );
 
-    chrome.storage.local.set({
-      [REQUIRED_CONTACTS_STORAGE_KEY]: contactsList
-    });
+    if (state.hasUnsavedRequiredContacts) {
+      chrome.storage.local.set({
+        [REQUIRED_CONTACTS_STORAGE_KEY]: contactsList
+      });
+      state.hasUnsavedRequiredContacts = false;
+    }
 
     // Only send contacts that have not been synced yet and are not currently in-flight
     const contactsToSync = contactsList
@@ -1527,6 +1554,7 @@
           // Replace lower-ranking previous lead with higher-ranking decision maker
           state.requiredContactsAll.delete(prevElected.key);
           state.syncedLeadKeys.delete(prevElected.key);
+          state.hasUnsavedRequiredContacts = true;
         } else {
           // Current contact is lower or equal rank -> do not replace existing superior lead
           return;
@@ -1555,6 +1583,7 @@
       is_pending_eval: isPending,
       seniority_score: incomingScore
     });
+    state.hasUnsavedRequiredContacts = true;
 
     if (compKey) {
       state.requiredCompanyMap.set(compKey, {
@@ -1845,13 +1874,13 @@
     state.lastEvaluatedPendingTimestamp = Date.now();
     const titlesList = Array.from(pendingTitles);
     const namesList = Array.from(pendingNames);
-    showStatus(`⚡ 50-Item Batch: Evaluating ${pendingContacts.length} pending titles & names with AI...`, 0, true);
+    showStatus(`⚡ 50-Item Batch: Queuing ${pendingContacts.length} pending titles & names to DB (no AI)...`, 0, true);
     state.isEvaluatingBatch = true;
 
     // Bug #2 Fix: Helper to rescue contacts when AI batch evaluation fails.
     function rescuePendingContacts(reason) {
       state.isEvaluatingBatch = false;
-      addActivity("AI_BATCH_FAILED", `AI evaluation failed (${reason}). Resetting ${pendingContacts.length} contact(s) to re-evaluate on next scan.`, "error");
+      addActivity("AI_BATCH_FAILED", `Pending queue failed (${reason}). Resetting ${pendingContacts.length} contact(s) to re-evaluate on next scan.`, "error");
       pendingContacts.forEach(({ key, contact }) => {
         contact.is_pending_eval = false;
         contact.is_pending_indian_eval = false;
@@ -1859,7 +1888,7 @@
         state.checkedContacts.delete(key);
         state.pendingContacts.delete(key);
       });
-      showStatus(`⚠ AI batch failed — ${pendingContacts.length} contacts reset for retry`, 3000, false);
+      showStatus(`⚠ Pending queue failed — ${pendingContacts.length} contacts reset for retry`, 3000, false);
       if (callback) callback();
     }
 
@@ -1933,15 +1962,18 @@
           }
         });
 
+        if (excludedTitlesCount > 0 || excludedIndianCount > 0 || keptCount > 0) {
+          state.hasUnsavedRequiredContacts = true;
+        }
         saveRequiredContactsNow();
         renderExportControls();
 
         // Refresh badges safely without recursion loop
-        scheduleScan(300);
+        scheduleScan(100);
 
         const totalExcluded = excludedTitlesCount + excludedIndianCount;
         showStatus(`⚡ Evaluated ${pendingContacts.length} contacts: ${keptCount} kept, ${totalExcluded} excluded (${excludedTitlesCount} title, ${excludedIndianCount} demographic)!`, 5000);
-        addActivity("PENDING_BATCH_EVALUATED", `AI Evaluated ${pendingContacts.length} pending contacts: ${keptCount} kept, ${totalExcluded} excluded from local storage (${excludedTitlesCount} non-required titles, ${excludedIndianCount} pure Indian names).`, "info", {
+        addActivity("PENDING_BATCH_EVALUATED", `Queued ${pendingContacts.length} pending contacts to DB: ${keptCount} kept locally, ${totalExcluded} excluded (${excludedTitlesCount} title, ${excludedIndianCount} definite Indian name). Run manage_batches [5]/[6] for LLM audit.`, "info", {
           total_evaluated: pendingContacts.length,
           kept: keptCount,
           excluded_titles: excludedTitlesCount,
@@ -2042,6 +2074,7 @@
       state.syncedLeadKeys.delete(key);
       state.syncingLeadKeys.delete(key);
     });
+    state.hasUnsavedRequiredContacts = true;
 
     // Rebuild state.requiredCompanyMap
     state.requiredCompanyMap.clear();
@@ -2091,6 +2124,7 @@
     state.requiredCompanyMap.clear();
     state.syncedLeadKeys.clear();
     state.syncingLeadKeys.clear();
+    state.hasUnsavedRequiredContacts = false;
 
     if (chrome?.storage?.local) {
       chrome.storage.local.set({
@@ -2307,12 +2341,13 @@
       return;
     }
 
+    const headersList = getApolloHeadersList();
     const contactsToCheck = [];
     const currentContacts = new Map();
     let failedExtractionCount = 0;
 
     links.forEach((link, index) => {
-      const contact = extractContact(link, index);
+      const contact = extractContact(link, index, headersList);
 
       if (!contact) {
         failedExtractionCount++;
@@ -2578,7 +2613,7 @@
     return true;
   }
 
-  function scheduleScan(delay = 300) {
+  function scheduleScan(delay = 100) {
     if (state.isUpdatingDom) {
       return;
     }
@@ -2598,9 +2633,14 @@
     }
 
     state.lastNavigatedKey = currentNavKey;
-    state.checkedContacts.clear();
+    // Retain recent checked contacts to make flipping between pages 0ms
+    if (state.checkedContacts.size > 300) {
+      const keysToDelete = Array.from(state.checkedContacts.keys()).slice(0, state.checkedContacts.size - 200);
+      keysToDelete.forEach(k => state.checkedContacts.delete(k));
+    }
     state.currentContacts.clear();
-    scheduleScan(300);
+    startObserver();
+    scheduleScan(100);
   }
 
   window.addEventListener("popstate", onPageNavigation, { passive: true });
@@ -2630,11 +2670,16 @@
     state.observer = new MutationObserver(mutations => {
       if (!state.active || state.isUpdatingDom) return;
       if (mutations.some(mutationNeedsScan)) {
-        scheduleScan(300);
+        scheduleScan(100);
       }
     });
 
-    state.observer.observe(document.body, {
+    const target =
+      document.querySelector('[role="grid"], .zp_table, [role="main"], #main-app') ||
+      document.body;
+
+    state.observerTarget = target;
+    state.observer.observe(target, {
       childList: true,
       subtree: true
     });

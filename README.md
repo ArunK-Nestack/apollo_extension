@@ -99,13 +99,14 @@ GUARDRAILS_ENABLED=true
 
 ---
 
-### Step 4: Start the Backend API
+### Step 4: Start the Backend API & Web Operations Hub
 Run the backend server with uvicorn:
 ```bash
 python backend/api.py
 ```
 *The API will start listening at `http://127.0.0.1:8000`.*
 *Health check URL:* `http://127.0.0.1:8000/health`
+*Web Operations Hub:* **`http://127.0.0.1:8000/batches`** (Dedicated multi-page dashboard for pipeline management, AI search slicing, fleet quota monitoring, MillionVerifier verification, and Freshsales CRM syncing).
 
 ---
 
@@ -201,39 +202,134 @@ npm run test:all
 
 ---
 
-## 7. Project Directory Structure
+## 7. Production Codebase Directory Layout
 
 ```text
 apollo_extension/
-├── backend/                       # Python FastAPI lead engine & deduplication microservice
-│   └── api.py
-├── extensions/                    # Source code for Chrome Extension (Dev mode)
+├── api.py                          # Root FastAPI uvicorn entrypoint proxy (`python api.py`)
+├── pyproject.toml                  # Modern unified Python project configuration & tool configs
+├── package.json                    # NPM extension build pipeline & test commands
+├── requirements.txt                # Unified production Python dependencies
+├── pyrightconfig.json              # Static type analysis multi-root paths configuration
+├── pytest.ini                      # Pytest runner configuration
+├── .env.example                    # Clean environment configuration template (all services)
+├── .gitignore                      # Production gitignore (blocks large dumps, exports, crx/pem)
+├── README.md                       # Comprehensive documentation & setup guide
+│
+├── backend/                        # FastAPI Backend & Deduplication Engine
+│   ├── __init__.py
+│   ├── api.py                      # Core REST API, 4-layer CRM defense & MySQL engine
+│   ├── enrich_api.py               # Enrich.so router & API endpoints
+│   ├── import_csv.py               # Database bulk ingestion utility
+│   └── data/                       # Ingestion pipelines & domain cache
+│
+├── extensions/                     # Apollo.io Chrome Extension (Manifest V3)
 │   ├── manifest.json
-│   ├── background.js
-│   └── content.js
-├── dist/                          # Production distribution output (created by npm run build)
+│   ├── background.js               # Background service worker
+│   └── content.js                  # In-page HUD & DOM observer
+│
+├── extensions_enrich/              # Enrich.so Chrome Extension (Manifest V3)
 │   ├── manifest.json
 │   ├── background.js
 │   ├── content.js
-│   └── apollo-extension.zip       # Packaged zip ready for Chrome Web Store / team sharing
-├── docs/                          # Architecture & technical specifications
+│   └── styles.css
+│
+├── freshsales_agent/               # Freshsales CRM Integration Agent
+│   ├── app/
+│   │   ├── clients/freshsales.py   # Freshsales API client & bulk upsert engine
+│   │   ├── database/               # SQLite metrics datastore (crm_automation.db)
+│   │   ├── services/               # Batch processor, TLD filter, upsert delta engine
+│   │   └── config.py               # CRM credentials & settings
+│   ├── tests_agent.py
+│   └── extract_companies.py
+│
+├── millionverifier_agent_step1/    # MillionVerifier Bulk Verification Agent
+│   ├── app/
+│   │   ├── clients/                # MillionVerifier API client
+│   │   ├── services/               # Verifier, 75-column categorizer, GDPR filter
+│   │   └── config.py
+│   ├── verify_cli.py
+│   └── tests_categorizer.py
+│
+├── scripts/                        # Production CLI Operations & Pipelines
+│   ├── manage_batches.py           # Interactive batch management dashboard & hub
+│   ├── apollo_search_direct.py     # Streaming search scraper & net-new DB saver
+│   ├── apollo_search_optimizer.py  # AI keyword slicing & volume discovery engine
+│   ├── enrich_batch_interactive.py # Multi-account bulk enrichment CLI
+│   ├── send_to_millionverifier.py  # 75-Column bulk email verifier & categorizer (Good/Bad/Risky)
+│   ├── freshsales_bridge.py        # Verified 'Good' leads -> Freshsales CRM sync bridge
+│   ├── send_apollo_expiry_alert.py # WhatsApp daily cookie/key expiry notifier
+│   ├── clean_enriched_export.py    # Sales-ready clean export formatter
+│   ├── apollo_export_formatter.py  # Apollo 75-column official schema formatter
+│   ├── sync_batch_to_apollo_list.py# Apollo Lists sync & 5,000-row CSV splitter
+│   ├── batch_domain_audit.py       # CRM domain & Indian name auditing engine
+│   ├── batch_qualification_audit.py# Title hierarchy qualification audit engine
+│   ├── domain_resolver_engine.py   # Multi-worker domain resolution engine
+│   ├── lead_guardrails.py          # Standalone 4-layer guardrails pipeline
+│   ├── build.js                    # Extension bundling script
+│   ├── package.js                  # Extension ZIP/CRX packager
+│   └── migrations/                 # Historical database migrations
+│
+├── config/                         # Configuration & Account Vaults
+│   ├── apollo_accounts.json        # Configured Apollo accounts (key-masked in logs)
+│   ├── apollo_accounts.template.json
+│   ├── saved_searches.json         # Authentic Apollo saved searches catalog
+│   ├── search_keyword_history.json # Slicing keyword recommendation history
+│   └── freshsales_synced_batches.json # CRM synced batch ledger
+│
+├── data/                           # Data Assets & Binary Caches
+│   ├── domain_trie.marisa          # Memory-mapped MARISA prefix trie (~30MB)
+│   ├── domain_slugs_cache.txt      # Raw domain slug lexicon
+│   └── indian surnames  (2).xlsx   # Indian name exclusion lexicon
+│
+├── tests/                          # Unified Automated Test Suites
+│   ├── conftest.py                 # Pytest subproject environment isolation fixtures
+│   ├── run_all_testers.py          # 5-Persona automated QA suite
+│   ├── test_hard_guardrails.py     # 4-Layer deduplication unit tests
+│   ├── test_apollo_search_direct.py# Search & domain resolver tests
+│   ├── test_apollo_search_optimizer.py # Keyword slicing tests
+│   ├── test_clean_enriched_export.py # Clean export formatter tests
+│   ├── test_domain_resolver_engine.py # DNS domain resolver tests
+│   ├── test_enrich_matching.py     # Enrich.so matching tests
+│   ├── test_freshsales_bridge.py   # Freshsales CRM bridge tests
+│   ├── test_send_to_millionverifier.py # MillionVerifier integration tests
+│   ├── test_send_apollo_expiry_alert.py # WhatsApp alert tests
+│   ├── test_extension_runtime.js   # Extension DOM simulation
+│   └── backend/                    # Backend microservice unit tests
+│
+├── docs/                           # Architecture & Operational Documentation
 │   ├── SYSTEM_ARCHITECTURE.md
-│   ├── WORKFLOW_EXTENSION_TECHNICAL_SPEC.md
+│   ├── COMMANDS_AND_OPERATIONS_GUIDE.md
+│   ├── DOMAIN_DEDUPLICATION_DESIGN.md
 │   ├── SINGLE_CONTACT_WORKFLOW.md
-│   └── DOMAIN_DEDUPLICATION_DESIGN.md
-├── scripts/                       # Build pipeline & maintenance CLI tools
-│   ├── build.js                   # npm run build engine
-│   ├── package.js                 # npm run package engine
-│   ├── cleanup_saved_leads.py
-│   ├── export_batch.py
-│   └── import_august_emails.py
-├── tests/                         # Automated QA & regression test suites
-│   ├── run_all_testers.py         # 15/15 multi-tester QA suite
-│   ├── test_hard_guardrails.py    # 666 real-world duplicate regression
-│   └── test_extension_runtime.js  # Extension DOM runtime simulation
-├── data/                          # Historical datasets, raw CSVs & archive data
-├── package.json                   # Standard NPM script definitions
-├── requirements.txt               # Python dependencies
-├── .env.example                   # Environment configuration template
-└── README.md                      # Comprehensive documentation
+│   └── WORKFLOW_EXTENSION_TECHNICAL_SPEC.md
+│
+├── exports/                        # Local CSV exports directory (gitignored)
+└── scratch/                        # Temporary scratch workspace (gitignored, kept clean)
 ```
+
+---
+
+## 8. End-to-End Production Pipeline
+
+The system forms an automated 5-stage data lifecycle:
+
+```mermaid
+flowchart LR
+    A["1. Ingestion / Search<br/>(Extension or Search Direct)"] --> B["2. 4-Layer Guardrails<br/>(CRM Domain + 64K Titles)"]
+    B --> C["3. Bulk Enrichment<br/>(enrich_batch_interactive)"]
+    C --> D["4. Step 1: Verification<br/>(send_to_millionverifier)"]
+    D --> E["5. Step 2: CRM Sync<br/>(freshsales_bridge)"]
+    
+    style A fill:#e1f5fe,stroke:#0288d1
+    style B fill:#fff3e0,stroke:#f57c00
+    style C fill:#e8f5e9,stroke:#388e3c
+    style D fill:#ede7f6,stroke:#512da8
+    style E fill:#e0f2f1,stroke:#00796b
+```
+
+1. **Discovery & Scraping**: Prospecting directly on Apollo.io or streaming search queries via `python scripts/apollo_search_direct.py`.
+2. **Deterministic Guardrails**: Live 0.5ms CRM lookup against 7.28M records, 64K title rules, and on-demand `gpt-4o-mini` evaluation with compounding cache.
+3. **Multi-Account Bulk Enrichment**: Enriching leads with verified emails across Apollo accounts using `python scripts/enrich_batch_interactive.py`.
+4. **Step 1: MillionVerifier Bulk Verification**: 75-column compliant formatting, cleaning, and bulk verification producing partitioned Good, Bad, and Risky datasets via `python scripts/send_to_millionverifier.py`.
+5. **Step 2: Freshsales CRM Sync**: 5-layer delta resolution (33-TLD filter, non-destructive tag merging, non-overwrite contact updates) syncing Good leads to Freshsales CRM via `python scripts/freshsales_bridge.py`.

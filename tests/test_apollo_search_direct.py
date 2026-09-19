@@ -163,7 +163,7 @@ class TestApolloSearchDirect(unittest.TestCase):
             first_name="John",
             last_name="Doe",
             job_title="Software Engineering Intern",
-            company="SDR Corp",
+            company="MockUniqueSdrCorp",
             company_domain="sdrcorp-sample-456.io",
             domain="sdrcorp-sample-456.io"
         )
@@ -401,7 +401,7 @@ class TestApolloSearchDirect(unittest.TestCase):
             first_name="Bob",
             last_name="Martin",
             job_title="VP Sales",
-            company="MegaCorp",
+            company="MockMegaCorpUnique",
             company_domain="megacorp-unique-test.com",
             domain="megacorp-unique-test.com"
         )
@@ -413,7 +413,7 @@ class TestApolloSearchDirect(unittest.TestCase):
             first_name="Alice",
             last_name="Walker",
             job_title="Chief Executive Officer",
-            company="MegaCorp",
+            company="MockMegaCorpUnique",
             company_domain="megacorp-unique-test.com",
             domain="megacorp-unique-test.com"
         )
@@ -425,7 +425,7 @@ class TestApolloSearchDirect(unittest.TestCase):
             first_name="Charlie",
             last_name="Brown",
             job_title="Sales Manager",
-            company="MegaCorp",
+            company="MockMegaCorpUnique",
             company_domain="megacorp-unique-test.com",
             domain="megacorp-unique-test.com"
         )

@@ -27,7 +27,7 @@ from typing import Dict, Any, List, Tuple, Optional
 
 import pandas as pd
 
-from backend.api import get_connection
+from backend.api import get_connection, extract_root_domain
 from scripts.apollo_export_formatter import APOLLO_75_HEADERS, format_apollo_lead_row
 
 
@@ -40,18 +40,30 @@ PRIORITY_MAP = {
     "co-founder": 2,
     "co founder": 2,
     "president": 3,
+    "chief executive officer": 4,
     "ceo": 4,
+    "chief operating officer": 5,
     "coo": 5,
+    "chief financial officer": 6,
     "cfo": 6,
+    "chief technology officer": 6,
     "cto": 6,
+    "chief information officer": 6,
+    "cio": 6,
+    "chief revenue officer": 6,
+    "cro": 6,
+    "chief marketing officer": 6,
+    "cmo": 6,
+    "c-level": 6,
     "vice president": 7,
     "vp": 7,
     "head": 8,
+    "managing director": 9,
     "director": 9,
     "principal": 10,
-    "manager": 10,
     "managing partner": 10,
     "partner": 10,
+    "manager": 10,
     "chief": 10,
 }
 
@@ -64,18 +76,29 @@ def get_lead_priority(row) -> int:
     if owner and owner != "nan":
         return 1
 
-    for keyword, rank in PRIORITY_MAP.items():
+    # Check longer/more specific keywords first (e.g. 'vice president' before 'president')
+    for keyword in sorted(PRIORITY_MAP.keys(), key=len, reverse=True):
         if keyword in job_title:
-            return rank
+            return PRIORITY_MAP[keyword]
 
     return 999
 
 
-def clean_apollo_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+def clean_apollo_dataframe(
+    df: pd.DataFrame,
+    conn=None,
+    filter_crm_emails: bool = True,
+    filter_crm_domains: bool = True,
+    dedup_accounts: bool = False,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    Execute complete 12-step cleaning algorithm on Apollo leads DataFrame.
+    Execute complete 14-step sales-ready cleaning & post-enrichment CRM guardrail pipeline.
+    Eliminates franchise/parent corporate domain repeats and enforces net-new account purity.
     """
     initial_count = len(df)
+    crm_emails_removed = 0
+    crm_domains_removed = 0
+    account_duplicates_removed = 0
 
     # 1. Standardize column names
     df.columns = df.columns.str.strip()
@@ -115,12 +138,82 @@ def clean_apollo_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, An
     ].copy()
     valid_email_count = len(df_valid_emails)
 
+    # 3a. Post-Enrichment Master CRM Exact Email Cross-Check
+    if conn is not None and filter_crm_emails and len(df_valid_emails) > 0:
+        try:
+            unique_emails = list(set(df_valid_emails["Email"].dropna()))
+            matched_crm_emails = set()
+            chunk_size = 500
+            with conn.cursor() as cur:
+                for i in range(0, len(unique_emails), chunk_size):
+                    chunk = unique_emails[i:i + chunk_size]
+                    fmt = ",".join(["%s"] * len(chunk))
+                    cur.execute(f"SELECT DISTINCT LOWER(email) FROM emails WHERE email IN ({fmt})", chunk)
+                    for r in cur.fetchall():
+                        if r and r[0]:
+                            matched_crm_emails.add(str(r[0]).strip().lower())
+            if matched_crm_emails:
+                before_email_len = len(df_valid_emails)
+                df_valid_emails = df_valid_emails[~df_valid_emails["Email"].isin(matched_crm_emails)].copy()
+                crm_emails_removed = before_email_len - len(df_valid_emails)
+        except Exception as ex:
+            print(f"[Notice] Post-enrichment CRM email cross-check warning: {ex}")
+
+    # 3b. Post-Enrichment Master CRM Corporate/Parent Domain Cross-Check
+    # (Fixes the Franchise/Holding company blindspot where search domain differed from actual corporate email domain)
+    if conn is not None and filter_crm_domains and len(df_valid_emails) > 0:
+        try:
+            def extract_lead_domains(row):
+                doms = set()
+                email = str(row.get("Email", "")).strip().lower()
+                if "@" in email:
+                    dom_part = email.split("@")[-1].strip()
+                    root_e = extract_root_domain(dom_part)
+                    if root_e:
+                        doms.add(root_e)
+                for col_name in ("Company Website", "Website", "Website Link", "Company Domain", "Account"):
+                    if col_name in row and row[col_name]:
+                        root_w = extract_root_domain(str(row[col_name]).strip())
+                        if root_w:
+                            doms.add(root_w)
+                return doms
+
+            row_domains_map = {}
+            all_candidate_domains = set()
+            for idx, row in df_valid_emails.iterrows():
+                d_set = extract_lead_domains(row)
+                row_domains_map[idx] = d_set
+                all_candidate_domains.update(d_set)
+
+            matched_crm_domains = set()
+            cand_dom_list = list(all_candidate_domains)
+            chunk_size = 500
+            with conn.cursor() as cur:
+                for i in range(0, len(cand_dom_list), chunk_size):
+                    chunk = cand_dom_list[i:i + chunk_size]
+                    fmt = ",".join(["%s"] * len(chunk))
+                    cur.execute(f"SELECT DISTINCT LOWER(domain) FROM emails WHERE domain IN ({fmt})", chunk)
+                    for r in cur.fetchall():
+                        if r and r[0]:
+                            matched_crm_domains.add(str(r[0]).strip().lower())
+
+            if matched_crm_domains:
+                keep_indices = [
+                    idx for idx in df_valid_emails.index
+                    if not (row_domains_map.get(idx, set()) & matched_crm_domains)
+                ]
+                before_dom_len = len(df_valid_emails)
+                df_valid_emails = df_valid_emails.loc[keep_indices].copy()
+                crm_domains_removed = before_dom_len - len(df_valid_emails)
+        except Exception as ex:
+            print(f"[Notice] Post-enrichment CRM domain cross-check warning: {ex}")
+
     # 4. Assign priority
     df_valid_emails["priority"] = df_valid_emails.apply(get_lead_priority, axis=1)
 
-    # 5. Sort by Email + priority ascending
+    # 5. Sort by priority ascending (highest ranking roles first: Owner > Founder > President > CEO...)
     df_sorted = df_valid_emails.sort_values(
-        by=["Email", "priority"],
+        by=["priority", "Email"],
         ascending=[True, True]
     )
 
@@ -129,7 +222,7 @@ def clean_apollo_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, An
         subset=["Email"],
         keep="first"
     ).copy()
-    duplicates_removed = valid_email_count - len(df_final)
+    duplicates_removed = len(df_valid_emails) - len(df_final)
 
     # 7. Fill Last Name with First Name if Last Name is blank
     mask = (
@@ -149,6 +242,15 @@ def clean_apollo_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, An
         .str.split("@")
         .str[-1]
     )
+
+    # 8b. Account Density Deduplication (Optional: 1 contact per company/account)
+    if dedup_accounts and len(df_final) > 0:
+        before_acc_len = len(df_final)
+        df_final = df_final.drop_duplicates(
+            subset=["Account"],
+            keep="first"
+        ).copy()
+        account_duplicates_removed = before_acc_len - len(df_final)
 
     # 9. Create Hierarchy column from Lists
     df_final["Hierarchy"] = (
@@ -184,8 +286,11 @@ def clean_apollo_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, An
     stats = {
         "initial_count": initial_count,
         "valid_email_count": valid_email_count,
-        "final_count": len(df_final),
+        "crm_emails_removed": crm_emails_removed,
+        "crm_domains_removed": crm_domains_removed,
         "duplicates_removed": duplicates_removed,
+        "account_duplicates_removed": account_duplicates_removed,
+        "final_count": len(df_final),
         "last_name_filled": last_name_filled,
         "revenue_cols": revenue_cols,
         "truncated_revenue": truncated_revenue,
@@ -193,125 +298,188 @@ def clean_apollo_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, An
     return df_final, stats
 
 
-def fetch_enriched_logins_summary(conn) -> List[Dict[str, Any]]:
-    """Query MySQL database for all logins/accounts that have enriched leads."""
+def fetch_enriched_logins_summary(conn, table_name: str = "all") -> List[Dict[str, Any]]:
+    """Query MySQL database for all logins/accounts that have enriched leads across active/all tables."""
+    if table_name == "apollo_saved_leads":
+        target_tables = [("apollo_saved_leads", "Apollo")]
+    elif table_name == "enrich_saved_leads":
+        target_tables = [("enrich_saved_leads", "Enrich.so")]
+    else:
+        target_tables = [("apollo_saved_leads", "Apollo"), ("enrich_saved_leads", "Enrich.so")]
+
+    combined: Dict[Tuple[str, str], Dict[str, Any]] = {}
     with conn.cursor() as cur:
-        cur.execute("""
-            SELECT 
-                COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') AS login_id,
-                COALESCE(NULLIF(e.account_name, ''), NULLIF(l.account_used, ''), 'Unknown') AS account_name,
-                COUNT(DISTINCT l.id) AS total_enriched,
-                COUNT(DISTINCT CASE WHEN l.email IS NOT NULL AND l.email != '' AND l.email != 'nan' THEN l.id END) AS verified_emails,
-                GROUP_CONCAT(DISTINCT l.batch ORDER BY l.batch SEPARATOR ', ') AS batches
-            FROM apollo_saved_leads l
-            LEFT JOIN batch_enrichment_ledger e 
-              ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
-            WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
-            GROUP BY login_id, account_name
-            HAVING total_enriched > 0
-            ORDER BY verified_emails DESC;
-        """)
-        rows = cur.fetchall()
+        for tbl, label in target_tables:
+            try:
+                cur.execute(f"""
+                    SELECT 
+                        COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') AS login_id,
+                        COALESCE(NULLIF(e.account_name, ''), NULLIF(l.account_used, ''), 'Unknown') AS account_name,
+                        COUNT(DISTINCT l.id) AS total_enriched,
+                        COUNT(DISTINCT CASE WHEN l.email IS NOT NULL AND l.email != '' AND l.email != 'nan' THEN l.id END) AS verified_emails,
+                        GROUP_CONCAT(DISTINCT l.batch ORDER BY l.batch SEPARATOR ', ') AS batches
+                    FROM `{tbl}` l
+                    LEFT JOIN batch_enrichment_ledger e 
+                      ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
+                    WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
+                    GROUP BY login_id, account_name;
+                """)
+                rows = cur.fetchall()
+                for r in rows:
+                    key = (str(r[0] or "Unknown"), str(r[1] or "Unknown"))
+                    if key not in combined:
+                        combined[key] = {
+                            "login_id": key[0],
+                            "account_name": key[1],
+                            "total_enriched": 0,
+                            "verified_emails": 0,
+                            "batches": set(),
+                        }
+                    combined[key]["total_enriched"] += int(r[2] or 0)
+                    combined[key]["verified_emails"] += int(r[3] or 0)
+                    if r[4]:
+                        for b in str(r[4]).split(", "):
+                            if b.strip():
+                                b_tag = f"{b.strip()} [{label}]" if len(target_tables) > 1 else b.strip()
+                                combined[key]["batches"].add(b_tag)
+            except Exception as ex:
+                print(f"[Notice] Could not query enriched logins for table `{tbl}`: {ex}")
 
     logins = []
-    for r in rows:
-        logins.append({
-            "login_id": r[0],
-            "account_name": r[1],
-            "total_enriched": r[2],
-            "verified_emails": r[3],
-            "batches": r[4] or "",
-        })
+    for key, data in combined.items():
+        if data["total_enriched"] > 0:
+            logins.append({
+                "login_id": data["login_id"],
+                "account_name": data["account_name"],
+                "total_enriched": data["total_enriched"],
+                "verified_emails": data["verified_emails"],
+                "batches": ", ".join(sorted(data["batches"])),
+            })
+    logins.sort(key=lambda x: x["verified_emails"], reverse=True)
     return logins
 
 
-def fetch_batches_for_login(conn, login_id: str, account_name: str = "") -> List[Dict[str, Any]]:
-    """Fetch all distinct batches belonging to this login with lead & email counts."""
-    with conn.cursor() as cur:
-        if login_id == "__ALL__":
-            cur.execute("""
-                SELECT 
-                    l.batch,
-                    COUNT(DISTINCT l.id) AS total_enriched,
-                    COUNT(DISTINCT CASE WHEN l.email IS NOT NULL AND l.email != '' AND l.email != 'nan' THEN l.id END) AS verified_emails,
-                    MAX(l.created_at) AS last_added
-                FROM apollo_saved_leads l
-                WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
-                GROUP BY l.batch
-                ORDER BY MAX(l.created_at) DESC;
-            """)
-        else:
-            cur.execute("""
-                SELECT 
-                    l.batch,
-                    COUNT(DISTINCT l.id) AS total_enriched,
-                    COUNT(DISTINCT CASE WHEN l.email IS NOT NULL AND l.email != '' AND l.email != 'nan' THEN l.id END) AS verified_emails,
-                    MAX(l.created_at) AS last_added
-                FROM apollo_saved_leads l
-                LEFT JOIN batch_enrichment_ledger e 
-                  ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
-                WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
-                  AND (
-                      COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') = %s
-                      OR COALESCE(NULLIF(e.account_name, ''), NULLIF(l.account_used, ''), 'Unknown') = %s
-                      OR l.account_used = %s
-                  )
-                GROUP BY l.batch
-                ORDER BY MAX(l.created_at) DESC;
-            """, (login_id, account_name or login_id, account_name or login_id))
+def fetch_batches_for_login(conn, login_id: str, account_name: str = "", table_name: str = "all") -> List[Dict[str, Any]]:
+    """Fetch all distinct batches belonging to this login with lead & email counts across active/all tables."""
+    if table_name == "apollo_saved_leads":
+        target_tables = [("apollo_saved_leads", "Apollo")]
+    elif table_name == "enrich_saved_leads":
+        target_tables = [("enrich_saved_leads", "Enrich.so")]
+    else:
+        target_tables = [("apollo_saved_leads", "Apollo"), ("enrich_saved_leads", "Enrich.so")]
 
-        rows = cur.fetchall()
-        return [
-            {
-                "batch": str(r[0] or "unnamed"),
-                "total_enriched": int(r[1] or 0),
-                "verified_emails": int(r[2] or 0),
-                "last_added": str(r[3])[:16] if r[3] else "N/A",
-            }
-            for r in rows
-        ]
+    batch_rows = []
+    with conn.cursor() as cur:
+        for tbl, label in target_tables:
+            try:
+                if login_id == "__ALL__":
+                    sql = f"""
+                        SELECT 
+                            l.batch,
+                            COUNT(DISTINCT l.id) AS total_enriched,
+                            COUNT(DISTINCT CASE WHEN l.email IS NOT NULL AND l.email != '' AND l.email != 'nan' THEN l.id END) AS verified_emails,
+                            MAX(l.created_at) AS last_added
+                        FROM `{tbl}` l
+                        WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
+                        GROUP BY l.batch
+                        ORDER BY MAX(l.created_at) DESC;
+                    """
+                    cur.execute(sql)
+                else:
+                    sql = f"""
+                        SELECT 
+                            l.batch,
+                            COUNT(DISTINCT l.id) AS total_enriched,
+                            COUNT(DISTINCT CASE WHEN l.email IS NOT NULL AND l.email != '' AND l.email != 'nan' THEN l.id END) AS verified_emails,
+                            MAX(l.created_at) AS last_added
+                        FROM `{tbl}` l
+                        LEFT JOIN batch_enrichment_ledger e 
+                          ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
+                        WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
+                          AND (
+                              COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
+                              OR COALESCE(NULLIF(e.account_name, ''), NULLIF(l.account_used, ''), 'Unknown') COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
+                              OR l.account_used COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
+                          )
+                        GROUP BY l.batch
+                        ORDER BY MAX(l.created_at) DESC;
+                    """
+                    cur.execute(sql, (login_id, account_name or login_id, account_name or login_id))
+
+                for r in cur.fetchall():
+                    batch_rows.append({
+                        "batch": str(r[0] or "unnamed"),
+                        "source_table": tbl,
+                        "source_label": label,
+                        "total_enriched": int(r[1] or 0),
+                        "verified_emails": int(r[2] or 0),
+                        "last_added": str(r[3])[:16] if r[3] else "N/A",
+                    })
+            except Exception as ex:
+                print(f"[Notice] Could not fetch batches from `{tbl}`: {ex}")
+
+    batch_rows.sort(key=lambda x: x["verified_emails"], reverse=True)
+    return batch_rows
 
 
 def fetch_enriched_leads_for_login(
     conn, 
     login_id: str, 
     account_name: str = "",
-    batch_name: Optional[str] = None
+    batch_name: Optional[str] = None,
+    table_name: str = "all",
 ) -> List[Dict[str, Any]]:
     """Fetch all leads associated with the given login/account and optional batch that have verified emails."""
+    if table_name == "apollo_saved_leads":
+        target_tables = ["apollo_saved_leads"]
+    elif table_name == "enrich_saved_leads":
+        target_tables = ["enrich_saved_leads"]
+    else:
+        target_tables = ["apollo_saved_leads", "enrich_saved_leads"]
+
+    all_leads = []
     with conn.cursor() as cur:
-        query_conditions = ["(l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))"]
-        params = []
+        for tbl in target_tables:
+            try:
+                query_conditions = ["(l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))"]
+                params = []
 
-        if login_id != "__ALL__":
-            query_conditions.append("""
-                (
-                    COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') = %s
-                    OR COALESCE(NULLIF(e.account_name, ''), NULLIF(l.account_used, ''), 'Unknown') = %s
-                    OR l.account_used = %s
-                )
-            """)
-            params.extend([login_id, account_name or login_id, account_name or login_id])
+                if login_id != "__ALL__":
+                    query_conditions.append("""
+                        (
+                            COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
+                            OR COALESCE(NULLIF(e.account_name, ''), NULLIF(l.account_used, ''), 'Unknown') COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
+                            OR l.account_used COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
+                        )
+                    """)
+                    params.extend([login_id, account_name or login_id, account_name or login_id])
 
-        if batch_name and batch_name != "__ALL__":
-            query_conditions.append("l.batch = %s")
-            params.append(batch_name)
+                if batch_name and batch_name != "__ALL__":
+                    query_conditions.append("l.batch = %s")
+                    params.append(batch_name)
 
-        where_clause = " AND ".join(query_conditions)
+                where_clause = " AND ".join(query_conditions)
 
-        query = f"""
-            SELECT l.*, COALESCE(e.login_email, l.account_used) AS resolved_login
-            FROM apollo_saved_leads l
-            LEFT JOIN batch_enrichment_ledger e 
-              ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
-            WHERE {where_clause}
-            ORDER BY l.id ASC;
-        """
-        cur.execute(query, tuple(params))
+                query = f"""
+                    SELECT l.*, COALESCE(e.login_email, l.account_used) AS resolved_login
+                    FROM `{tbl}` l
+                    LEFT JOIN batch_enrichment_ledger e 
+                      ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
+                    WHERE {where_clause}
+                    ORDER BY l.id ASC;
+                """
+                cur.execute(query, tuple(params))
 
-        cols = [c[0] for c in cur.description]
-        raw_rows = cur.fetchall()
-        return [dict(zip(cols, r)) for r in raw_rows]
+                cols = [c[0] for c in cur.description]
+                raw_rows = cur.fetchall()
+                for r in raw_rows:
+                    row_dict = dict(zip(cols, r))
+                    row_dict["_source_table"] = tbl
+                    all_leads.append(row_dict)
+            except Exception as ex:
+                print(f"[Notice] Could not fetch leads from `{tbl}`: {ex}")
+
+    return all_leads
 
 
 def get_default_downloads_dir() -> str:
@@ -324,15 +492,21 @@ def get_default_downloads_dir() -> str:
     return os.path.abspath("exports")
 
 
-def export_clean_enriched_login_action(conn) -> None:
+def export_clean_enriched_login_action(conn, table_name: str = "all") -> None:
     """Interactive CLI menu option to select enriched login, clean data, and export to Downloads."""
     print("\n" + "=" * 95)
-    print("        CLEAN & EXPORT ENRICHED APOLLO LEADS BY LOGIN (SALES-READY)")
+    scope_tag = f"Table: `{table_name}`" if table_name != "all" else "All Tables (Apollo + Enrich.so)"
+    print(f"        CLEAN & EXPORT ENRICHED LEADS BY LOGIN (SALES-READY) [{scope_tag}]")
     print("=" * 95)
 
-    logins = fetch_enriched_logins_summary(conn)
+    logins = fetch_enriched_logins_summary(conn, table_name=table_name)
+    if not logins and table_name != "all":
+        print(f"\n[NOTICE] No enriched leads found in `{table_name}`. Checking all tables...")
+        logins = fetch_enriched_logins_summary(conn, table_name="all")
+        table_name = "all"
+
     if not logins:
-        print("\n[NOTICE] No enriched leads found in `apollo_saved_leads` or `batch_enrichment_ledger`.")
+        print("\n[NOTICE] No enriched leads found in `apollo_saved_leads` or `enrich_saved_leads`.")
         print("Run `python scripts/enrich_batch_interactive.py` first to enrich a batch.")
         return
 
@@ -366,7 +540,7 @@ def export_clean_enriched_login_action(conn) -> None:
     print(f"\n✓ Selected Login: '{label}'")
 
     # Discover and prompt for batch selection for this login
-    batches = fetch_batches_for_login(conn, selected_login, selected_acc_name)
+    batches = fetch_batches_for_login(conn, selected_login, selected_acc_name, table_name=table_name)
     if not batches:
         print(f"[NOTICE] No batches found with enriched leads for login '{label}'.")
         return
@@ -377,12 +551,13 @@ def export_clean_enriched_login_action(conn) -> None:
     print("\n" + "-" * 95)
     print(f"BATCH SELECTION FOR LOGIN: {label}")
     print("-" * 95)
-    print(f"{'#':<4} | {'Batch Name':<42} | {'Enriched Leads':<15} | {'Verified Emails':<16} | {'Last Added'}")
+    print(f"{'#':<4} | {'Batch Name':<38} | {'Source':<10} | {'Enriched Leads':<15} | {'Verified Emails':<16} | {'Last Added'}")
     print("-" * 95)
-    print(f"[A ] | {'[ALL BATCHES COMBINED]':<42} | {total_batch_leads:<15,d} | {total_batch_emails:<16,d} | (all batches)")
+    print(f"[A ] | {'[ALL BATCHES COMBINED]':<38} | {'[All]':<10} | {total_batch_leads:<15,d} | {total_batch_emails:<16,d} | (all batches)")
     for b_idx, b in enumerate(batches, 1):
-        b_name_disp = b['batch'] if len(b['batch']) <= 42 else b['batch'][:39] + "..."
-        print(f"[{b_idx:<2}] | {b_name_disp:<42} | {b['total_enriched']:<15,d} | {b['verified_emails']:<16,d} | {b['last_added']}")
+        b_name_disp = b['batch'] if len(b['batch']) <= 38 else b['batch'][:35] + "..."
+        src_disp = f"[{b.get('source_label', 'Apollo')}]"
+        print(f"[{b_idx:<2}] | {b_name_disp:<38} | {src_disp:<10} | {b['total_enriched']:<15,d} | {b['verified_emails']:<16,d} | {b['last_added']}")
     print("-" * 95)
 
     while True:
@@ -390,11 +565,13 @@ def export_clean_enriched_login_action(conn) -> None:
         if not b_sel or b_sel.upper() == "A":
             selected_batch = "__ALL__"
             batch_label = "All Batches Combined"
+            batch_target_table = table_name
             break
         elif b_sel.isdigit() and 1 <= int(b_sel) <= len(batches):
             picked_b = batches[int(b_sel) - 1]
             selected_batch = picked_b["batch"]
-            batch_label = picked_b["batch"]
+            batch_label = f"{picked_b['batch']} [{picked_b.get('source_label', 'Apollo')}]"
+            batch_target_table = picked_b.get("source_table", table_name)
             break
         print("Invalid choice, please select a valid batch number or 'A'.")
 
@@ -402,7 +579,7 @@ def export_clean_enriched_login_action(conn) -> None:
     print("  Fetching lead records and firmographic payloads from database...")
 
     t0 = time.perf_counter()
-    lead_dicts = fetch_enriched_leads_for_login(conn, selected_login, selected_acc_name, batch_name=selected_batch)
+    lead_dicts = fetch_enriched_leads_for_login(conn, selected_login, selected_acc_name, batch_name=selected_batch, table_name=batch_target_table)
     if not lead_dicts:
         print(f"[NOTICE] No leads with emails found for batch '{batch_label}'.")
         return
@@ -415,19 +592,50 @@ def export_clean_enriched_login_action(conn) -> None:
     df_raw = pd.DataFrame(export_rows, columns=APOLLO_75_HEADERS)
     print(f"  ✓ Formatted into DataFrame in {time.perf_counter() - t_fmt:.2f}s.")
 
-    print("\n[APPLYING 12-STEP SALES-READY CLEANING PIPELINE]")
+    print("\n" + "=" * 95)
+    print("           POST-ENRICHMENT CRM DEDUPLICATION & GUARDRAILS")
+    print("=" * 95)
+    print("  [1] Strict Net-New: Strip CRM Duplicate Emails & Corporate Parent Domains (Recommended)")
+    print("      -> Resolves the 28% duplicate rate caused by franchise/parent corporate email domains.")
+    print("  [2] Exact Email Check Only (Allow existing corporate domains if person is new)")
+    print("  [3] Raw Leads (No CRM cross-checks)")
+    print("-" * 95)
+    crm_choice = input("Select CRM filter mode [1/2/3, default 1]: ").strip()
+    filter_crm_domains = (crm_choice != "2" and crm_choice != "3")
+    filter_crm_emails = (crm_choice != "3")
+
+    print("\nACCOUNT DENSITY:")
+    print("  [1] All Qualified Contacts (Keep all decision makers at net-new companies - Recommended)")
+    print("  [2] Top 1 Decision Maker Per Company (Strictly 1 contact per company/account)")
+    print("-" * 95)
+    density_choice = input("Select Account Density [1/2, default 1]: ").strip()
+    dedup_accounts = (density_choice == "2")
+
+    print("\n[APPLYING 14-STEP SALES-READY CLEANING & CRM GUARDRAIL PIPELINE]")
     print("  • Standardizing columns & ensuring required headers")
     print("  • Cleaning emails & filtering blank / NaN")
-    print("  • Assigning hierarchy priority (Owner > C-Level > VP > Director > Manager)")
+    if filter_crm_emails:
+        print("  • Querying 7.47M master CRM `emails` table for exact email matches...")
+    if filter_crm_domains:
+        print("  • Cross-checking revealed corporate email domains against 7.47M CRM domains...")
+    print("  • Assigning hierarchy priority (Owner > Founder > C-Level > VP > Director > Manager)")
     print("  • Deduplicating by Email (preserving highest-ranking contact)")
     print("  • Filling blank Last Name with First Name")
     print("  • Creating 'Account' column from Email domain")
+    if dedup_accounts:
+        print("  • Enforcing Account Density: Keeping top decision maker per company")
     print("  • Creating 'Hierarchy' column from Lists")
     print("  • Copying Employee & Industry columns ('Employee 2', 'Industry 2')")
     print("  • Emptying Revenue cells exceeding 11 digits")
 
     t_clean = time.perf_counter()
-    df_clean, stats = clean_apollo_dataframe(df_raw)
+    df_clean, stats = clean_apollo_dataframe(
+        df_raw,
+        conn=conn,
+        filter_crm_emails=filter_crm_emails,
+        filter_crm_domains=filter_crm_domains,
+        dedup_accounts=dedup_accounts,
+    )
     print(f"  ✓ Pipeline executed in {time.perf_counter() - t_clean:.2f}s.")
 
     # -------------------------------------------------------------
@@ -477,8 +685,14 @@ def export_clean_enriched_login_action(conn) -> None:
     print(f"  • Selected Batch:                  {batch_label}")
     print(f"  • Total Enriched Leads Fetched:    {stats['initial_count']:,d}")
     print(f"  • Leads with Valid Emails:         {stats['valid_email_count']:,d}")
-    print(f"  • Email Duplicates Removed:        {stats['duplicates_removed']:,d}")
-    print(f"  • Final Cleaned Records:           {stats['final_count']:,d}")
+    if stats.get("crm_emails_removed", 0) > 0:
+        print(f"  • CRM Duplicate Emails Blocked:    {stats['crm_emails_removed']:,d}")
+    if stats.get("crm_domains_removed", 0) > 0:
+        print(f"  • CRM Corporate Domains Blocked:   {stats['crm_domains_removed']:,d} (Parent/Franchise Duplicates)")
+    print(f"  • Email Intra-Duplicates Removed:  {stats['duplicates_removed']:,d}")
+    if stats.get("account_duplicates_removed", 0) > 0:
+        print(f"  • Secondary Account Contacts:      {stats['account_duplicates_removed']:,d} (Kept top 1 per account)")
+    print(f"  • Final Cleaned Net-New Records:   {stats['final_count']:,d}")
     print(f"  • Blank Last Names Filled:         {stats['last_name_filled']:,d}")
     print(f"  • Revenue Cells Checked / Emptied: {stats['revenue_cols']} ({stats['truncated_revenue']} >11 digits emptied)")
     print(f"  • Added Columns:                   ['Account', 'Hierarchy', 'Employee 2', 'Industry 2']")

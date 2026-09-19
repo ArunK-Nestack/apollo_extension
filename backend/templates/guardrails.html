@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guardrails Studio - Apollo Operations</title>
+  <link rel="stylesheet" href="/static/css/common.css">
+</head>
+<body>
+
+  <!-- Global Header -->
+  <header class="header-shell">
+    <div class="header-top">
+      <div class="brand-area">
+        <span class="brand-badge">APOLLO OPS</span>
+        <span class="brand-title">Operations <span>Cockpit</span></span>
+      </div>
+      <nav class="nav-links">
+        <a href="/batches" class="nav-link"><span>📋</span> Batches</a>
+        <a href="/search-studio" class="nav-link"><span>⚡</span> Search Studio</a>
+        <a href="/fleet" class="nav-link"><span>👥</span> Fleet & Quotas</a>
+        <a href="/guardrails" class="nav-link active"><span>🛡️</span> Guardrails</a>
+        <a href="/verifier" class="nav-link"><span>✅</span> MillionVerifier</a>
+        <a href="/freshsales-sync" class="nav-link"><span>🔄</span> Freshsales CRM</a>
+        <a href="/enrich" class="nav-link"><span>✨</span> Enrich.so</a>
+      </nav>
+    </div>
+    <div class="telemetry-strip">
+      <div class="telemetry-group">
+        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>RDS MySQL:</strong> <span id="hud-db-count">7.28M Emails</span></div>
+        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>MARISA-Trie:</strong> <span id="hud-trie-nodes">2.56M Slugs (0.4ms)</span></div>
+      </div>
+      <div class="telemetry-group" id="hud-fleet-strip"></div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="app-container">
+    
+    <!-- 0.5ms Live Sandbox Card -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title"><span>🛡️</span> 0.5ms 4-Layer Guardrails Live Sandbox</h2>
+        <span class="badge badge-blue">Sub-Millisecond Multi-Layer Defense</span>
+      </div>
+      <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+        Test any candidate company and contact in real-time against 7.28M CRM records, 2.56M MARISA-Trie domain slugs, 64K title rules, and demographic exclusion lists.
+      </p>
+
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1rem;">
+        <div>
+          <label style="font-size: 0.76rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Company Name</label>
+          <input type="text" id="sb-company" value="Bancroft Neurological" style="width: 100%; background: var(--bg-surface); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
+        </div>
+        <div>
+          <label style="font-size: 0.76rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Company Domain</label>
+          <input type="text" id="sb-domain" value="bancroftneurological.org" style="width: 100%; background: var(--bg-surface); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
+        </div>
+        <div>
+          <label style="font-size: 0.76rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Job Title</label>
+          <input type="text" id="sb-title" value="Chief Executive Officer" style="width: 100%; background: var(--bg-surface); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
+        </div>
+        <div>
+          <label style="font-size: 0.76rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Person Name</label>
+          <input type="text" id="sb-name" value="Michael Roberts" style="width: 100%; background: var(--bg-surface); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
+        </div>
+      </div>
+
+      <button class="btn btn-primary" onclick="runSandboxTest()">
+        <span>⚡</span> Run 4-Layer Defense Evaluation
+      </button>
+
+      <!-- Sandbox Results Deck -->
+      <div id="sandbox-results" style="display: none; margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid rgba(255,255,255,0.06);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <div style="font-size: 1.1rem; font-weight: 700;" id="sb-final-decision">--</div>
+          <span class="badge badge-gray" id="sb-latency">Latency: 0.45ms</span>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem;">
+          <div style="background: rgba(255,255,255,0.02); padding: 0.85rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.35rem;">Layer 1: CRM Domain Seek</div>
+            <div id="sb-l1-badge" class="badge badge-green" style="margin-bottom: 0.35rem;">Net-New</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);" id="sb-l1-desc">Direct index seek passed</div>
+          </div>
+          <div style="background: rgba(255,255,255,0.02); padding: 0.85rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.35rem;">Layer 2: Title Hierarchy</div>
+            <div id="sb-l2-badge" class="badge badge-green" style="margin-bottom: 0.35rem;">A1_Signer</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);" id="sb-l2-desc">Required executive level</div>
+          </div>
+          <div style="background: rgba(255,255,255,0.02); padding: 0.85rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.35rem;">Layer 3: Demographic Filter</div>
+            <div id="sb-l3-badge" class="badge badge-green" style="margin-bottom: 0.35rem;">Passed</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);" id="sb-l3-desc">Not in surname blocklist</div>
+          </div>
+          <div style="background: rgba(255,255,255,0.02); padding: 0.85rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
+            <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.35rem;">Layer 4: 1/Company Max</div>
+            <div id="sb-l4-badge" class="badge badge-green" style="margin-bottom: 0.35rem;">Accepted ★</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);" id="sb-l4-desc">First lead for this company</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 64K Titles Overview -->
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title"><span>📚</span> 64,612 Title Rule Segments Directory</h3>
+        <span class="badge badge-blue">Zero-Cost Compounding Cache</span>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; font-size: 0.82rem;">
+        <div style="background: rgba(16,185,129,0.05); border: 1px solid rgba(16,185,129,0.2); border-radius: 8px; padding: 1rem;">
+          <h4 style="color: var(--accent-emerald); margin-bottom: 0.5rem;">✅ 11 Required Segments (Can Approve/Sign)</h4>
+          <p style="color: var(--text-secondary); line-height: 1.6;">
+            • <code>A1_Signer</code>: C-Suite & Board (CEO, CFO, COO, CRO, CCO)<br>
+            • <code>A2_Budget_Holder</code>: VP / SVP (VP Marketing, SVP Sales)<br>
+            • <code>A3_Approver</code>: Directors owning problem/budget<br>
+            • <code>B1_Champion</code>: Technical managers & senior ICs<br>
+            • <code>B2_Champion_Commercial</code>: Commercial leaders & Sales Ops
+          </p>
+        </div>
+        <div style="background: rgba(244,63,94,0.05); border: 1px solid rgba(244,63,94,0.2); border-radius: 8px; padding: 1rem;">
+          <h4 style="color: var(--accent-rose); margin-bottom: 0.5rem;">❌ 5 Excluded Segments (Blocked from Green Badge)</h4>
+          <p style="color: var(--text-secondary); line-height: 1.6;">
+            • <code>X1_Procurement</code>: Sourcing, Buyers, Procurement Specialists<br>
+            • <code>X2_Security_Privacy</code>: CISO, Cyber Security, Infosec<br>
+            • <code>X3_Compliance_Quality</code>: Regulatory Affairs, Compliance, Legal<br>
+            • <code>C2_Entry</code>: Interns, Junior Assistants, Entry Coordinators<br>
+            • <code>A0_Board</code>: Non-Executive Advisory Board Members
+          </p>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Persistent Task Drawer -->
+  <div class="task-drawer minimized" id="task-drawer">
+    <div class="task-drawer-header" onclick="toggleTaskDrawer()"><div class="task-drawer-status"><span class="pulse-dot green"></span><span id="task-drawer-text">System Idle</span></div></div>
+    <div class="task-drawer-body"><div class="task-terminal" id="task-terminal">No active tasks running.</div></div>
+  </div>
+
+  <script src="/static/js/shell.js"></script>
+  <script src="/static/js/guardrails.js"></script>
+</body>
+</html>

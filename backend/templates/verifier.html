@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MillionVerifier Station - Apollo Operations</title>
+  <link rel="stylesheet" href="/static/css/common.css">
+</head>
+<body>
+
+  <!-- Global Header -->
+  <header class="header-shell">
+    <div class="header-top">
+      <div class="brand-area">
+        <span class="brand-badge">APOLLO OPS</span>
+        <span class="brand-title">Operations <span>Cockpit</span></span>
+      </div>
+      <nav class="nav-links">
+        <a href="/batches" class="nav-link"><span>📋</span> Batches</a>
+        <a href="/search-studio" class="nav-link"><span>⚡</span> Search Studio</a>
+        <a href="/fleet" class="nav-link"><span>👥</span> Fleet & Quotas</a>
+        <a href="/guardrails" class="nav-link"><span>🛡️</span> Guardrails</a>
+        <a href="/verifier" class="nav-link active"><span>✅</span> MillionVerifier</a>
+        <a href="/freshsales-sync" class="nav-link"><span>🔄</span> Freshsales CRM</a>
+        <a href="/enrich" class="nav-link"><span>✨</span> Enrich.so</a>
+      </nav>
+    </div>
+    <div class="telemetry-strip">
+      <div class="telemetry-group">
+        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>RDS MySQL:</strong> <span id="hud-db-count">7.28M Emails</span></div>
+        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>MARISA-Trie:</strong> <span id="hud-trie-nodes">2.56M Slugs (0.4ms)</span></div>
+      </div>
+      <div class="telemetry-group" id="hud-fleet-strip"></div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="app-container">
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title"><span>✅</span> Step 1: MillionVerifier 75-Column Bulk Verification</h2>
+        <span class="badge badge-green">Subproject: millionverifier_agent_step1</span>
+      </div>
+      <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+        Pre-cleans enriched leads, removes corporate parent/holding domains, enforces the official 75-column Apollo schema, uploads to MillionVerifier Bulk API, and partitions results into Good, Bad, and Risky datasets with all 75 columns preserved.
+      </p>
+
+      <div style="display: grid; grid-template-columns: 380px 1fr; gap: 1.5rem;">
+        
+        <!-- Left: Pre-Flight Controls -->
+        <div>
+          <div style="background: var(--bg-surface); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-subtle); margin-bottom: 1rem;">
+            <label style="font-size: 0.78rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Select Enriched Batch</label>
+            <select id="mv-batch-select" style="width: 100%; background: var(--bg-card); color: #fff; border: 1px solid var(--border-subtle); padding: 0.6rem; border-radius: 6px; font-size: 0.85rem; margin-bottom: 1rem;">
+              <option value="varaghavan_nestack_com-sep">varaghavan_nestack_com-sep (2,476 emails)</option>
+              <option value="vraghavan_construction_q3">vraghavan_construction_q3 (1,395 emails)</option>
+            </select>
+
+            <div style="font-size: 0.8rem; font-weight: 600; color: #fff; margin-bottom: 0.5rem;">14-Step Cleaning Pre-Flight:</div>
+            <div style="display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+              <label style="display: flex; align-items: center; gap: 0.4rem;"><input type="checkbox" checked disabled> Deduplicate normalized emails</label>
+              <label style="display: flex; align-items: center; gap: 0.4rem;"><input type="checkbox" checked disabled> Drop corporate parent domains (e.g. Alphabet -> Google)</label>
+              <label style="display: flex; align-items: center; gap: 0.4rem;"><input type="checkbox" checked disabled> Enforce official 75-column Apollo contact schema</label>
+              <label style="display: flex; align-items: center; gap: 0.4rem;"><input type="checkbox" checked disabled> Preserve Apollo Profile & LinkedIn URLs</label>
+            </div>
+
+            <button class="btn btn-primary" style="width: 100%; justify-content: center;" onclick="startVerification()">
+              <span>🛡️</span> Clean & Upload to MillionVerifier
+            </button>
+          </div>
+        </div>
+
+        <!-- Right: Real-time Partitioning Scorecard -->
+        <div>
+          <div style="background: var(--bg-surface); padding: 1.25rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+              <h3 style="font-size: 0.95rem; color: #fff;">Verification & Partitioning Scorecard</h3>
+              <span class="badge badge-green" id="mv-status-badge">Completed (2,476 leads)</span>
+            </div>
+
+            <!-- Metric Cards -->
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem;">
+              <div style="background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.25); padding: 1rem; border-radius: 8px; text-align: center;">
+                <div style="font-size: 0.74rem; color: var(--accent-emerald); font-weight: 600; text-transform: uppercase;">🟢 Good Leads (Safe)</div>
+                <div style="font-size: 1.8rem; font-weight: 800; color: #fff; margin: 0.25rem 0;" id="mv-good-count">2,210</div>
+                <div style="font-size: 0.72rem; color: var(--text-muted);">89.3% Deliverability</div>
+              </div>
+              <div style="background: rgba(244,63,94,0.08); border: 1px solid rgba(244,63,94,0.25); padding: 1rem; border-radius: 8px; text-align: center;">
+                <div style="font-size: 0.74rem; color: var(--accent-rose); font-weight: 600; text-transform: uppercase;">🔴 Bad Leads (Bounces)</div>
+                <div style="font-size: 1.8rem; font-weight: 800; color: #fff; margin: 0.25rem 0;" id="mv-bad-count">180</div>
+                <div style="font-size: 0.72rem; color: var(--text-muted);">Invalid MX / Dead Inboxes</div>
+              </div>
+              <div style="background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); padding: 1rem; border-radius: 8px; text-align: center;">
+                <div style="font-size: 0.74rem; color: var(--accent-amber); font-weight: 600; text-transform: uppercase;">🟡 Risky (Catch-All)</div>
+                <div style="font-size: 1.8rem; font-weight: 800; color: #fff; margin: 0.25rem 0;" id="mv-risky-count">86</div>
+                <div style="font-size: 0.72rem; color: var(--text-muted);">Low Confidence Server</div>
+              </div>
+            </div>
+
+            <!-- Direct Partition Exporters -->
+            <div style="display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1.5rem;">
+              <button class="btn btn-success" style="flex: 1; justify-content: center;" onclick="alert('Downloading 2,210 Verified Good Leads CSV (75 columns)...')">
+                <span>📥</span> Download Good Leads CSV
+              </button>
+              <button class="btn btn-secondary btn-sm" onclick="alert('Downloading Bad Leads CSV...')">
+                <span>📥</span> Bad CSV
+              </button>
+              <button class="btn btn-secondary btn-sm" onclick="alert('Downloading Risky Leads CSV...')">
+                <span>📥</span> Risky CSV
+              </button>
+            </div>
+
+            <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); padding: 0.85rem; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <strong style="color: #fff; font-size: 0.84rem;">Ready for CRM Synchronization?</strong>
+                <div style="font-size: 0.74rem; color: var(--text-muted);">2,210 verified Good leads ready for Freshsales 5-layer delta sync.</div>
+              </div>
+              <a href="/freshsales-sync" class="btn btn-primary btn-sm">
+                <span>🔄</span> Proceed to Step 2: Freshsales Sync ➔
+              </a>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- Persistent Task Drawer -->
+  <div class="task-drawer minimized" id="task-drawer">
+    <div class="task-drawer-header" onclick="toggleTaskDrawer()"><div class="task-drawer-status"><span class="pulse-dot green"></span><span id="task-drawer-text">System Idle</span></div></div>
+    <div class="task-drawer-body">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="task-progress-fill" style="width: 0%;"></div></div>
+      <div class="task-terminal" id="task-terminal">No active tasks running.</div>
+      <div class="task-actions" id="task-completion-actions" style="display: none;">
+        <div style="font-size: 0.84rem; color: var(--accent-emerald); font-weight: 600;">✓ Verification Finished!</div>
+        <a href="/freshsales-sync" class="btn btn-success btn-sm">Proceed to Freshsales CRM Sync ➔</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/shell.js"></script>
+  <script>
+    function startVerification() {
+      const batch = document.getElementById('mv-batch-select').value;
+      window.launchTask('verify', batch);
+    }
+  </script>
+</body>
+</html>

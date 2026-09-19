@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Apollo Extension Packaging Script
- * Runs the build first, then packages dist/ into a distribution zip archive.
+ * Enterprise Extension Packaging Script
+ * Compiles and packages both Apollo.io and Enrich.so extensions into standalone distribution ZIP archives.
  */
 
 const fs = require('fs');
@@ -11,34 +11,47 @@ const { execSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(ROOT, 'dist');
-const ZIP_FILE = path.join(DIST_DIR, 'apollo-extension.zip');
+const APOLLO_ZIP = path.join(DIST_DIR, 'apollo-extension.zip');
+const ENRICH_ZIP = path.join(DIST_DIR, 'enrich-extension.zip');
+const ENRICH_DIST = path.join(DIST_DIR, 'enrich');
 
 // 1. Run build first
 console.log('Running build step prior to packaging...\n');
 require('./build.js');
 
-console.log('Packaging extension bundle into zip archive...');
+console.log('Packaging extension bundles into zip archives...');
 
-if (fs.existsSync(ZIP_FILE)) {
-  fs.unlinkSync(ZIP_FILE);
-}
+function packageZip(zipFile, filesList, folderCwd) {
+  if (fs.existsSync(zipFile)) {
+    fs.unlinkSync(zipFile);
+  }
 
-try {
   if (process.platform === 'win32') {
-    // Windows PowerShell native compression
-    const cmd = `powershell -Command "Compress-Archive -Path '${DIST_DIR}\\manifest.json', '${DIST_DIR}\\content.js', '${DIST_DIR}\\background.js' -DestinationPath '${ZIP_FILE}' -Force"`;
+    const pathsStr = filesList.map(f => `'${path.join(folderCwd, f)}'`).join(', ');
+    const cmd = `powershell -Command "Compress-Archive -Path ${pathsStr} -DestinationPath '${zipFile}' -Force"`;
     execSync(cmd, { stdio: 'inherit' });
   } else {
-    // Unix/Linux zip command
-    const cmd = `cd "${DIST_DIR}" && zip -r "apollo-extension.zip" manifest.json content.js background.js`;
+    const filesStr = filesList.join(' ');
+    const cmd = `cd "${folderCwd}" && zip -r "${path.basename(zipFile)}" ${filesStr}`;
     execSync(cmd, { stdio: 'inherit' });
   }
 
-  const stat = fs.statSync(ZIP_FILE);
-  console.log(`\n✓ Successfully created distribution package:`);
-  console.log(`  Path: ${ZIP_FILE}`);
-  console.log(`  Size: ${(stat.size / 1024).toFixed(1)} KB`);
-  console.log(`Ready for distribution or deployment!`);
+  const stat = fs.statSync(zipFile);
+  console.log(`  ✓ Package created: ${path.basename(zipFile)} (${(stat.size / 1024).toFixed(1)} KB)`);
+}
+
+try {
+  // Package Apollo
+  packageZip(APOLLO_ZIP, ['manifest.json', 'content.js', 'background.js'], DIST_DIR);
+
+  // Package Enrich.so
+  packageZip(ENRICH_ZIP, ['manifest.json', 'content.js', 'background.js', 'styles.css'], ENRICH_DIST);
+
+  console.log('\n======================================================================');
+  console.log('ALL PACKAGING COMPLETED SUCCESSFULLY!');
+  console.log(`  1. Apollo Extension Package: ${APOLLO_ZIP}`);
+  console.log(`  2. Enrich Extension Package: ${ENRICH_ZIP}`);
+  console.log('======================================================================\n');
 } catch (err) {
   console.error(`Packaging failed: ${err.message}`);
   process.exit(1);

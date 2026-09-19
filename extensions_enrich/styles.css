@@ -1,0 +1,232 @@
+/* ============================================================
+   Enrich.so Standalone Lead Finder Matcher Styles
+   ============================================================ */
+
+/* Floating HUD Controller */
+.enrich-hud-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  width: 280px;
+  background: #18181b;
+  color: #f4f4f5;
+  border: 1px solid #27272a;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  z-index: 999999;
+  padding: 14px;
+  font-size: 13px;
+  backdrop-filter: blur(8px);
+}
+
+.enrich-hud-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #27272a;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+}
+
+.enrich-hud-title {
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.02em;
+  color: #fafafa;
+}
+
+.enrich-hud-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  text-transform: uppercase;
+}
+
+.status-idle {
+  background: #27272a;
+  color: #a1a1aa;
+}
+
+.status-active {
+  background: #059669;
+  color: #ecfdf5;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.enrich-hud-batch-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.batch-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #a1a1aa;
+}
+
+.enrich-batch-input {
+  background: #27272a;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  color: #f4f4f5;
+  padding: 6px 8px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.enrich-batch-input:focus {
+  border-color: #3b82f6;
+}
+
+.enrich-hud-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  background: #27272a;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: #a1a1aa;
+}
+
+.stat-val {
+  font-size: 15px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.text-green { color: #34d399; }
+.text-emerald { color: #10b981; }
+.text-gray { color: #9ca3af; }
+.text-blue { color: #60a5fa; }
+.text-purple { color: #c084fc; }
+
+.enrich-hud-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.enrich-hud-btn {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s ease;
+}
+
+.btn-start {
+  background: #2563eb;
+  color: #ffffff;
+}
+.btn-start:hover {
+  background: #1d4ed8;
+}
+
+.btn-stop {
+  background: #dc2626;
+  color: #ffffff;
+}
+.btn-stop:hover {
+  background: #b91c1c;
+}
+
+.btn-start-paging {
+  background: #059669;
+  color: #ffffff;
+}
+.btn-start-paging:hover {
+  background: #047857;
+}
+
+.btn-stop-paging {
+  background: #d97706;
+  color: #ffffff;
+}
+.btn-stop-paging:hover {
+  background: #b45309;
+}
+
+.enrich-hud-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.enrich-hud-status {
+  font-size: 11px;
+  color: #71717a;
+  border-top: 1px solid #27272a;
+  padding-top: 8px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Row Badge Pills */
+.enrich-status-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  line-height: 1.3;
+}
+
+.badge-target {
+  background: #059669;
+  color: #ffffff;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.4);
+}
+
+.badge-ignored {
+  background: #3f3f46;
+  color: #a1a1aa;
+}
+
+.badge-title-skip {
+  background: #d97706;
+  color: #ffffff;
+}
+
+.badge-existing {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.badge-neutral {
+  background: #52525b;
+  color: #d4d4d8;
+}
+
+.badge-company-saved {
+  background: #7e22ce !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 6px rgba(168, 85, 247, 0.4) !important;
+  border: 1px solid #a855f7 !important;
+}

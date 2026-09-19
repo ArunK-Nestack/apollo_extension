@@ -1,0 +1,425 @@
+{
+  "recruiting@nestack.com": {
+    "Visual & Creative Services-Regular": {
+      "search_name": "Visual & Creative Services-Regular",
+      "account_email": "recruiting@nestack.com",
+      "created_at": "2026-09-19 20:45:37",
+      "keywords": {
+        "operations": {
+          "keyword": "Operations",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 2897,
+          "total_pages": 29,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "management": {
+          "keyword": "Management",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 985,
+          "total_pages": 10,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "michael": {
+          "keyword": "Michael",
+          "category": "First Name",
+          "total_leads": 961,
+          "total_pages": 10,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "david": {
+          "keyword": "David",
+          "category": "First Name",
+          "total_leads": 854,
+          "total_pages": 9,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "engineering": {
+          "keyword": "Engineering",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 741,
+          "total_pages": 8,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "john": {
+          "keyword": "John",
+          "category": "First Name",
+          "total_leads": 738,
+          "total_pages": 8,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "systems": {
+          "keyword": "Systems",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 585,
+          "total_pages": 6,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "data": {
+          "keyword": "Data",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 516,
+          "total_pages": 6,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "james": {
+          "keyword": "James",
+          "category": "First Name",
+          "total_leads": 507,
+          "total_pages": 6,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "mark": {
+          "keyword": "Mark",
+          "category": "First Name",
+          "total_leads": 506,
+          "total_pages": 6,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "scott": {
+          "keyword": "Scott",
+          "category": "First Name",
+          "total_leads": 498,
+          "total_pages": 5,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "ryan": {
+          "keyword": "Ryan",
+          "category": "First Name",
+          "total_leads": 484,
+          "total_pages": 5,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "brian": {
+          "keyword": "Brian",
+          "category": "First Name",
+          "total_leads": 458,
+          "total_pages": 5,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "andrew": {
+          "keyword": "Andrew",
+          "category": "First Name",
+          "total_leads": 449,
+          "total_pages": 5,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "architect": {
+          "keyword": "Architect",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 445,
+          "total_pages": 5,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "daniel": {
+          "keyword": "Daniel",
+          "category": "First Name",
+          "total_leads": 420,
+          "total_pages": 5,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "jason": {
+          "keyword": "Jason",
+          "category": "First Name",
+          "total_leads": 416,
+          "total_pages": 5,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "paul": {
+          "keyword": "Paul",
+          "category": "First Name",
+          "total_leads": 403,
+          "total_pages": 5,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "robert": {
+          "keyword": "Robert",
+          "category": "First Name",
+          "total_leads": 385,
+          "total_pages": 4,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "kevin": {
+          "keyword": "Kevin",
+          "category": "First Name",
+          "total_leads": 381,
+          "total_pages": 4,
+          "first_recommended": "2026-09-19 20:45:37",
+          "times_recommended": 1,
+          "status": "recommended"
+        }
+      }
+    }
+  },
+  "vraghavan@nestack.com": {
+    "Professional Services-new": {
+      "search_name": "Professional Services-new",
+      "account_email": "vraghavan@nestack.com",
+      "created_at": "2026-09-20 00:11:24",
+      "keywords": {
+        "management": {
+          "keyword": "Management",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 3633,
+          "total_pages": 37,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "operations": {
+          "keyword": "Operations",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 2825,
+          "total_pages": 29,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "data": {
+          "keyword": "Data",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 1474,
+          "total_pages": 15,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "systems": {
+          "keyword": "Systems",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 924,
+          "total_pages": 10,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "michael": {
+          "keyword": "Michael",
+          "category": "First Name",
+          "total_leads": 884,
+          "total_pages": 9,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "david": {
+          "keyword": "David",
+          "category": "First Name",
+          "total_leads": 763,
+          "total_pages": 8,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "john": {
+          "keyword": "John",
+          "category": "First Name",
+          "total_leads": 761,
+          "total_pages": 8,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "security": {
+          "keyword": "Security",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 748,
+          "total_pages": 8,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "engineering": {
+          "keyword": "Engineering",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 657,
+          "total_pages": 7,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "james": {
+          "keyword": "James",
+          "category": "First Name",
+          "total_leads": 594,
+          "total_pages": 6,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "project management": {
+          "keyword": "Project Management",
+          "category": "Sub-Industry / Tech",
+          "total_leads": 552,
+          "total_pages": 6,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "andrew": {
+          "keyword": "Andrew",
+          "category": "First Name",
+          "total_leads": 492,
+          "total_pages": 5,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "ryan": {
+          "keyword": "Ryan",
+          "category": "First Name",
+          "total_leads": 481,
+          "total_pages": 5,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "chris": {
+          "keyword": "Chris",
+          "category": "First Name",
+          "total_leads": 478,
+          "total_pages": 5,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "mark": {
+          "keyword": "Mark",
+          "category": "First Name",
+          "total_leads": 467,
+          "total_pages": 5,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "sarah": {
+          "keyword": "Sarah",
+          "category": "First Name",
+          "total_leads": 452,
+          "total_pages": 5,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "matthew": {
+          "keyword": "Matthew",
+          "category": "First Name",
+          "total_leads": 423,
+          "total_pages": 5,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "scott": {
+          "keyword": "Scott",
+          "category": "First Name",
+          "total_leads": 423,
+          "total_pages": 5,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "jennifer": {
+          "keyword": "Jennifer",
+          "category": "First Name",
+          "total_leads": 410,
+          "total_pages": 5,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "daniel": {
+          "keyword": "Daniel",
+          "category": "First Name",
+          "total_leads": 402,
+          "total_pages": 5,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "brian": {
+          "keyword": "Brian",
+          "category": "First Name",
+          "total_leads": 398,
+          "total_pages": 4,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "jessica": {
+          "keyword": "Jessica",
+          "category": "First Name",
+          "total_leads": 359,
+          "total_pages": 4,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "paul": {
+          "keyword": "Paul",
+          "category": "First Name",
+          "total_leads": 357,
+          "total_pages": 4,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "robert": {
+          "keyword": "Robert",
+          "category": "First Name",
+          "total_leads": 354,
+          "total_pages": 4,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "thomas": {
+          "keyword": "Thomas",
+          "category": "First Name",
+          "total_leads": 347,
+          "total_pages": 4,
+          "first_recommended": "2026-09-20 00:11:24",
+          "times_recommended": 1,
+          "status": "recommended"
+        }
+      }
+    }
+  }
+}

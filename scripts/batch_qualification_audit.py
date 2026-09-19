@@ -193,13 +193,37 @@ def run_title_llm_batches(
     return merged, _sum_token_stats(stats_list)
 
 
-def audit_batch_titles(conn, batch_name: str, *, run_llm: bool = False) -> dict[str, Any]:
-    leads = fetch_batch_leads(conn, batch_name)
+def audit_batch_titles(
+    conn,
+    batch_name: str,
+    *,
+    run_llm: bool = False,
+    table_name: str = "apollo_saved_leads",
+    ignore_enriched: bool = True
+) -> dict[str, Any]:
+    leads = fetch_batch_leads(conn, batch_name, table_name=table_name, ignore_enriched=ignore_enriched)
+
+    ignored_count = 0
+    total_in_db = len(leads)
+    if ignore_enriched:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM `{table_name}` WHERE batch = %s", (batch_name,))
+                row = cur.fetchone()
+                if row:
+                    total_in_db = row[0]
+                    ignored_count = max(0, total_in_db - len(leads))
+        except Exception:
+            pass
+
     unique_titles = sorted({(L.get("job_title") or "").strip() for L in leads if (L.get("job_title") or "").strip()})
     db_lookup = lookup_job_titles_batch(unique_titles, connection=conn) if unique_titles else {}
     analysis = analyze_batch_titles(leads, db_lookup)
     analysis["batch"] = batch_name
+    analysis["table_name"] = table_name
     analysis["total_leads"] = len(leads)
+    analysis["total_in_db"] = total_in_db
+    analysis["ignored_enriched_count"] = ignored_count
     analysis["llm_ran"] = False
     analysis["token_stats"] = {}
 
@@ -215,6 +239,8 @@ def audit_batch_titles(conn, batch_name: str, *, run_llm: bool = False) -> dict[
             analysis = analyze_batch_titles(leads, merged)
             analysis["batch"] = batch_name
             analysis["total_leads"] = len(leads)
+            analysis["total_in_db"] = total_in_db
+            analysis["ignored_enriched_count"] = ignored_count
             analysis["llm_ran"] = True
             analysis["token_stats"] = token_stats
             analysis["llm_batch_count"] = math.ceil(len(titles_sent) / LLM_BATCH_SIZE)
@@ -224,14 +250,22 @@ def audit_batch_titles(conn, batch_name: str, *, run_llm: bool = False) -> dict[
 
 def print_title_audit_report(report: dict[str, Any]) -> None:
     batch = report.get("batch", "")
+    ignored = report.get("ignored_enriched_count", 0)
+    total = report.get("total_leads", 0)
+
     print("\n" + "=" * 92)
     print(f" BATCH JOB TITLE AUDIT: {batch}")
     print("=" * 92)
-    print(f" Total leads:              {report.get('total_leads', 0):,d}")
-    print(f" Unique job titles:        {report.get('unique_titles', 0):,d}")
-    print(f"   Qualified (wanted):     {len(report.get('qualified_titles') or []):,d} titles → {report.get('qualified_lead_count', 0):,d} leads")
-    print(f"   Disqualified (unwanted):  {len(report.get('disqualified_titles') or []):,d} titles → {len(report.get('disqualified_leads') or []):,d} leads")
-    print(f"   Not recognized:           {len(report.get('not_recognized_titles') or []):,d} titles → {len(report.get('not_recognized_leads') or []):,d} leads")
+    if ignored > 0:
+        print(f" Total leads in batch:          {report.get('total_in_db', total):,d}")
+        print(f" Already-Enriched Leads (Safe): {ignored:,d} (excluded from audit)")
+        print(f" Unenriched Leads Audited:      {total:,d}")
+    else:
+        print(f" Total leads:                   {total:,d}")
+    print(f" Unique job titles:             {report.get('unique_titles', 0):,d}")
+    print(f"   Qualified (wanted):          {len(report.get('qualified_titles') or []):,d} titles → {report.get('qualified_lead_count', 0):,d} leads")
+    print(f"   Disqualified (unwanted):     {len(report.get('disqualified_titles') or []):,d} titles → {len(report.get('disqualified_leads') or []):,d} leads")
+    print(f"   Not recognized:              {len(report.get('not_recognized_titles') or []):,d} titles → {len(report.get('not_recognized_leads') or []):,d} leads")
 
     if report.get("llm_error"):
         print(f"\n LLM skipped: {report['llm_error']}")
@@ -336,12 +370,36 @@ def run_name_llm_batches(conn, names: list[str]) -> tuple[dict[str, dict], dict[
     return merged, _sum_token_stats(stats_list)
 
 
-def audit_batch_names(conn, batch_name: str, *, run_llm: bool = False) -> dict[str, Any]:
+def audit_batch_names(
+    conn,
+    batch_name: str,
+    *,
+    run_llm: bool = False,
+    table_name: str = "apollo_saved_leads",
+    ignore_enriched: bool = True
+) -> dict[str, Any]:
     ensure_indian_surnames_seeded(conn)
-    leads = fetch_batch_leads(conn, batch_name)
+    leads = fetch_batch_leads(conn, batch_name, table_name=table_name, ignore_enriched=ignore_enriched)
+
+    ignored_count = 0
+    total_in_db = len(leads)
+    if ignore_enriched:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM `{table_name}` WHERE batch = %s", (batch_name,))
+                row = cur.fetchone()
+                if row:
+                    total_in_db = row[0]
+                    ignored_count = max(0, total_in_db - len(leads))
+        except Exception:
+            pass
+
     analysis = analyze_batch_names(leads, conn=conn)
     analysis["batch"] = batch_name
+    analysis["table_name"] = table_name
     analysis["total_leads"] = len(leads)
+    analysis["total_in_db"] = total_in_db
+    analysis["ignored_enriched_count"] = ignored_count
     analysis["llm_ran"] = False
     analysis["token_stats"] = {}
 
@@ -357,6 +415,8 @@ def audit_batch_names(conn, batch_name: str, *, run_llm: bool = False) -> dict[s
             analysis = analyze_batch_names(leads, combined_lookup, conn=conn)
             analysis["batch"] = batch_name
             analysis["total_leads"] = len(leads)
+            analysis["total_in_db"] = total_in_db
+            analysis["ignored_enriched_count"] = ignored_count
             analysis["llm_ran"] = True
             analysis["token_stats"] = token_stats
             analysis["llm_batch_count"] = math.ceil(len(names_sent) / LLM_BATCH_SIZE)
@@ -366,15 +426,23 @@ def audit_batch_names(conn, batch_name: str, *, run_llm: bool = False) -> dict[s
 
 def print_name_audit_report(report: dict[str, Any]) -> None:
     batch = report.get("batch", "")
+    ignored = report.get("ignored_enriched_count", 0)
+    total = report.get("total_leads", 0)
+
     print("\n" + "=" * 92)
     print(f" BATCH INDIAN NAME AUDIT: {batch}")
     print("=" * 92)
-    print(f" Total leads:              {report.get('total_leads', 0):,d}")
-    print(f" Unique names:             {report.get('unique_names', 0):,d}")
-    print(f"   Definite Indian (local):  {len(report.get('definite_indian_names') or []):,d}")
-    print(f"   Foreign / safe (local):   {len(report.get('definite_foreign_names') or []):,d}")
-    print(f"   Unresolved → LLM:         {len(report.get('unresolved_names') or []):,d}")
-    print(f"   Pure Indian leads:        {len(report.get('indian_leads') or []):,d}")
+    if ignored > 0:
+        print(f" Total leads in batch:          {report.get('total_in_db', total):,d}")
+        print(f" Already-Enriched Leads (Safe): {ignored:,d} (excluded from audit)")
+        print(f" Unenriched Leads Audited:      {total:,d}")
+    else:
+        print(f" Total leads:                   {total:,d}")
+    print(f" Unique names:                  {report.get('unique_names', 0):,d}")
+    print(f"   Definite Indian (local):     {len(report.get('definite_indian_names') or []):,d}")
+    print(f"   Foreign / safe (local):      {len(report.get('definite_foreign_names') or []):,d}")
+    print(f"   Unresolved → LLM:            {len(report.get('unresolved_names') or []):,d}")
+    print(f"   Pure Indian leads:           {len(report.get('indian_leads') or []):,d}")
 
     if report.get("llm_error"):
         print(f"\n LLM skipped: {report['llm_error']}")
@@ -394,16 +462,17 @@ def print_name_audit_report(report: dict[str, Any]) -> None:
     print("=" * 92 + "\n")
 
 
-def delete_leads_by_ids(conn, batch_name: str, rows: list[dict[str, Any]]) -> int:
+def delete_leads_by_ids(conn, batch_name: str, rows: list[dict[str, Any]], table_name: str = "apollo_saved_leads") -> int:
     if not rows:
         return 0
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
     ids = [int(r["id"]) for r in rows if r.get("id") is not None]
     if not ids:
         return 0
     with conn.cursor() as cur:
         placeholders = ", ".join(["%s"] * len(ids))
         cur.execute(
-            f"DELETE FROM `apollo_saved_leads` WHERE `batch` = %s AND `id` IN ({placeholders})",
+            f"DELETE FROM `{target_table}` WHERE `batch` = %s AND `id` IN ({placeholders})",
             [batch_name] + ids,
         )
         deleted = cur.rowcount
@@ -411,9 +480,10 @@ def delete_leads_by_ids(conn, batch_name: str, rows: list[dict[str, Any]]) -> in
     return deleted
 
 
-def prompt_delete_leads(conn, batch_name: str, rows: list[dict[str, Any]], header: str) -> int:
+def prompt_delete_leads(conn, batch_name: str, rows: list[dict[str, Any]], header: str, table_name: str = "apollo_saved_leads") -> int:
     if not rows:
         return 0
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
     print(header)
     for row in rows[:40]:
         print(
@@ -422,17 +492,18 @@ def prompt_delete_leads(conn, batch_name: str, rows: list[dict[str, Any]], heade
         )
     if len(rows) > 40:
         print(f"  ... +{len(rows) - 40} more")
-    ans = input(f"\nDelete {len(rows)} lead(s) from '{batch_name}'? [y/N]: ").strip().lower()
+    ans = input(f"\nDelete {len(rows)} lead(s) from '{batch_name}' in `{target_table}`? [y/N]: ").strip().lower()
     if ans not in ("y", "yes"):
         print("Skipped deletion.")
         return 0
-    deleted = delete_leads_by_ids(conn, batch_name, rows)
-    print(f"Deleted {deleted} row(s).")
+    deleted = delete_leads_by_ids(conn, batch_name, rows, table_name=target_table)
+    print(f"Deleted {deleted} row(s) from `{target_table}`.")
     return deleted
 
 
-def prompt_title_llm_and_delete(conn, report: dict[str, Any]) -> dict[str, Any]:
+def prompt_title_llm_and_delete(conn, report: dict[str, Any], table_name: str = "apollo_saved_leads") -> dict[str, Any]:
     batch = report["batch"]
+    target_table = report.get("table_name", table_name)
     nr = report.get("not_recognized_titles") or []
     if nr and not report.get("llm_ran"):
         batches_n = math.ceil(len(nr) / LLM_BATCH_SIZE)
@@ -441,18 +512,19 @@ def prompt_title_llm_and_delete(conn, report: dict[str, Any]) -> dict[str, Any]:
             f"\nRun LLM on {len(nr)} unrecognized title(s) ({batches_n} batch(es))? [y/N]: "
         ).strip().lower()
         if ans in ("y", "yes"):
-            report = audit_batch_titles(conn, batch, run_llm=True)
+            report = audit_batch_titles(conn, batch, run_llm=True, table_name=target_table)
             print_title_audit_report(report)
 
     bad = report.get("disqualified_leads") or []
     if bad:
-        prompt_delete_leads(conn, batch, bad, "\n--- DELETE LEADS WITH UNWANTED JOB TITLES ---")
+        prompt_delete_leads(conn, batch, bad, f"\n--- DELETE LEADS WITH UNWANTED JOB TITLES (Table: `{target_table}`) ---", table_name=target_table)
     print_llm_cost_summary(report, "Job title audit")
     return report
 
 
-def prompt_name_llm_and_delete(conn, report: dict[str, Any]) -> dict[str, Any]:
+def prompt_name_llm_and_delete(conn, report: dict[str, Any], table_name: str = "apollo_saved_leads") -> dict[str, Any]:
     batch = report["batch"]
+    target_table = report.get("table_name", table_name)
     unresolved = report.get("unresolved_names") or []
     if unresolved and not report.get("llm_ran"):
         batches_n = math.ceil(len(unresolved) / LLM_BATCH_SIZE)
@@ -461,12 +533,12 @@ def prompt_name_llm_and_delete(conn, report: dict[str, Any]) -> dict[str, Any]:
             f"\nRun LLM on {len(unresolved)} unresolved name(s) ({batches_n} batch(es))? [y/N]: "
         ).strip().lower()
         if ans in ("y", "yes"):
-            report = audit_batch_names(conn, batch, run_llm=True)
+            report = audit_batch_names(conn, batch, run_llm=True, table_name=target_table)
             print_name_audit_report(report)
 
     indian = report.get("indian_leads") or []
     if indian:
-        prompt_delete_leads(conn, batch, indian, "\n--- DELETE LEADS WITH PURE INDIAN NAMES ---")
+        prompt_delete_leads(conn, batch, indian, f"\n--- DELETE LEADS WITH PURE INDIAN NAMES (Table: `{target_table}`) ---", table_name=target_table)
     print_llm_cost_summary(report, "Indian name audit")
     return report
 

@@ -1,16 +1,14 @@
-# Environment Variables
+# Environment & Secret Vaults
 .env
 .env.*
 !.env.example
-
-# Secure Apollo Account Keys
 config/apollo_accounts.json
 .secrets/
 
 # Python Cache & Virtual Environments
 __pycache__/
 */__pycache__/
-backend/__pycache__/
+*/*/__pycache__/
 *.py[cod]
 *$py.class
 .venv/
@@ -18,31 +16,35 @@ venv/
 env/
 .pytest_cache/
 
-# Data Files, Datasets & Folders
-*.csv
-*.tsv
+# Exports & Scratch Artifacts
+exports/*.csv
+exports/*.xlsx
+exports/*.tsv
+dist/
+scratch/*
+!scratch/.gitkeep
+
+# Large Data Dumps & Databases
+*.sqlite
+*.sqlite3
+*.db
 *.parquet
 *.jsonl
-*.xlsx
-*.xls
-*.sqlite
-*.db
-backend/data/*.csv
-backend/data/*.json
-backend/data/*.tsv
-august 2026/
-august*/
-*wasted*
+data/*.csv
+data/*.xlsx
+data/*.tsv
+data/august_2026/
 
-# Logs & Temp Files
-*.log
-query
-desktop.ini
-
-# Chrome Extension Keys & Package Artifacts
+# Extension Packaging Credentials & Artifacts
 *.crx
 *.pem
+data/*.crx
+data/*.pem
 
-# OS Files
+# Logs & Temporary Files
+*.log
+*.tmp
+query
+desktop.ini
 .DS_Store
 Thumbs.db

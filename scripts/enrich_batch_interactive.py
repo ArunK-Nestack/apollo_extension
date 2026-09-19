@@ -290,13 +290,17 @@ def update_leads_in_db(
     batch_tag: str,
     dry_run: bool = False,
     conn=None,
+    table_name: str = "apollo_saved_leads",
 ):
-    """Update enriched columns directly in `apollo_saved_leads` under the same batch."""
+    """Update enriched columns directly in `apollo_saved_leads` or `enrich_saved_leads` under the same batch."""
     if dry_run or not results:
         return
 
-    update_sql = """
-        UPDATE `apollo_saved_leads` SET
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
+
+    update_sql = f"""
+        UPDATE `{target_table}` SET
+            `apollo_id` = %s,
             `email` = %s,
             `email_status` = %s,
             `annual_revenue` = %s,
@@ -319,6 +323,7 @@ def update_leads_in_db(
         if not r.get("db_id"):
             continue
         params.append((
+            r.get("apollo_id") or "",
             r.get("email") or "",
             r.get("email_status") or "",
             r.get("annual_revenue") or "",
@@ -356,6 +361,8 @@ def update_leads_in_db(
 def run_interactive_enricher():
     parser = argparse.ArgumentParser(description="Interactive Multi-Account Apollo 1-Credit Lead Enrichment Tool")
     parser.add_argument("--dry-run", action="store_true", help="Simulate execution without spending Apollo credits or calling external API")
+    parser.add_argument("--table", "-t", default="all", choices=["all", "apollo", "enrich"], help="Source table filter: 'all', 'apollo', or 'enrich' (default: all)")
+    parser.add_argument("--batch", "-b", default=None, help="Batch name to enrich directly")
     args = parser.parse_args()
 
     print("\n" + "=" * 95)
@@ -370,11 +377,16 @@ def run_interactive_enricher():
     print("\n[STEP 1: SELECT BATCH FROM DATABASE]")
     with get_connection() as conn:
         ensure_batch_enrichment_ledger_table(conn)
-        backfill_enrichment_ledger_from_saved_leads(conn)
+        backfill_enrichment_ledger_from_saved_leads(conn, table_name="apollo_saved_leads")
+        backfill_enrichment_ledger_from_saved_leads(conn, table_name="enrich_saved_leads")
         conn.commit()
+
         with conn.cursor() as cur:
+            # Query apollo_saved_leads batches
             cur.execute("""
                 SELECT
+                    'apollo_saved_leads' AS source_table,
+                    'Apollo' AS source_label,
                     l.batch,
                     COUNT(*) AS total_leads,
                     COUNT(DISTINCT l.company_domain) AS unique_domains,
@@ -385,32 +397,117 @@ def run_interactive_enricher():
                 GROUP BY l.batch
                 ORDER BY total_leads DESC;
             """)
-            batches = cur.fetchall()
+            raw_apollo = cur.fetchall()
 
-    if not batches:
-        print("No batches found in `apollo_saved_leads`.")
+            # Query enrich_saved_leads batches
+            cur.execute("""
+                SELECT
+                    'enrich_saved_leads' AS source_table,
+                    'Enrich.so' AS source_label,
+                    l.batch,
+                    COUNT(*) AS total_leads,
+                    COUNT(DISTINCT l.company_domain) AS unique_domains,
+                    SUM(CASE WHEN e.id IS NULL THEN 1 ELSE 0 END) AS unenriched_count
+                FROM enrich_saved_leads l
+                LEFT JOIN batch_enrichment_ledger e
+                  ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
+                GROUP BY l.batch
+                ORDER BY total_leads DESC;
+            """)
+            raw_enrich = cur.fetchall()
+
+    all_batches_data = []
+    for r in raw_apollo:
+        all_batches_data.append({
+            "source_table": r[0],
+            "source_label": r[1],
+            "batch": r[2],
+            "total_leads": int(r[3] or 0),
+            "unique_domains": int(r[4] or 0),
+            "unenriched_count": int(r[5] or 0),
+        })
+    for r in raw_enrich:
+        all_batches_data.append({
+            "source_table": r[0],
+            "source_label": r[1],
+            "batch": r[2],
+            "total_leads": int(r[3] or 0),
+            "unique_domains": int(r[4] or 0),
+            "unenriched_count": int(r[5] or 0),
+        })
+
+    if not all_batches_data:
+        print("No batches found in `apollo_saved_leads` or `enrich_saved_leads`.")
         return
 
-    print(f"{'#':<3} {'Batch Identifier':<45} {'Total':<8} {'Unique Doms':<12} {'Ready to Enrich':<15}")
-    print("-" * 90)
-    for idx, (b_name, total, u_doms, un_count) in enumerate(batches, 1):
-        print(f"[{idx:02d}] {b_name:<45} {total:<8} {u_doms:<12} {un_count:<15}")
+    active_filter = args.table.lower()
 
-    while True:
-        choice = input(f"\n>> Select Batch Number [1-{len(batches)}]: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(batches):
-            selected_batch = batches[int(choice) - 1][0]
+    # Pre-selection if --batch is provided
+    selected_item = None
+    if args.batch:
+        match = next((b for b in all_batches_data if b["batch"].lower() == args.batch.lower()), None)
+        if match:
+            selected_item = match
+        else:
+            print(f"[!] Batch '{args.batch}' not found. Falling back to interactive selection.")
+
+    while not selected_item:
+        if active_filter == "apollo":
+            visible = [b for b in all_batches_data if b["source_table"] == "apollo_saved_leads"]
+            filter_desc = "Apollo Only (`apollo_saved_leads`)"
+        elif active_filter == "enrich":
+            visible = [b for b in all_batches_data if b["source_table"] == "enrich_saved_leads"]
+            filter_desc = "Enrich.so Only (`enrich_saved_leads`)"
+        else:
+            visible = all_batches_data
+            filter_desc = "All Tables (Apollo + Enrich.so)"
+
+        print(f"\nActive Filter: {filter_desc}")
+        print(f"{'#':<3} {'Source':<12} {'Batch Identifier':<42} {'Total':<8} {'Unique Doms':<12} {'Ready to Enrich':<15}")
+        print("-" * 96)
+        for idx, b in enumerate(visible, 1):
+            name_disp = b["batch"]
+            if len(name_disp) > 42:
+                name_disp = name_disp[:39] + "..."
+            print(f"[{idx:02d}] [{b['source_label']:<8}] {name_disp:<42} {b['total_leads']:<8,d} {b['unique_domains']:<12,d} {b['unenriched_count']:<15,d}")
+
+        prompt = f"\n>> Select Batch Number [1-{len(visible)}] (or 'T' to toggle filter): "
+        user_choice = input(prompt).strip()
+
+        if user_choice.upper() == "T":
+            # Cycle filter: all -> enrich -> apollo -> all
+            if active_filter == "all":
+                active_filter = "enrich"
+            elif active_filter == "enrich":
+                active_filter = "apollo"
+            else:
+                active_filter = "all"
+            continue
+
+        if user_choice.isdigit() and 1 <= int(user_choice) <= len(visible):
+            selected_item = visible[int(user_choice) - 1]
             break
-        print("Invalid choice, please select a valid number.")
 
-    print(f"\n✓ Selected Batch: '{selected_batch}'")
+        # Also support typing partial batch name
+        matched_by_name = [b for b in visible if user_choice.lower() in b["batch"].lower()]
+        if len(matched_by_name) == 1:
+            selected_item = matched_by_name[0]
+            break
+
+        print("Invalid choice. Please enter a valid batch number or 'T' to toggle.")
+
+    selected_batch = selected_item["batch"]
+    target_table = selected_item["source_table"]
+    source_label = selected_item["source_label"]
+
+    print(f"\n✓ Selected Batch: '{selected_batch}' (Source: {source_label} | Table: `{target_table}`)")
 
     # -------------------------------------------------------------
     # FILTER TO UNIQUE DOMAINS (1 LEAD PER COMPANY POLICY)
     # -------------------------------------------------------------
-    print("Loading unattempted leads (ledger) and isolating 1 highest-ranking lead per domain...")
+    print(f"Loading unattempted leads from `{target_table}` (ledger) and isolating 1 highest-ranking lead per domain...")
     with get_connection() as conn:
-        raw_leads = fetch_unattempted_leads_for_batch(conn, selected_batch)
+        raw_leads = fetch_unattempted_leads_for_batch(conn, selected_batch, table_name=target_table)
         ledger_before = get_batch_enrichment_summary(conn, selected_batch)
 
     domain_to_lead = {}
@@ -427,7 +524,7 @@ def run_interactive_enricher():
     print(f"✓ {len(raw_leads)} unattempted row(s); {len(raw_eligible)} unique domains ready.")
 
     # Run through full 4-layer defense guardrails
-    eligible_leads, metrics = apply_4_layer_guardrails(raw_eligible, selected_batch, verbose=True)
+    eligible_leads, metrics = apply_4_layer_guardrails(raw_eligible, selected_batch, verbose=True, table_name=target_table)
 
     if not eligible_leads:
         print("\nNo unattempted leads left in this batch (ledger) or all collided with CRM. Nothing to do.")
@@ -547,6 +644,7 @@ def run_interactive_enricher():
                     selected_batch,
                     dry_run=False,
                     conn=conn,
+                    table_name=target_table,
                 )
                 conn.commit()
 
@@ -586,7 +684,7 @@ def run_interactive_enricher():
     print("\n" + "=" * 95)
     print("FINAL ENRICHMENT AUDIT & SCORECARD")
     print("=" * 95)
-    print(f"  • Batch Tag:                         {selected_batch}")
+    print(f"  • Batch Tag:                         {selected_batch} (Table: `{target_table}`)")
     print(f"  • Account Used:                      {selected_account['name']}")
     print(f"  • Total Unique Leads Processed:      {len(all_enriched_records)}")
     print(f"  • Verified Business Emails Found:    {total_enriched_emails} ({(total_enriched_emails/max(1, len(all_enriched_records)))*100:.1f}%)")
@@ -607,19 +705,20 @@ def run_interactive_enricher():
     if export_choice.lower() != 'n':
         os.makedirs(EXPORTS_DIR, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        export_file = os.path.join(EXPORTS_DIR, f"apollo_contacts_export_{selected_batch[:30]}_{len(all_enriched_records)}_{timestamp}.csv")
+        prefix = "enrich" if target_table == "enrich_saved_leads" else "apollo"
+        export_file = os.path.join(EXPORTS_DIR, f"{prefix}_contacts_export_{selected_batch[:30]}_{len(all_enriched_records)}_{timestamp}.csv")
         
         # Query full enriched rows from DB
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT 
                         id, batch, apollo_id, name, first_name, last_name, job_title, email, email_status,
                         company, company_domain, website_link, annual_revenue, employee_count,
                         industry, tech_stack, keywords, company_phone, hq_address, location, linkedin_url,
                         company_linkedin_url, apollo_profile_url, segment, account_used, credits_charged,
                         raw_enrichment_data, enriched_at, created_at
-                    FROM apollo_saved_leads
+                    FROM `{target_table}`
                     WHERE batch = %s AND enriched_at IS NOT NULL
                     ORDER BY enriched_at DESC
                     LIMIT %s;

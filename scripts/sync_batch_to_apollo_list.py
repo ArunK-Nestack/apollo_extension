@@ -69,16 +69,25 @@ def get_available_batches() -> List[Dict[str, Any]]:
             ]
 
 
-def get_batch_leads(batch_name: str) -> List[Dict[str, Any]]:
-    """Fetch all leads for a given batch from apollo_saved_leads."""
+def get_batch_leads(batch_name: str, table_name: str = "apollo_saved_leads") -> List[Dict[str, Any]]:
+    """Fetch all leads for a given batch from apollo_saved_leads or enrich_saved_leads."""
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, first_name, last_name, name, job_title, company, 
-                       company_domain, website_link, linkedin_url, apollo_id
-                FROM `apollo_saved_leads`
-                WHERE `batch` = %s
-            """, (batch_name,))
+            if target_table == "enrich_saved_leads":
+                cur.execute("""
+                    SELECT id, first_name, last_name, name, job_title, company, 
+                           company_domain, website_link, linkedin_url, '' as apollo_id
+                    FROM `enrich_saved_leads`
+                    WHERE `batch` = %s
+                """, (batch_name,))
+            else:
+                cur.execute("""
+                    SELECT id, first_name, last_name, name, job_title, company, 
+                           company_domain, website_link, linkedin_url, apollo_id
+                    FROM `apollo_saved_leads`
+                    WHERE `batch` = %s
+                """, (batch_name,))
             rows = cur.fetchall()
             leads = []
             for r in rows:

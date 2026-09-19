@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Freshsales CRM Sync - Apollo Operations</title>
+  <link rel="stylesheet" href="/static/css/common.css">
+</head>
+<body>
+
+  <!-- Global Header -->
+  <header class="header-shell">
+    <div class="header-top">
+      <div class="brand-area">
+        <span class="brand-badge">APOLLO OPS</span>
+        <span class="brand-title">Operations <span>Cockpit</span></span>
+      </div>
+      <nav class="nav-links">
+        <a href="/batches" class="nav-link"><span>📋</span> Batches</a>
+        <a href="/search-studio" class="nav-link"><span>⚡</span> Search Studio</a>
+        <a href="/fleet" class="nav-link"><span>👥</span> Fleet & Quotas</a>
+        <a href="/guardrails" class="nav-link"><span>🛡️</span> Guardrails</a>
+        <a href="/verifier" class="nav-link"><span>✅</span> MillionVerifier</a>
+        <a href="/freshsales-sync" class="nav-link active"><span>🔄</span> Freshsales CRM</a>
+        <a href="/enrich" class="nav-link"><span>✨</span> Enrich.so</a>
+      </nav>
+    </div>
+    <div class="telemetry-strip">
+      <div class="telemetry-group">
+        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>RDS MySQL:</strong> <span id="hud-db-count">7.28M Emails</span></div>
+        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>MARISA-Trie:</strong> <span id="hud-trie-nodes">2.56M Slugs (0.4ms)</span></div>
+      </div>
+      <div class="telemetry-group" id="hud-fleet-strip"></div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="app-container">
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title"><span>🔄</span> Step 2: Freshsales CRM 5-Layer Delta Sync</h2>
+        <span class="badge badge-green">Subproject: freshsales_agent</span>
+      </div>
+      <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
+        Synchronizes verified Good leads into Freshsales CRM via Bulk API in batches of 100, filtering foreign European/North American country TLDs (.uk, .ca, .de), performing CRM pre-lookups to prevent phone/note overwriting, and safely appending custom tags.
+      </p>
+
+      <div style="display: grid; grid-template-columns: 380px 1fr; gap: 1.5rem;">
+        
+        <!-- Left: Sync Configuration -->
+        <div>
+          <div style="background: var(--bg-surface); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-subtle); margin-bottom: 1rem;">
+            <div style="margin-bottom: 1rem;">
+              <label style="font-size: 0.78rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Select Verified 'Good' Dataset</label>
+              <select id="crm-file-select" style="width: 100%; background: var(--bg-card); color: #fff; border: 1px solid var(--border-subtle); padding: 0.6rem; border-radius: 6px; font-size: 0.85rem;">
+                <option value="varaghavan_nestack_com-sep_good.csv">varaghavan_nestack_com-sep_good.csv (2,210 leads)</option>
+                <option value="vraghavan_construction_q3_good.csv">vraghavan_construction_q3_good.csv (1,340 leads)</option>
+              </select>
+            </div>
+
+            <div style="margin-bottom: 1rem;">
+              <label style="font-size: 0.78rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Custom Sync Tag (Appended to Contact)</label>
+              <input type="text" id="crm-tag-input" value="vraghavan-verified-q3" style="width: 100%; background: var(--bg-card); color: #fff; border: 1px solid var(--border-subtle); padding: 0.6rem; border-radius: 6px; font-size: 0.85rem;">
+              <span style="font-size: 0.72rem; color: var(--text-muted); display: block; margin-top: 0.25rem;">Preserves all existing Freshsales tags.</span>
+            </div>
+
+            <div style="margin-bottom: 1.25rem;">
+              <label style="font-size: 0.78rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Default Owner ID</label>
+              <input type="text" id="crm-owner-id" value="12000032465" style="width: 100%; background: var(--bg-card); color: #fff; border: 1px solid var(--border-subtle); padding: 0.6rem; border-radius: 6px; font-size: 0.85rem;">
+            </div>
+
+            <button class="btn btn-success" style="width: 100%; justify-content: center;" onclick="startCRMSync()">
+              <span>🚀</span> Dispatch 5-Layer CRM Bulk Upsert
+            </button>
+          </div>
+        </div>
+
+        <!-- Right: 5-Layer Defense Telemetry -->
+        <div>
+          <div style="background: var(--bg-surface); padding: 1.25rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
+            <h3 style="font-size: 0.95rem; color: #fff; margin-bottom: 1rem;">5-Layer CRM Protection Architecture</h3>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; margin-bottom: 1.25rem;">
+              <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); padding: 0.85rem; border-radius: 8px;">
+                <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase;">Layer 1: In-File Deduping</div>
+                <div style="font-size: 1.2rem; font-weight: 700; color: #fff; margin: 0.2rem 0;">Zero Duplicates</div>
+                <div style="font-size: 0.74rem; color: var(--text-secondary);">Drops repeated emails inside CSV</div>
+              </div>
+              <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); padding: 0.85rem; border-radius: 8px;">
+                <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase;">Layer 2: 33-Country TLD Filter</div>
+                <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-rose); margin: 0.2rem 0;">14 Excluded</div>
+                <div style="font-size: 0.74rem; color: var(--text-secondary);">Blocks .uk, .ca, .de, .fr, etc.</div>
+              </div>
+              <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); padding: 0.85rem; border-radius: 8px;">
+                <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase;">Layer 3: Non-Overwrite Delta</div>
+                <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-emerald); margin: 0.2rem 0;">100% Protected</div>
+                <div style="font-size: 0.74rem; color: var(--text-secondary);">Preserves existing CRM notes/phones</div>
+              </div>
+              <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); padding: 0.85rem; border-radius: 8px;">
+                <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase;">Layer 4 & 5: Bulk Dispatched</div>
+                <div style="font-size: 1.2rem; font-weight: 700; color: var(--accent-blue); margin: 0.2rem 0;">2,196 Upserted</div>
+                <div style="font-size: 0.74rem; color: var(--text-secondary);">Batches of 100 with API polling</div>
+              </div>
+            </div>
+
+            <!-- Historical Sync Ledger -->
+            <div style="font-size: 0.8rem; font-weight: 600; color: #fff; margin-bottom: 0.5rem;">Persistent Ledger (config/freshsales_synced_batches.json):</div>
+            <div style="background: #05080f; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 0.65rem; font-family: monospace; font-size: 0.76rem; color: #7dd3fc; line-height: 1.5;">
+              • vraghavan_construction_q3: Synced 1,340 contacts | Tag: 'construction-directors' | Date: 2026-09-18<br>
+              • abel_batch_q3: Synced 3,920 contacts | Tag: 'abel-verified' | Date: 2026-09-17
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- Persistent Task Drawer -->
+  <div class="task-drawer minimized" id="task-drawer">
+    <div class="task-drawer-header" onclick="toggleTaskDrawer()"><div class="task-drawer-status"><span class="pulse-dot green"></span><span id="task-drawer-text">System Idle</span></div></div>
+    <div class="task-drawer-body">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="task-progress-fill" style="width: 0%;"></div></div>
+      <div class="task-terminal" id="task-terminal">No active tasks running.</div>
+      <div class="task-actions" id="task-completion-actions" style="display: none;">
+        <div style="font-size: 0.84rem; color: var(--accent-emerald); font-weight: 600;">✓ CRM Synchronization Finished!</div>
+        <a href="/batches" class="btn btn-primary btn-sm">View in Batches Hub</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/shell.js"></script>
+  <script>
+    function startCRMSync() {
+      const file = document.getElementById('crm-file-select').value;
+      const tag = document.getElementById('crm-tag-input').value;
+      window.launchTask('sync_crm', file.replace('.csv', ''), { custom_tag: tag });
+    }
+  </script>
+</body>
+</html>
