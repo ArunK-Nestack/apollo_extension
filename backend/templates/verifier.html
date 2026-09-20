@@ -3,149 +3,250 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MillionVerifier Station - Apollo Operations</title>
+  <meta name="description" content="Apollo Operations Hub — MillionVerifier Station: clean, format, and bulk-verify enriched lead batches, then partition into Good, Bad, and Risky datasets.">
+  <title>MillionVerifier Station — Apollo Ops</title>
   <link rel="stylesheet" href="/static/css/common.css">
 </head>
 <body>
+<div class="saas-layout">
 
-  <!-- Global Header -->
-  <header class="header-shell">
-    <div class="header-top">
-      <div class="brand-area">
-        <span class="brand-badge">APOLLO OPS</span>
-        <span class="brand-title">Operations <span>Cockpit</span></span>
+  <!-- SIDEBAR -->
+  <aside class="saas-sidebar">
+    <div class="sidebar-workspace">
+      <div class="ws-logo">A</div>
+      <div class="ws-info">
+        <div class="ws-name">Apollo Intelligence</div>
+        <div class="ws-env"><span class="ws-env-dot"></span>Prod Cluster 01</div>
       </div>
-      <nav class="nav-links">
-        <a href="/batches" class="nav-link"><span>📋</span> Batches</a>
-        <a href="/search-studio" class="nav-link"><span>⚡</span> Search Studio</a>
-        <a href="/fleet" class="nav-link"><span>👥</span> Fleet & Quotas</a>
-        <a href="/guardrails" class="nav-link"><span>🛡️</span> Guardrails</a>
-        <a href="/verifier" class="nav-link active"><span>✅</span> MillionVerifier</a>
-        <a href="/freshsales-sync" class="nav-link"><span>🔄</span> Freshsales CRM</a>
-        <a href="/enrich" class="nav-link"><span>✨</span> Enrich.so</a>
+    </div>
+    <div class="sidebar-search">
+      <button class="sidebar-search-btn" id="cmd-palette-trigger">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        Search or jump to…<span class="sidebar-search-kbd">⌘K</span>
+      </button>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-group">
+        <div class="nav-group-label">Pipeline Ops</div>
+        <a href="/batches" class="nav-item" data-href="/batches">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>Batches
+        </a>
+        <a href="/search-studio" class="nav-item" data-href="/search-studio">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>Search Studio<span class="nav-item-badge">AI</span>
+        </a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Data &amp; Quality</div>
+        <a href="/guardrails" class="nav-item" data-href="/guardrails">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>Guardrails<span class="nav-item-badge">0.5ms</span>
+        </a>
+        <a href="/verifier" class="nav-item" data-href="/verifier">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span>MillionVerifier
+        </a>
+        <a href="/enrich" class="nav-item" data-href="/enrich">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v1m0 16v1M4.22 4.22l.7.7m12.16 12.16.7.7M3 12H2m20 0h-1M4.22 19.78l.7-.7M18.36 5.64l.7-.7M12 6a6 6 0 0 0 0 12"/></svg></span>Enrich.so
+        </a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Fleet &amp; CRM</div>
+        <a href="/fleet" class="nav-item" data-href="/fleet">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>Fleet &amp; Quotas
+        </a>
+        <a href="/freshsales-sync" class="nav-item" data-href="/freshsales-sync">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></span>Freshsales CRM
+        </a>
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="sys-health-card">
+        <div class="sys-health-title">System Health</div>
+        <div class="sys-health-row">
+          <span class="sys-health-label"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg> RDS MySQL</span>
+          <span class="sys-health-value" id="sidebar-db-count">7.28M</span>
+        </div>
+        <div class="sys-health-row">
+          <span class="sys-health-label"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg> MARISA-Trie</span>
+          <span class="sys-health-value" id="sidebar-trie-count">2.56M</span>
+        </div>
+      </div>
+      <div class="sidebar-operator">
+        <div class="op-avatar">VO</div>
+        <div><div class="op-name">Operator</div><div class="op-role">Prod Environment</div></div>
+        <div class="op-status"><span class="badge badge-green" style="font-size:10px;padding:2px 6px;">Active</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN PANEL -->
+  <div class="saas-main">
+    <header class="saas-header">
+      <nav class="header-breadcrumbs">
+        <span>Apollo Ops</span><span class="breadcrumb-sep">›</span>
+        <span class="breadcrumb-current">MillionVerifier Station</span>
       </nav>
-    </div>
-    <div class="telemetry-strip">
-      <div class="telemetry-group">
-        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>RDS MySQL:</strong> <span id="hud-db-count">7.28M Emails</span></div>
-        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>MARISA-Trie:</strong> <span id="hud-trie-nodes">2.56M Slugs (0.4ms)</span></div>
+      <div class="header-actions">
+        <div class="header-sys-pill">
+          <span class="live-dot"></span>
+          <span id="header-sys-pill-text">4 Nodes Healthy</span>
+        </div>
+        <button class="header-icon-btn" title="Notifications">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </button>
       </div>
-      <div class="telemetry-group" id="hud-fleet-strip"></div>
-    </div>
-  </header>
+    </header>
 
-  <!-- Main Container -->
-  <main class="app-container">
-    <div class="card">
-      <div class="card-header">
-        <h2 class="card-title"><span>✅</span> Step 1: MillionVerifier 75-Column Bulk Verification</h2>
-        <span class="badge badge-green">Subproject: millionverifier_agent_step1</span>
-      </div>
-      <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
-        Pre-cleans enriched leads, removes corporate parent/holding domains, enforces the official 75-column Apollo schema, uploads to MillionVerifier Bulk API, and partitions results into Good, Bad, and Risky datasets with all 75 columns preserved.
-      </p>
+    <main class="page-content">
 
-      <div style="display: grid; grid-template-columns: 380px 1fr; gap: 1.5rem;">
-        
-        <!-- Left: Pre-Flight Controls -->
-        <div>
-          <div style="background: var(--bg-surface); padding: 1rem; border-radius: 8px; border: 1px solid var(--border-subtle); margin-bottom: 1rem;">
-            <label style="font-size: 0.78rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Select Enriched Batch</label>
-            <select id="mv-batch-select" style="width: 100%; background: var(--bg-card); color: #fff; border: 1px solid var(--border-subtle); padding: 0.6rem; border-radius: 6px; font-size: 0.85rem; margin-bottom: 1rem;">
-              <option value="varaghavan_nestack_com-sep">varaghavan_nestack_com-sep (2,476 emails)</option>
-              <option value="vraghavan_construction_q3">vraghavan_construction_q3 (1,395 emails)</option>
-            </select>
-
-            <div style="font-size: 0.8rem; font-weight: 600; color: #fff; margin-bottom: 0.5rem;">14-Step Cleaning Pre-Flight:</div>
-            <div style="display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
-              <label style="display: flex; align-items: center; gap: 0.4rem;"><input type="checkbox" checked disabled> Deduplicate normalized emails</label>
-              <label style="display: flex; align-items: center; gap: 0.4rem;"><input type="checkbox" checked disabled> Drop corporate parent domains (e.g. Alphabet -> Google)</label>
-              <label style="display: flex; align-items: center; gap: 0.4rem;"><input type="checkbox" checked disabled> Enforce official 75-column Apollo contact schema</label>
-              <label style="display: flex; align-items: center; gap: 0.4rem;"><input type="checkbox" checked disabled> Preserve Apollo Profile & LinkedIn URLs</label>
-            </div>
-
-            <button class="btn btn-primary" style="width: 100%; justify-content: center;" onclick="startVerification()">
-              <span>🛡️</span> Clean & Upload to MillionVerifier
-            </button>
+      <div class="page-hero">
+        <div class="page-hero-row">
+          <div>
+            <h1>MillionVerifier Station</h1>
+            <p class="page-hero-desc">Pre-clean, schema-enforce, and bulk-verify enriched leads via the MillionVerifier API, then partition results into Good, Bad, and Risky datasets with all 75 columns preserved.</p>
+          </div>
+          <div class="page-hero-actions">
+            <span class="badge badge-green">Subproject: millionverifier_agent_step1</span>
           </div>
         </div>
+      </div>
 
-        <!-- Right: Real-time Partitioning Scorecard -->
-        <div>
-          <div style="background: var(--bg-surface); padding: 1.25rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-              <h3 style="font-size: 0.95rem; color: #fff;">Verification & Partitioning Scorecard</h3>
-              <span class="badge badge-green" id="mv-status-badge">Completed (2,476 leads)</span>
+      <div class="section-card">
+        <div class="section-header">
+          <span class="section-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            Step 1: MillionVerifier 75-Column Bulk Verification
+          </span>
+        </div>
+        <div class="section-body">
+          <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:1.25rem;">
+            Pre-cleans enriched leads, removes corporate parent/holding domains, enforces the official 75-column Apollo schema, uploads to MillionVerifier Bulk API, and partitions results into Good, Bad, and Risky datasets.
+          </p>
+
+          <div style="display:grid;grid-template-columns:380px 1fr;gap:1.5rem;">
+
+            <!-- Left: Pre-Flight Controls -->
+            <div>
+              <div style="background:var(--bg-surface);padding:1rem;border-radius:8px;border:1px solid var(--border-subtle);">
+                <div class="form-group">
+                  <label class="form-label">Select Enriched Batch</label>
+                  <select id="mv-batch-select" class="form-select">
+                    <option value="varaghavan_nestack_com-sep">varaghavan_nestack_com-sep (2,476 emails)</option>
+                    <option value="vraghavan_construction_q3">vraghavan_construction_q3 (1,395 emails)</option>
+                  </select>
+                </div>
+
+                <div style="font-size:0.8rem;font-weight:600;color:#fff;margin-bottom:0.5rem;">14-Step Cleaning Pre-Flight:</div>
+                <div style="display:flex;flex-direction:column;gap:0.4rem;font-size:0.78rem;color:var(--text-muted);margin-bottom:1.25rem;">
+                  <label style="display:flex;align-items:center;gap:0.4rem;"><input type="checkbox" checked disabled> Deduplicate normalized emails</label>
+                  <label style="display:flex;align-items:center;gap:0.4rem;"><input type="checkbox" checked disabled> Drop corporate parent domains (e.g. Alphabet → Google)</label>
+                  <label style="display:flex;align-items:center;gap:0.4rem;"><input type="checkbox" checked disabled> Enforce official 75-column Apollo contact schema</label>
+                  <label style="display:flex;align-items:center;gap:0.4rem;"><input type="checkbox" checked disabled> Preserve Apollo Profile &amp; LinkedIn URLs</label>
+                </div>
+
+                <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="startVerification()">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  Clean &amp; Upload to MillionVerifier
+                </button>
+              </div>
             </div>
 
-            <!-- Metric Cards -->
-            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem;">
-              <div style="background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.25); padding: 1rem; border-radius: 8px; text-align: center;">
-                <div style="font-size: 0.74rem; color: var(--accent-emerald); font-weight: 600; text-transform: uppercase;">🟢 Good Leads (Safe)</div>
-                <div style="font-size: 1.8rem; font-weight: 800; color: #fff; margin: 0.25rem 0;" id="mv-good-count">2,210</div>
-                <div style="font-size: 0.72rem; color: var(--text-muted);">89.3% Deliverability</div>
-              </div>
-              <div style="background: rgba(244,63,94,0.08); border: 1px solid rgba(244,63,94,0.25); padding: 1rem; border-radius: 8px; text-align: center;">
-                <div style="font-size: 0.74rem; color: var(--accent-rose); font-weight: 600; text-transform: uppercase;">🔴 Bad Leads (Bounces)</div>
-                <div style="font-size: 1.8rem; font-weight: 800; color: #fff; margin: 0.25rem 0;" id="mv-bad-count">180</div>
-                <div style="font-size: 0.72rem; color: var(--text-muted);">Invalid MX / Dead Inboxes</div>
-              </div>
-              <div style="background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.25); padding: 1rem; border-radius: 8px; text-align: center;">
-                <div style="font-size: 0.74rem; color: var(--accent-amber); font-weight: 600; text-transform: uppercase;">🟡 Risky (Catch-All)</div>
-                <div style="font-size: 1.8rem; font-weight: 800; color: #fff; margin: 0.25rem 0;" id="mv-risky-count">86</div>
-                <div style="font-size: 0.72rem; color: var(--text-muted);">Low Confidence Server</div>
-              </div>
-            </div>
+            <!-- Right: Scorecard -->
+            <div>
+              <div style="background:var(--bg-surface);padding:1.25rem;border-radius:8px;border:1px solid var(--border-subtle);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+                  <h3 style="font-size:0.95rem;color:#fff;">Verification &amp; Partitioning Scorecard</h3>
+                  <span class="badge badge-green" id="mv-status-badge">Completed (2,476 leads)</span>
+                </div>
 
-            <!-- Direct Partition Exporters -->
-            <div style="display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1.5rem;">
-              <button class="btn btn-success" style="flex: 1; justify-content: center;" onclick="alert('Downloading 2,210 Verified Good Leads CSV (75 columns)...')">
-                <span>📥</span> Download Good Leads CSV
-              </button>
-              <button class="btn btn-secondary btn-sm" onclick="alert('Downloading Bad Leads CSV...')">
-                <span>📥</span> Bad CSV
-              </button>
-              <button class="btn btn-secondary btn-sm" onclick="alert('Downloading Risky Leads CSV...')">
-                <span>📥</span> Risky CSV
-              </button>
-            </div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1.5rem;">
+                  <div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);padding:1rem;border-radius:8px;text-align:center;">
+                    <div style="font-size:0.74rem;color:var(--accent-emerald);font-weight:600;text-transform:uppercase;">🟢 Good Leads (Safe)</div>
+                    <div style="font-size:1.8rem;font-weight:800;color:#fff;margin:0.25rem 0;" id="mv-good-count">2,210</div>
+                    <div style="font-size:0.72rem;color:var(--text-muted);">89.3% Deliverability</div>
+                  </div>
+                  <div style="background:rgba(244,63,94,0.08);border:1px solid rgba(244,63,94,0.25);padding:1rem;border-radius:8px;text-align:center;">
+                    <div style="font-size:0.74rem;color:var(--accent-rose);font-weight:600;text-transform:uppercase;">🔴 Bad Leads (Bounces)</div>
+                    <div style="font-size:1.8rem;font-weight:800;color:#fff;margin:0.25rem 0;" id="mv-bad-count">180</div>
+                    <div style="font-size:0.72rem;color:var(--text-muted);">Invalid MX / Dead Inboxes</div>
+                  </div>
+                  <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);padding:1rem;border-radius:8px;text-align:center;">
+                    <div style="font-size:0.74rem;color:var(--accent-amber);font-weight:600;text-transform:uppercase;">🟡 Risky (Catch-All)</div>
+                    <div style="font-size:1.8rem;font-weight:800;color:#fff;margin:0.25rem 0;" id="mv-risky-count">86</div>
+                    <div style="font-size:0.72rem;color:var(--text-muted);">Low Confidence Server</div>
+                  </div>
+                </div>
 
-            <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); padding: 0.85rem; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
-              <div>
-                <strong style="color: #fff; font-size: 0.84rem;">Ready for CRM Synchronization?</strong>
-                <div style="font-size: 0.74rem; color: var(--text-muted);">2,210 verified Good leads ready for Freshsales 5-layer delta sync.</div>
+                <div style="display:flex;gap:0.75rem;align-items:center;margin-bottom:1.5rem;">
+                  <button class="btn btn-success" style="flex:1;justify-content:center;" onclick="window.showToast && window.showToast('Download Started', 'Downloading 2,210 Verified Good Leads CSV…', 'info')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Download Good Leads CSV
+                  </button>
+                  <button class="btn btn-secondary btn-sm" onclick="window.showToast && window.showToast('Download Started', 'Downloading Bad Leads CSV…', 'info')">Bad CSV</button>
+                  <button class="btn btn-secondary btn-sm" onclick="window.showToast && window.showToast('Download Started', 'Downloading Risky Leads CSV…', 'info')">Risky CSV</button>
+                </div>
+
+                <div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.05);padding:0.85rem;border-radius:8px;display:flex;justify-content:space-between;align-items:center;">
+                  <div>
+                    <strong style="color:#fff;font-size:0.84rem;">Ready for CRM Synchronization?</strong>
+                    <div style="font-size:0.74rem;color:var(--text-muted);">2,210 verified Good leads ready for Freshsales 5-layer delta sync.</div>
+                  </div>
+                  <a href="/freshsales-sync" class="btn btn-primary btn-sm">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    Proceed to Step 2: Freshsales Sync ➔
+                  </a>
+                </div>
               </div>
-              <a href="/freshsales-sync" class="btn btn-primary btn-sm">
-                <span>🔄</span> Proceed to Step 2: Freshsales Sync ➔
-              </a>
             </div>
 
           </div>
         </div>
-
       </div>
-    </div>
-  </main>
 
-  <!-- Persistent Task Drawer -->
-  <div class="task-drawer minimized" id="task-drawer">
-    <div class="task-drawer-header" onclick="toggleTaskDrawer()"><div class="task-drawer-status"><span class="pulse-dot green"></span><span id="task-drawer-text">System Idle</span></div></div>
-    <div class="task-drawer-body">
-      <div class="progress-bar-bg"><div class="progress-bar-fill" id="task-progress-fill" style="width: 0%;"></div></div>
-      <div class="task-terminal" id="task-terminal">No active tasks running.</div>
-      <div class="task-actions" id="task-completion-actions" style="display: none;">
-        <div style="font-size: 0.84rem; color: var(--accent-emerald); font-weight: 600;">✓ Verification Finished!</div>
-        <a href="/freshsales-sync" class="btn btn-success btn-sm">Proceed to Freshsales CRM Sync ➔</a>
-      </div>
-    </div>
+    </main>
   </div>
 
-  <script src="/static/js/shell.js"></script>
-  <script>
-    function startVerification() {
-      const batch = document.getElementById('mv-batch-select').value;
-      window.launchTask('verify', batch);
-    }
-  </script>
+</div>
+
+<!-- Command Palette -->
+<div id="cmd-palette-overlay">
+  <div class="cmd-palette">
+    <div class="cmd-search-row">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input class="cmd-search-input" id="cmd-palette-input" placeholder="Search pages or actions…" autocomplete="off">
+      <span class="cmd-search-esc">esc</span>
+    </div>
+    <div class="cmd-list" id="cmd-palette-list"></div>
+    <div class="cmd-footer"><span><kbd>↑↓</kbd> Navigate</span><span><kbd>↵</kbd> Open</span><span><kbd>esc</kbd> Close</span></div>
+  </div>
+</div>
+<div id="toast-container"></div>
+<div class="job-console" id="job-console">
+  <div class="job-console-bar" onclick="toggleConsole()">
+    <div class="job-console-status">
+      <span class="live-dot" id="console-live-dot" style="background:var(--text-muted);box-shadow:none;animation:none;"></span>
+      <span id="job-console-status-text">System Idle — background worker ready</span>
+    </div>
+    <div class="console-progress-track" id="console-progress-track" style="display:none;"><div class="console-progress-fill" id="console-progress-fill" style="width:0%"></div></div>
+    <span class="job-elapsed" id="job-elapsed"></span>
+    <div class="job-console-actions"><button class="console-toggle-btn">Logs ↑</button></div>
+  </div>
+  <div class="job-console-body">
+    <div class="console-toolbar">
+      <span style="font-size:12px;color:var(--text-muted);">Background Task Output</span>
+      <div class="console-toolbar-right">
+        <button class="autoscroll-toggle on" id="autoscroll-toggle">↓ Auto-scroll On</button>
+        <button class="console-toggle-btn" id="copy-logs-btn">Copy Logs</button>
+      </div>
+    </div>
+    <div class="job-terminal" id="job-terminal">No active tasks running.</div>
+    <div class="console-complete-row" id="console-complete-row" style="display:none;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--green-text)"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      <span style="font-size:13px;color:var(--green-text);font-weight:600;">Task completed successfully</span>
+      <button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="document.getElementById('job-console').classList.remove('expanded')">Dismiss</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/shell.js"></script>
+<script src="/static/js/verifier.js"></script>
 </body>
 </html>

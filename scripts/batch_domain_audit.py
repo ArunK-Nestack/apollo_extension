@@ -267,6 +267,8 @@ def audit_multi_candidate_and_verification(conn, leads: list[dict[str, Any]], ba
 
     for lead in leads:
         lid = lead.get("id")
+        if not isinstance(lid, int):
+            continue
         comp = lead.get("company") or ""
         stored_dom = lead.get("company_domain") or ""
         cands = set(generate_candidate_domains(comp))

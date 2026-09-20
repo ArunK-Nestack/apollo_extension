@@ -193,6 +193,7 @@
                 Slice Preview
               </span>
               <div class="section-actions">
+                <span id="selected-slices-count" style="font-size:12px;color:var(--text-muted);"></span>
                 <button class="btn btn-success btn-sm" id="launch-scrape-btn" style="display:none;" onclick="launchScrape()">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                   Launch Scrape
@@ -203,15 +204,16 @@
               <table class="data-table" id="slices-table">
                 <thead>
                   <tr>
-                    <th>#</th>
-                    <th>Slice Label</th>
-                    <th>Filter Applied</th>
-                    <th>Est. Leads</th>
+                    <th style="width:36px;text-align:center;"><input type="checkbox" id="slice-master-toggle" onchange="toggleAllSlices(this)" title="Select all"></th>
+                    <th>Keyword / Slice</th>
+                    <th>Category</th>
                     <th>Status</th>
+                    <th>Est. Leads</th>
+                    <th>Pages</th>
                   </tr>
                 </thead>
                 <tbody id="slices-table-body">
-                  <tr><td colspan="5"><div class="table-empty"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/></svg>Select a search and click Generate</div></td></tr>
+                  <tr><td colspan="6"><div class="table-empty"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/></svg>Select a search and click Generate</div></td></tr>
                 </tbody>
               </table>
             </div>

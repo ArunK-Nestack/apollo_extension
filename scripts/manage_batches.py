@@ -788,12 +788,13 @@ def main():
                 print("  [8] Send to MillionVerifier (Clean -> Bulk Verify -> Download Good/Bad/Risky)")
                 print("  [9] Sync batch to Apollo Web 'My lists' (0 Credits / $0.00)")
                 print("  [10] Search Optimizer & AI Slicer (0 Credits -> Find 100-page keywords)")
+                print("  [A] Account Credit & Expiry Report (All 19 Accounts — Live)")
                 print("  [W] Daily WhatsApp Expiry Alert (0 Credits / Free CallMeBot)")
                 print("  [F] Freshsales CRM Agent — Sync Verified Good Leads (Auto-Merge Tags / Non-Overwrite)")
                 print("  [11] Refresh batch statistics")
                 print("  [12] Exit")
                 
-                choice = input("\nSelect an option (1-12, T, C, O, W, or F): ").strip()
+                choice = input("\nSelect an option (1-12, T, C, O, A, W, or F): ").strip()
 
                 if choice.upper() == "T":
                     active_table = "enrich_saved_leads" if active_table == "apollo_saved_leads" else "apollo_saved_leads"
@@ -805,6 +806,10 @@ def main():
                 elif choice.upper() == "O" or choice == "10":
                     run_apollo_search_optimizer()
                     input("\nPress Enter to continue...")
+                elif choice.upper() == "A":
+                    from scripts.apollo_account_report import run_account_report
+                    run_account_report()
+                    input("Press Enter to continue...")
                 elif choice.upper() == "W":
                     from scripts.send_apollo_expiry_alert import fetch_all_account_expiries, format_whatsapp_expiry_message, send_whatsapp_alert, setup_windows_scheduler
                     print("\n[DAILY WHATSAPP EXPIRY ALERT CENTER]")
@@ -857,7 +862,7 @@ def main():
                     print("\nExiting. Goodbye!")
                     break
                 else:
-                    print("\n[Invalid choice. Please select 1-12, T, C, O, W, or F.]")
+                    print("\n[Invalid choice. Please select 1-12, T, C, O, A, W, or F.]")
                     input("Press Enter to continue...")
 
         except KeyboardInterrupt:

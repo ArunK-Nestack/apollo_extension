@@ -23,6 +23,9 @@ async function fetchBatches() {
     document.getElementById('stat-enriched-count').textContent = totalEnriched.toLocaleString();
     document.getElementById('stat-synced-count').textContent = totalSynced.toLocaleString();
 
+    const countLabel = document.getElementById('batch-count-label');
+    if (countLabel) countLabel.textContent = `${batches.length} batch${batches.length !== 1 ? 'es' : ''}`;
+
     if (batches.length === 0) {
       tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">No lead batches found in MySQL ledger.</td></tr>';
       return;
@@ -95,6 +98,36 @@ async function fetchBatches() {
 
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--accent-rose); padding: 2rem;">Error loading batches: ${e.message}</td></tr>`;
+  }
+}
+
+/**
+ * Live filter function wired to the search input and status dropdown.
+ * Called by: oninput on #batch-search-input, onchange on #batch-status-filter
+ */
+function filterBatchTable(searchVal) {
+  const statusFilter = (document.getElementById('batch-status-filter')?.value || '').toLowerCase();
+  const search = (searchVal || '').toLowerCase();
+  const rows = Array.from(document.querySelectorAll('#batches-table-body tr'));
+  let visible = 0;
+
+  rows.forEach(row => {
+    // Skip colspan rows (empty/loading/error states)
+    if (row.querySelector('td[colspan]')) {
+      row.style.display = '';
+      return;
+    }
+    const text = row.textContent.toLowerCase();
+    const searchMatch = !search || text.includes(search);
+    const statusMatch = !statusFilter || text.includes(statusFilter);
+    const show = searchMatch && statusMatch;
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+
+  const label = document.getElementById('batch-count-label');
+  if (label && rows.some(r => !r.querySelector('td[colspan]'))) {
+    label.textContent = `${visible} batch${visible !== 1 ? 'es' : ''}`;
   }
 }
 

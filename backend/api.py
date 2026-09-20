@@ -1337,39 +1337,95 @@ def check_company_names_in_crm_batch(company_names: list[str], connection=None) 
                 for i in range(0, len(unique_variants), chunk_size):
                     chunk = unique_variants[i:i + chunk_size]
                     fmt = ",".join(["%s"] * len(chunk))
-                    # Direct query utilizing idx_emails_company_name (case-insensitive in MySQL)
-                    cur.execute(f"SELECT DISTINCT company_name FROM emails WHERE company_name IN ({fmt});", tuple(chunk))
-                    for (db_cname,) in cur.fetchall():
-                        if not db_cname:
-                            continue
-                        db_clean = str(db_cname).strip()
-                        db_lower = db_clean.lower()
-                        db_cleaned = clean_company_name(db_clean).lower()
-                        db_stem = normalize_company_stem(db_clean).lower()
 
-                        for key in [db_lower, db_cleaned, db_stem]:
-                            if key in variant_to_inputs:
-                                for matched_raw in variant_to_inputs[key]:
-                                    matched_inputs.add(matched_raw)
-                                    matched_inputs.add(clean_company_name(matched_raw).lower())
-                                    matched_inputs.add(normalize_company_stem(matched_raw).lower())
+                    def _absorb_company_rows(rows):
+                        for (db_cname,) in rows:
+                            if not db_cname:
+                                continue
+                            db_clean = str(db_cname).strip()
+                            db_lower = db_clean.lower()
+                            db_cleaned = clean_company_name(db_clean).lower()
+                            db_stem = normalize_company_stem(db_clean).lower()
+                            for key in [db_lower, db_cleaned, db_stem]:
+                                if key in variant_to_inputs:
+                                    for matched_raw in variant_to_inputs[key]:
+                                        matched_inputs.add(matched_raw)
+                                        matched_inputs.add(clean_company_name(matched_raw).lower())
+                                        matched_inputs.add(normalize_company_stem(matched_raw).lower())
+
+                    # Phase 1a: master CRM emails table
+                    cur.execute(f"SELECT DISTINCT company_name FROM emails WHERE company_name IN ({fmt});", tuple(chunk))
+                    _absorb_company_rows(cur.fetchall())
+
+                    # Phase 1b: apollo_saved_leads (company column)
+                    try:
+                        cur.execute(f"SELECT DISTINCT company FROM apollo_saved_leads WHERE company IN ({fmt});", tuple(chunk))
+                        _absorb_company_rows(cur.fetchall())
+                    except Exception:
+                        pass
+
+                    # Phase 1c: enrich_saved_leads (company column)
+                    try:
+                        cur.execute(f"SELECT DISTINCT company FROM enrich_saved_leads WHERE company IN ({fmt});", tuple(chunk))
+                        _absorb_company_rows(cur.fetchall())
+                    except Exception:
+                        pass
 
                 # Phase 2: Bounded Prefix Range Scan for unmatched distinctive stems
                 unmatched_stems = {s: raw_set for s, raw_set in stem_to_inputs.items() if not raw_set.issubset(matched_inputs)}
                 for stem, raw_set in unmatched_stems.items():
+                    matched_this_stem = False
+
+                    # Phase 2a: emails table
                     cur.execute("""
-                        SELECT company_name FROM emails 
-                        WHERE company_name = %s 
-                           OR company_name LIKE %s 
-                           OR company_name LIKE %s 
+                        SELECT company_name FROM emails
+                        WHERE company_name = %s
+                           OR company_name LIKE %s
+                           OR company_name LIKE %s
                         LIMIT 1;
                     """, (stem, f"{stem} %", f"{stem},%"))
                     row = cur.fetchone()
                     if row and row[0]:
+                        matched_this_stem = True
+
+                    # Phase 2b: apollo_saved_leads
+                    if not matched_this_stem:
+                        try:
+                            cur.execute("""
+                                SELECT company FROM apollo_saved_leads
+                                WHERE company = %s
+                                   OR company LIKE %s
+                                   OR company LIKE %s
+                                LIMIT 1;
+                            """, (stem, f"{stem} %", f"{stem},%"))
+                            row = cur.fetchone()
+                            if row and row[0]:
+                                matched_this_stem = True
+                        except Exception:
+                            pass
+
+                    # Phase 2c: enrich_saved_leads
+                    if not matched_this_stem:
+                        try:
+                            cur.execute("""
+                                SELECT company FROM enrich_saved_leads
+                                WHERE company = %s
+                                   OR company LIKE %s
+                                   OR company LIKE %s
+                                LIMIT 1;
+                            """, (stem, f"{stem} %", f"{stem},%"))
+                            row = cur.fetchone()
+                            if row and row[0]:
+                                matched_this_stem = True
+                        except Exception:
+                            pass
+
+                    if matched_this_stem:
                         for r in raw_set:
                             matched_inputs.add(r)
                             matched_inputs.add(clean_company_name(r).lower())
                             matched_inputs.add(normalize_company_stem(r).lower())
+
         except Exception as ex:
             print(f"[ContactChecker] Notice: company_name CRM lookup error: {ex}", flush=True)
         return matched_inputs

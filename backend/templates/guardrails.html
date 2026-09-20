@@ -3,143 +3,262 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Guardrails Studio - Apollo Operations</title>
+  <meta name="description" content="Apollo Operations Hub — Guardrails Sandbox: live-test candidates against the 4-layer sub-millisecond defense pipeline.">
+  <title>Guardrails Sandbox — Apollo Ops</title>
   <link rel="stylesheet" href="/static/css/common.css">
 </head>
 <body>
+<div class="saas-layout">
 
-  <!-- Global Header -->
-  <header class="header-shell">
-    <div class="header-top">
-      <div class="brand-area">
-        <span class="brand-badge">APOLLO OPS</span>
-        <span class="brand-title">Operations <span>Cockpit</span></span>
+  <!-- SIDEBAR -->
+  <aside class="saas-sidebar">
+    <div class="sidebar-workspace">
+      <div class="ws-logo">A</div>
+      <div class="ws-info">
+        <div class="ws-name">Apollo Intelligence</div>
+        <div class="ws-env"><span class="ws-env-dot"></span>Prod Cluster 01</div>
       </div>
-      <nav class="nav-links">
-        <a href="/batches" class="nav-link"><span>📋</span> Batches</a>
-        <a href="/search-studio" class="nav-link"><span>⚡</span> Search Studio</a>
-        <a href="/fleet" class="nav-link"><span>👥</span> Fleet & Quotas</a>
-        <a href="/guardrails" class="nav-link active"><span>🛡️</span> Guardrails</a>
-        <a href="/verifier" class="nav-link"><span>✅</span> MillionVerifier</a>
-        <a href="/freshsales-sync" class="nav-link"><span>🔄</span> Freshsales CRM</a>
-        <a href="/enrich" class="nav-link"><span>✨</span> Enrich.so</a>
-      </nav>
     </div>
-    <div class="telemetry-strip">
-      <div class="telemetry-group">
-        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>RDS MySQL:</strong> <span id="hud-db-count">7.28M Emails</span></div>
-        <div class="telemetry-pill"><span class="pulse-dot green"></span><strong>MARISA-Trie:</strong> <span id="hud-trie-nodes">2.56M Slugs (0.4ms)</span></div>
-      </div>
-      <div class="telemetry-group" id="hud-fleet-strip"></div>
-    </div>
-  </header>
-
-  <!-- Main Container -->
-  <main class="app-container">
-    
-    <!-- 0.5ms Live Sandbox Card -->
-    <div class="card">
-      <div class="card-header">
-        <h2 class="card-title"><span>🛡️</span> 0.5ms 4-Layer Guardrails Live Sandbox</h2>
-        <span class="badge badge-blue">Sub-Millisecond Multi-Layer Defense</span>
-      </div>
-      <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 1.25rem;">
-        Test any candidate company and contact in real-time against 7.28M CRM records, 2.56M MARISA-Trie domain slugs, 64K title rules, and demographic exclusion lists.
-      </p>
-
-      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1rem;">
-        <div>
-          <label style="font-size: 0.76rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Company Name</label>
-          <input type="text" id="sb-company" value="Bancroft Neurological" style="width: 100%; background: var(--bg-surface); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
-        </div>
-        <div>
-          <label style="font-size: 0.76rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Company Domain</label>
-          <input type="text" id="sb-domain" value="bancroftneurological.org" style="width: 100%; background: var(--bg-surface); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
-        </div>
-        <div>
-          <label style="font-size: 0.76rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Job Title</label>
-          <input type="text" id="sb-title" value="Chief Executive Officer" style="width: 100%; background: var(--bg-surface); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
-        </div>
-        <div>
-          <label style="font-size: 0.76rem; color: var(--text-secondary); display: block; margin-bottom: 0.35rem;">Person Name</label>
-          <input type="text" id="sb-name" value="Michael Roberts" style="width: 100%; background: var(--bg-surface); color: #fff; border: 1px solid var(--border-subtle); padding: 0.55rem; border-radius: 6px; font-size: 0.85rem;">
-        </div>
-      </div>
-
-      <button class="btn btn-primary" onclick="runSandboxTest()">
-        <span>⚡</span> Run 4-Layer Defense Evaluation
+    <div class="sidebar-search">
+      <button class="sidebar-search-btn" id="cmd-palette-trigger">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        Search or jump to…<span class="sidebar-search-kbd">⌘K</span>
       </button>
-
-      <!-- Sandbox Results Deck -->
-      <div id="sandbox-results" style="display: none; margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid rgba(255,255,255,0.06);">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-          <div style="font-size: 1.1rem; font-weight: 700;" id="sb-final-decision">--</div>
-          <span class="badge badge-gray" id="sb-latency">Latency: 0.45ms</span>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-group">
+        <div class="nav-group-label">Pipeline Ops</div>
+        <a href="/batches" class="nav-item" data-href="/batches">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>Batches
+        </a>
+        <a href="/search-studio" class="nav-item" data-href="/search-studio">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>Search Studio<span class="nav-item-badge">AI</span>
+        </a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Data &amp; Quality</div>
+        <a href="/guardrails" class="nav-item" data-href="/guardrails">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>Guardrails<span class="nav-item-badge">0.5ms</span>
+        </a>
+        <a href="/verifier" class="nav-item" data-href="/verifier">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span>MillionVerifier
+        </a>
+        <a href="/enrich" class="nav-item" data-href="/enrich">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v1m0 16v1M4.22 4.22l.7.7m12.16 12.16.7.7M3 12H2m20 0h-1M4.22 19.78l.7-.7M18.36 5.64l.7-.7M12 6a6 6 0 0 0 0 12"/></svg></span>Enrich.so
+        </a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Fleet &amp; CRM</div>
+        <a href="/fleet" class="nav-item" data-href="/fleet">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>Fleet &amp; Quotas
+        </a>
+        <a href="/freshsales-sync" class="nav-item" data-href="/freshsales-sync">
+          <span class="nav-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></span>Freshsales CRM
+        </a>
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="sys-health-card">
+        <div class="sys-health-title">System Health</div>
+        <div class="sys-health-row">
+          <span class="sys-health-label"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg> RDS MySQL</span>
+          <span class="sys-health-value" id="sidebar-db-count">7.28M</span>
         </div>
-
-        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem;">
-          <div style="background: rgba(255,255,255,0.02); padding: 0.85rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
-            <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.35rem;">Layer 1: CRM Domain Seek</div>
-            <div id="sb-l1-badge" class="badge badge-green" style="margin-bottom: 0.35rem;">Net-New</div>
-            <div style="font-size: 0.75rem; color: var(--text-secondary);" id="sb-l1-desc">Direct index seek passed</div>
-          </div>
-          <div style="background: rgba(255,255,255,0.02); padding: 0.85rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
-            <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.35rem;">Layer 2: Title Hierarchy</div>
-            <div id="sb-l2-badge" class="badge badge-green" style="margin-bottom: 0.35rem;">A1_Signer</div>
-            <div style="font-size: 0.75rem; color: var(--text-secondary);" id="sb-l2-desc">Required executive level</div>
-          </div>
-          <div style="background: rgba(255,255,255,0.02); padding: 0.85rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
-            <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.35rem;">Layer 3: Demographic Filter</div>
-            <div id="sb-l3-badge" class="badge badge-green" style="margin-bottom: 0.35rem;">Passed</div>
-            <div style="font-size: 0.75rem; color: var(--text-secondary);" id="sb-l3-desc">Not in surname blocklist</div>
-          </div>
-          <div style="background: rgba(255,255,255,0.02); padding: 0.85rem; border-radius: 8px; border: 1px solid var(--border-subtle);">
-            <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.35rem;">Layer 4: 1/Company Max</div>
-            <div id="sb-l4-badge" class="badge badge-green" style="margin-bottom: 0.35rem;">Accepted ★</div>
-            <div style="font-size: 0.75rem; color: var(--text-secondary);" id="sb-l4-desc">First lead for this company</div>
-          </div>
+        <div class="sys-health-row">
+          <span class="sys-health-label"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg> MARISA-Trie</span>
+          <span class="sys-health-value" id="sidebar-trie-count">2.56M</span>
         </div>
+      </div>
+      <div class="sidebar-operator">
+        <div class="op-avatar">VO</div>
+        <div><div class="op-name">Operator</div><div class="op-role">Prod Environment</div></div>
+        <div class="op-status"><span class="badge badge-green" style="font-size:10px;padding:2px 6px;">Active</span></div>
       </div>
     </div>
+  </aside>
 
-    <!-- 64K Titles Overview -->
-    <div class="card">
-      <div class="card-header">
-        <h3 class="card-title"><span>📚</span> 64,612 Title Rule Segments Directory</h3>
-        <span class="badge badge-blue">Zero-Cost Compounding Cache</span>
-      </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; font-size: 0.82rem;">
-        <div style="background: rgba(16,185,129,0.05); border: 1px solid rgba(16,185,129,0.2); border-radius: 8px; padding: 1rem;">
-          <h4 style="color: var(--accent-emerald); margin-bottom: 0.5rem;">✅ 11 Required Segments (Can Approve/Sign)</h4>
-          <p style="color: var(--text-secondary); line-height: 1.6;">
-            • <code>A1_Signer</code>: C-Suite & Board (CEO, CFO, COO, CRO, CCO)<br>
-            • <code>A2_Budget_Holder</code>: VP / SVP (VP Marketing, SVP Sales)<br>
-            • <code>A3_Approver</code>: Directors owning problem/budget<br>
-            • <code>B1_Champion</code>: Technical managers & senior ICs<br>
-            • <code>B2_Champion_Commercial</code>: Commercial leaders & Sales Ops
-          </p>
+  <!-- MAIN PANEL -->
+  <div class="saas-main">
+    <header class="saas-header">
+      <nav class="header-breadcrumbs">
+        <span>Apollo Ops</span><span class="breadcrumb-sep">›</span>
+        <span class="breadcrumb-current">Guardrails Sandbox</span>
+      </nav>
+      <div class="header-actions">
+        <div class="header-sys-pill">
+          <span class="live-dot"></span>
+          <span id="header-sys-pill-text">4 Nodes Healthy</span>
         </div>
-        <div style="background: rgba(244,63,94,0.05); border: 1px solid rgba(244,63,94,0.2); border-radius: 8px; padding: 1rem;">
-          <h4 style="color: var(--accent-rose); margin-bottom: 0.5rem;">❌ 5 Excluded Segments (Blocked from Green Badge)</h4>
-          <p style="color: var(--text-secondary); line-height: 1.6;">
-            • <code>X1_Procurement</code>: Sourcing, Buyers, Procurement Specialists<br>
-            • <code>X2_Security_Privacy</code>: CISO, Cyber Security, Infosec<br>
-            • <code>X3_Compliance_Quality</code>: Regulatory Affairs, Compliance, Legal<br>
-            • <code>C2_Entry</code>: Interns, Junior Assistants, Entry Coordinators<br>
-            • <code>A0_Board</code>: Non-Executive Advisory Board Members
-          </p>
-        </div>
+        <button class="header-icon-btn" title="Notifications">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </button>
       </div>
-    </div>
-  </main>
+    </header>
 
-  <!-- Persistent Task Drawer -->
-  <div class="task-drawer minimized" id="task-drawer">
-    <div class="task-drawer-header" onclick="toggleTaskDrawer()"><div class="task-drawer-status"><span class="pulse-dot green"></span><span id="task-drawer-text">System Idle</span></div></div>
-    <div class="task-drawer-body"><div class="task-terminal" id="task-terminal">No active tasks running.</div></div>
+    <main class="page-content">
+
+      <div class="page-hero">
+        <div class="page-hero-row">
+          <div>
+            <h1>Guardrails Sandbox</h1>
+            <p class="page-hero-desc">Live-test any candidate contact against the 4-layer sub-millisecond defense pipeline — CRM domain check, title hierarchy, demographic filter, and company dedup.</p>
+          </div>
+          <div class="page-hero-actions">
+            <span class="badge badge-blue">Sub-Millisecond Multi-Layer Defense</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Sandbox -->
+      <div class="section-card">
+        <div class="section-header">
+          <span class="section-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            0.5ms 4-Layer Guardrails Live Sandbox
+          </span>
+        </div>
+        <div class="section-body">
+          <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:1.25rem;">
+            Test any candidate company and contact in real-time against 7.28M CRM records, 2.56M MARISA-Trie domain slugs, 64K title rules, and demographic exclusion lists.
+          </p>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1rem;">
+            <div>
+              <label class="form-label">Company Name</label>
+              <input type="text" id="sb-company" class="form-input" value="Bancroft Neurological">
+            </div>
+            <div>
+              <label class="form-label">Company Domain</label>
+              <input type="text" id="sb-domain" class="form-input" value="bancroftneurological.org">
+            </div>
+            <div>
+              <label class="form-label">Job Title</label>
+              <input type="text" id="sb-title" class="form-input" value="Chief Executive Officer">
+            </div>
+            <div>
+              <label class="form-label">Person Name</label>
+              <input type="text" id="sb-name" class="form-input" value="Michael Roberts">
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="runSandboxTest()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            Run 4-Layer Defense Evaluation
+          </button>
+
+          <!-- Results Deck -->
+          <div id="sandbox-results" style="display:none;margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid rgba(255,255,255,0.06);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+              <div style="font-size:1.1rem;font-weight:700;" id="sb-final-decision">--</div>
+              <span class="badge badge-gray" id="sb-latency">Latency: —</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;">
+              <div style="background:rgba(255,255,255,0.02);padding:0.85rem;border-radius:8px;border:1px solid var(--border-subtle);">
+                <div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;margin-bottom:0.35rem;">Layer 1: CRM Domain Seek</div>
+                <div id="sb-l1-badge" class="badge badge-green" style="margin-bottom:0.35rem;">Net-New</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);" id="sb-l1-desc">Direct index seek passed</div>
+              </div>
+              <div style="background:rgba(255,255,255,0.02);padding:0.85rem;border-radius:8px;border:1px solid var(--border-subtle);">
+                <div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;margin-bottom:0.35rem;">Layer 2: Title Hierarchy</div>
+                <div id="sb-l2-badge" class="badge badge-green" style="margin-bottom:0.35rem;">A1_Signer</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);" id="sb-l2-desc">Required executive level</div>
+              </div>
+              <div style="background:rgba(255,255,255,0.02);padding:0.85rem;border-radius:8px;border:1px solid var(--border-subtle);">
+                <div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;margin-bottom:0.35rem;">Layer 3: Demographic Filter</div>
+                <div id="sb-l3-badge" class="badge badge-green" style="margin-bottom:0.35rem;">Passed</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);" id="sb-l3-desc">Not in surname blocklist</div>
+              </div>
+              <div style="background:rgba(255,255,255,0.02);padding:0.85rem;border-radius:8px;border:1px solid var(--border-subtle);">
+                <div style="font-size:0.72rem;color:var(--text-muted);text-transform:uppercase;margin-bottom:0.35rem;">Layer 4: 1/Company Max</div>
+                <div id="sb-l4-badge" class="badge badge-green" style="margin-bottom:0.35rem;">Accepted ★</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);" id="sb-l4-desc">First lead for this company</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 64K Titles Overview -->
+      <div class="section-card">
+        <div class="section-header">
+          <span class="section-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            64,612 Title Rule Segments Directory
+          </span>
+          <div class="section-actions">
+            <span class="badge badge-blue">Zero-Cost Compounding Cache</span>
+          </div>
+        </div>
+        <div class="section-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;font-size:0.82rem;">
+            <div style="background:rgba(16,185,129,0.05);border:1px solid rgba(16,185,129,0.2);border-radius:8px;padding:1rem;">
+              <h4 style="color:var(--accent-emerald);margin-bottom:0.5rem;">✅ 11 Required Segments (Can Approve/Sign)</h4>
+              <p style="color:var(--text-muted);line-height:1.6;">
+                • <code>A1_Signer</code>: C-Suite &amp; Board (CEO, CFO, COO, CRO, CCO)<br>
+                • <code>A2_Budget_Holder</code>: VP / SVP (VP Marketing, SVP Sales)<br>
+                • <code>A3_Approver</code>: Directors owning problem/budget<br>
+                • <code>B1_Champion</code>: Technical managers &amp; senior ICs<br>
+                • <code>B2_Champion_Commercial</code>: Commercial leaders &amp; Sales Ops
+              </p>
+            </div>
+            <div style="background:rgba(244,63,94,0.05);border:1px solid rgba(244,63,94,0.2);border-radius:8px;padding:1rem;">
+              <h4 style="color:var(--accent-rose);margin-bottom:0.5rem;">❌ 5 Excluded Segments (Blocked from Green Badge)</h4>
+              <p style="color:var(--text-muted);line-height:1.6;">
+                • <code>X1_Procurement</code>: Sourcing, Buyers, Procurement Specialists<br>
+                • <code>X2_Security_Privacy</code>: CISO, Cyber Security, Infosec<br>
+                • <code>X3_Compliance_Quality</code>: Regulatory Affairs, Compliance, Legal<br>
+                • <code>C2_Entry</code>: Interns, Junior Assistants, Entry Coordinators<br>
+                • <code>A0_Board</code>: Non-Executive Advisory Board Members
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
   </div>
 
-  <script src="/static/js/shell.js"></script>
-  <script src="/static/js/guardrails.js"></script>
+</div>
+
+<!-- Command Palette -->
+<div id="cmd-palette-overlay">
+  <div class="cmd-palette">
+    <div class="cmd-search-row">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input class="cmd-search-input" id="cmd-palette-input" placeholder="Search pages or actions…" autocomplete="off">
+      <span class="cmd-search-esc">esc</span>
+    </div>
+    <div class="cmd-list" id="cmd-palette-list"></div>
+    <div class="cmd-footer"><span><kbd>↑↓</kbd> Navigate</span><span><kbd>↵</kbd> Open</span><span><kbd>esc</kbd> Close</span></div>
+  </div>
+</div>
+<div id="toast-container"></div>
+<div class="job-console" id="job-console">
+  <div class="job-console-bar" onclick="toggleConsole()">
+    <div class="job-console-status">
+      <span class="live-dot" id="console-live-dot" style="background:var(--text-muted);box-shadow:none;animation:none;"></span>
+      <span id="job-console-status-text">System Idle — background worker ready</span>
+    </div>
+    <div class="console-progress-track" id="console-progress-track" style="display:none;"><div class="console-progress-fill" id="console-progress-fill" style="width:0%"></div></div>
+    <span class="job-elapsed" id="job-elapsed"></span>
+    <div class="job-console-actions"><button class="console-toggle-btn">Logs ↑</button></div>
+  </div>
+  <div class="job-console-body">
+    <div class="console-toolbar">
+      <span style="font-size:12px;color:var(--text-muted);">Background Task Output</span>
+      <div class="console-toolbar-right">
+        <button class="autoscroll-toggle on" id="autoscroll-toggle">↓ Auto-scroll On</button>
+        <button class="console-toggle-btn" id="copy-logs-btn">Copy Logs</button>
+      </div>
+    </div>
+    <div class="job-terminal" id="job-terminal">No active tasks running.</div>
+    <div class="console-complete-row" id="console-complete-row" style="display:none;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--green-text)"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      <span style="font-size:13px;color:var(--green-text);font-weight:600;">Task completed successfully</span>
+      <button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="document.getElementById('job-console').classList.remove('expanded')">Dismiss</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/shell.js"></script>
+<script src="/static/js/guardrails.js"></script>
 </body>
 </html>
