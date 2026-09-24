@@ -1019,27 +1019,43 @@
   // FIND ROW CELL BY DATA-ID (Supports Pinned & Split Sub-tables)
   // ============================================================
 
-  function findCellByDataId(row, dataId) {
-    if (!row) return null;
+  function findCellByDataId(row, dataId, index = null) {
+    if (!row && (index === null || index === undefined)) return null;
 
     // 1. Direct query inside row
-    let cell = row.querySelector(`[data-id="${dataId}"]`);
-    if (cell) return cell;
-
-    // 2. Query matching row ID across document if table is split into pinned & scrollable containers
-    const rowId = row.getAttribute("id");
-    if (rowId) {
-      cell = document.querySelector(`[id="${rowId}"] [data-id="${dataId}"]`);
+    if (row) {
+      let cell = row.querySelector(`[data-id="${dataId}"]`);
       if (cell) return cell;
+
+      const rowId = row.getAttribute("id");
+      if (rowId) {
+        cell = document.querySelector(`[id="${rowId}"] [data-id="${dataId}"]`);
+        if (cell) return cell;
+      }
     }
 
-    // 3. Query matching aria-rowindex
-    const rowIndex = row.getAttribute("aria-rowindex");
-    if (rowIndex !== null && rowIndex !== undefined) {
-      cell = document.querySelector(
+    // 2. Query matching aria-rowindex
+    const rowIndex = row?.getAttribute?.("aria-rowindex");
+    if (rowIndex !== null && rowIndex !== undefined && rowIndex !== "") {
+      const childMatch = document.querySelector(
+        `[data-id="${dataId}"] [aria-rowindex="${rowIndex}"], [data-id="${dataId}"][aria-rowindex="${rowIndex}"]`
+      );
+      if (childMatch) {
+        return childMatch.closest(`[data-id="${dataId}"]`) || childMatch;
+      }
+
+      const ancestorMatch = document.querySelector(
         `[role="row"][aria-rowindex="${rowIndex}"] [data-id="${dataId}"], [aria-rowindex="${rowIndex}"] [data-id="${dataId}"]`
       );
-      if (cell) return cell;
+      if (ancestorMatch) return ancestorMatch;
+    }
+
+    // 3. Positional index fallback: Nth row -> Nth cell across table
+    if (index !== null && index !== undefined && index >= 0) {
+      const allCells = document.querySelectorAll(`[data-id="${dataId}"]`);
+      if (allCells.length > index) {
+        return allCells[index];
+      }
     }
 
     return null;
@@ -1081,7 +1097,7 @@
       : (link.closest('[data-id="contact.name"], [role="cell"], td') || link.parentElement);
 
     // 1. Dynamic Title Detection (data-id first, then header or next cell)
-    let titleCell = findCellByDataId(row, "contact.job_title") ||
+    let titleCell = findCellByDataId(row, "contact.job_title", index) ||
       findCellByHeader(
         row,
         cells,
@@ -1091,9 +1107,14 @@
     if (!titleCell && nameCellIndex !== -1 && nameCellIndex + 1 < cells.length) {
       titleCell = cells[nameCellIndex + 1];
     }
+    let rawTitle = cleanText(titleCell?.innerText || titleCell?.textContent || "");
+    if (rawTitle.includes("\n")) {
+      rawTitle = rawTitle.split("\n")[0].trim();
+    }
+    let jobTitle = rawTitle || "Unknown";
 
     // 2. Dynamic Company Detection (data-id first, then header, company link, or adjacent cell)
-    let companyCell = findCellByDataId(row, "contact.account") ||
+    let companyCell = findCellByDataId(row, "contact.account", index) ||
       findCellByHeader(
         row,
         cells,
@@ -1113,16 +1134,17 @@
       companyCell = cells[nameCellIndex + 2];
     }
 
-    let jobTitle = cleanText(
-      titleCell?.innerText || titleCell?.textContent || ""
-    );
-
     let compLink = (companyCell || row).querySelector(
       'a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]'
     );
-    let company = cleanCompanyName(
-      compLink ? (compLink.innerText || compLink.textContent) : (companyCell?.innerText || companyCell?.textContent || "")
-    );
+    let rawCompanyName = compLink
+      ? (compLink.innerText || compLink.textContent)
+      : (companyCell?.innerText || companyCell?.textContent || "");
+
+    if (rawCompanyName.includes("\n")) {
+      rawCompanyName = rawCompanyName.split("\n")[0].trim();
+    }
+    let company = cleanCompanyName(rawCompanyName);
 
     if (!company) {
       const fallbackCompLink = row.querySelector('a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]');
@@ -1133,7 +1155,7 @@
 
     // 3. Domain column (primary) + website link (fallback / second-pass candidate)
     let columnDomain = "";
-    const domainCell = findCellByDataId(row, "account.domain");
+    const domainCell = findCellByDataId(row, "account.domain", index);
     if (domainCell) {
       const rawDomainText = cleanText(domainCell.innerText || domainCell.textContent || "");
       const domainMatch = rawDomainText.match(/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})/i);
@@ -1142,8 +1164,13 @@
       }
     }
 
+    // If company is still somehow empty, fallback to domain root name or Unknown
+    if (!company) {
+      company = columnDomain ? columnDomain.split(".")[0] : "Unknown";
+    }
+
     let websiteUrl = "";
-    const socialCell = findCellByDataId(row, "account.social");
+    const socialCell = findCellByDataId(row, "account.social", index);
     const websiteLink =
       (socialCell || row).querySelector('a[aria-label="website link"]') ||
       row.querySelector('[data-id="account.social"] a[aria-label="website link"]') ||
@@ -1180,7 +1207,7 @@
 
     // 4. Email Detection from row (if revealed / mailto link or email text)
     let email = "";
-    const emailsCell = findCellByDataId(row, "contact.emails");
+    const emailsCell = findCellByDataId(row, "contact.emails", index);
     const mailtoLink = (emailsCell || row).querySelector('a[href^="mailto:"]');
     if (mailtoLink) {
       email = (mailtoLink.getAttribute("href") || "").replace(/^mailto:/i, "").split("?")[0].trim();
@@ -1199,7 +1226,7 @@
     }
 
     // Location is optional
-    const locationCell = findCellByDataId(row, "contact.location") ||
+    const locationCell = findCellByDataId(row, "contact.location", index) ||
       findCellByHeader(
         row,
         cells,
@@ -1220,7 +1247,7 @@
     );
 
     // Number of Employees is optional.
-    const employeesCell = findCellByDataId(row, "account.number_of_employees") ||
+    const employeesCell = findCellByDataId(row, "account.number_of_employees", index) ||
       findCellByHeader(
         row,
         cells,
@@ -1242,23 +1269,6 @@
       if (empMatch) {
         employeeCount = parseInt(empMatch[0], 10);
       }
-    }
-
-    if (!company) {
-      console.log(
-        "Contact Checker: incomplete row (missing company)",
-        {
-          name,
-          jobTitle,
-          company
-        }
-      );
-
-      return null;
-    }
-
-    if (!jobTitle) {
-      jobTitle = "Unknown";
     }
 
     const key = getContactKey(
