@@ -896,7 +896,7 @@
         continue;
       }
 
-      if (link.closest('[role="row"], tr, .zp_DZKPa, [id^="table-row-"], [role="gridcell"]')) {
+      if (link.closest('[role="row"], tr, .zp_DZKPa, [id^="table-row-"]')) {
         uniqueLinks.push(link);
       }
     }
@@ -1079,8 +1079,13 @@
       return null;
     }
 
+    // Name: try link text first, then any nested text node / span (new Apollo layout)
     const name = cleanText(
-      link.innerText || link.textContent
+      link.innerText ||
+      link.textContent ||
+      link.querySelector('span, div, [class*="name"]')?.innerText ||
+      link.querySelector('span, div, [class*="name"]')?.textContent ||
+      ""
     );
 
     if (!name) {
