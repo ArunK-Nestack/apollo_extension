@@ -1096,25 +1096,22 @@
     // Find all Apollo cells inside this row
     // ----------------------------------------------------------
 
-    // Use direct children of the row for positional indexing.
-    // Apollo now wraps [role="cell"] inside [role="gridcell"] — taking direct
-    // children keeps column positions aligned with column headers.
-    const cells = Array.from(row.children).filter(c => {
-      const r = c.getAttribute('role');
-      return r === 'gridcell' || r === 'cell' || c.tagName === 'TD';
-    });
+    // Direct children of the row = one slot per column (positionally stable).
+    // Apollo's column wrappers (e.g. zp_bhxgG) have no ARIA role — the
+    // role="cell" / role="gridcell" elements sit one or two levels deeper.
+    const cells = Array.from(row.children);
 
-    const nameCellIndex = cells.findIndex(
-      cell => cell === link.closest('[role="gridcell"], [role="cell"], td') ||
-              cell.contains(link)
-    );
+    const nameCellIndex = cells.findIndex(cell => cell.contains(link));
 
-    // nameCell: prefer the inner cell with data-id (for badge targeting)
+    // nameCell: the inner element with data-id="contact.name" (for badge placement)
     const nameCellOuter = nameCellIndex !== -1 ? cells[nameCellIndex] : null;
-    const nameCell = (nameCellOuter?.querySelector('[data-id="contact.name"], [role="cell"]') ||
+    const nameCell = (
+      nameCellOuter?.querySelector('[data-id="contact.name"]') ||
+      nameCellOuter?.querySelector('[role="cell"]') ||
       nameCellOuter ||
-      link.closest('[data-id="contact.name"], [role="cell"], [role="gridcell"], td') ||
-      link.parentElement);
+      link.closest('[data-id="contact.name"], [role="cell"], td') ||
+      link.parentElement
+    );
 
     // 1. Dynamic Title Detection (data-id first, then header or next cell)
     let titleCell = findCellByDataId(row, "contact.job_title", index) ||
