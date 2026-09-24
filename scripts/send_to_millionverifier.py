@@ -310,6 +310,24 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
         original_headers=original_headers,
     )
 
+    try:
+        from scripts.freshsales_bridge import save_millionverifier_job
+        save_millionverifier_job({
+            "file_id": job.file_id,
+            "file_name": f"{base_stem}.csv",
+            "login": selected_login,
+            "account_name": selected_acc_name,
+            "batch": selected_batch,
+            "status": "finished",
+            "total_rows": len(df_clean),
+            "good_count": cat_summary.good_count,
+            "bad_count": cat_summary.bad_count,
+            "risky_count": cat_summary.risky_count,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    except Exception:
+        pass
+
     # 7. As requested: "Once it is done, it will ask us to download it."
     downloads_dir = Path(get_default_downloads_dir())
     project_exports_dir = PROJECT_ROOT / "exports"

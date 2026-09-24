@@ -995,7 +995,7 @@ def qualify_contacts_batch(
         # First group this page by domain and take page's best candidate
         page_buckets: Dict[str, List[ApolloContact]] = {}
         for c in title_qualified_contacts:
-            dom = clean_domain(c.company_domain or c.domain or "")
+            dom = clean_domain(c.company_domain or getattr(c, "domain", None) or "")
             if not dom:
                 continue
             page_buckets.setdefault(dom, []).append(c)
@@ -1025,7 +1025,7 @@ def qualify_contacts_batch(
         # Page-local deduplication (fallback for tests)
         domain_buckets: Dict[str, List[ApolloContact]] = {}
         for c in title_qualified_contacts:
-            dom = clean_domain(c.company_domain or c.domain or "")
+            dom = clean_domain(c.company_domain or getattr(c, "domain", None) or "")
             if not dom:
                 continue
             domain_buckets.setdefault(dom, []).append(c)
@@ -1051,7 +1051,7 @@ def save_qualified_leads_to_db(leads: List[ApolloContact], batch_tag: str, conn)
     # Guarantee 1 contact per company domain in this batch by deleting any previous winner
     with conn.cursor() as cur:
         for c in leads:
-            dom = clean_domain(c.company_domain or c.domain or "")
+            dom = clean_domain(c.company_domain or getattr(c, "domain", None) or "")
             if dom:
                 cur.execute(
                     "DELETE FROM `apollo_saved_leads` WHERE `batch` = %s AND `company_domain` = %s",
@@ -1069,7 +1069,7 @@ def save_qualified_leads_to_db(leads: List[ApolloContact], batch_tag: str, conn)
             c.last_name or "",
             c.job_title or "",
             c.company or "",
-            c.company_domain or c.domain or "",
+            c.company_domain or getattr(c, "domain", None) or "",
             c.website_link or "",
             c.location or "",
             c.linkedin_url or "",
@@ -1653,7 +1653,7 @@ def main():
     # Step 8 Parity: Session-wide seen companies for 1/company deduplication
     session_seen_companies: Dict[str, ApolloContact] = {}
 
-    session_audit = {
+    session_audit: Dict[str, Any] = {
         "scanned": 0,
         "existing_crm": 0,
         "indian_name": 0,

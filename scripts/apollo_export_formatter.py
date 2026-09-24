@@ -107,7 +107,11 @@ def format_apollo_lead_row(lead: Dict[str, Any], account_email: str = "") -> Lis
         except Exception:
             raw_match = {}
 
-    org = raw_match.get("organization") or {}
+    # If lead is passed directly from Apollo API response (or lacks separate raw_enrichment_data)
+    if not raw_match and isinstance(lead, dict):
+        raw_match = lead
+
+    org = raw_match.get("organization") or lead.get("organization") or {}
 
     # 1. Names
     first_name = raw_match.get("first_name") or lead.get("first_name") or ""
@@ -118,8 +122,8 @@ def format_apollo_lead_row(lead: Dict[str, Any], account_email: str = "") -> Lis
         last_name = parts[1] if len(parts) > 1 else ""
 
     # 2. Title & Company
-    title = raw_match.get("title") or lead.get("job_title") or ""
-    comp_name = org.get("name") or lead.get("company") or ""
+    title = raw_match.get("title") or lead.get("job_title") or lead.get("title") or ""
+    comp_name = org.get("name") or lead.get("company") or lead.get("organization_name") or ""
 
     # 3. Email & Status
     email = (raw_match.get("email") or lead.get("email") or "").strip()

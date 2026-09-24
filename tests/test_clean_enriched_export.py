@@ -89,3 +89,28 @@ def test_clean_apollo_dataframe_dedup_accounts():
     assert len(df_clean) == 1
     assert stats["account_duplicates_removed"] == 1
     assert df_clean.iloc[0]["Job Title"] == "Founder"
+
+
+def test_resolve_canonical_account():
+    from scripts.clean_enriched_export import resolve_canonical_account
+
+    # Lowercase enrich login
+    email, name = resolve_canonical_account("vraghavan@nestack.com", "vraghavan@nestack.com")
+    assert email == "VRAGHAVAN@NESTACK.COM"
+    assert name == "V Raghavan"
+
+    # Uppercase login
+    email, name = resolve_canonical_account("VRAGHAVAN@NESTACK.COM", "V Raghavan")
+    assert email == "VRAGHAVAN@NESTACK.COM"
+    assert name == "V Raghavan"
+
+    # Nestacktech account
+    email, name = resolve_canonical_account("VRAGHAVAN@NESTACKTECH.COM", "V Raghavan")
+    assert email == "VRAGHAVAN@NESTACKTECH.COM"
+    assert name == "V Raghavan"
+
+    # Shorthand batch-based resolution
+    email, name = resolve_canonical_account("R Chandran", "R Chandran", "rchandran_nestack_biz")
+    assert email == "RCHANDRAN@NESTACK.BIZ"
+    assert name == "R Chandran"
+

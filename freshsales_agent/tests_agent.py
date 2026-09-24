@@ -177,11 +177,45 @@ def test_database_logging():
     print("test_database_logging passed.")
 
 
+def test_unsynced_leads_extraction():
+    from scripts.freshsales_bridge import extract_unsynced_leads
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orig_csv = Path(tmpdir) / "test_good.csv"
+        audit_csv = Path(tmpdir) / "test_good_crm_audit.csv"
+        retry_csv = Path(tmpdir) / "retry.csv"
+
+        orig_csv.write_text(
+            "First Name,Last Name,Email,Title\n"
+            "John,Doe,john@success.com,CEO\n"
+            "Jane,Smith,jane@failed.com,CTO\n"
+            "Bob,Brown,bob@blocked.fr,Director\n",
+            encoding="utf-8"
+        )
+
+        audit_csv.write_text(
+            "email,action,fields_filled_count,fields_filled_names,error_reason\n"
+            "john@success.com,created,10,All,\n"
+            "jane@failed.com,created,10,All,Freshsales HTTP 405 error\n"
+            "bob@blocked.fr,excluded_tld,0,,Matched DELETE_TLDS blocklist\n",
+            encoding="utf-8"
+        )
+
+        out_path, count = extract_unsynced_leads(orig_csv, audit_csv, retry_csv)
+        assert count == 1
+        assert out_path.is_file()
+        content = out_path.read_text(encoding="utf-8")
+        assert "jane@failed.com" in content
+        assert "john@success.com" not in content
+        assert "bob@blocked.fr" not in content
+        print("test_unsynced_leads_extraction passed.")
+
+
 if __name__ == "__main__":
     test_tld_filtering()
     test_field_mapping_and_delta()
     test_input_parsing_and_dedupe()
     test_excel_parsing_and_dedupe()
     test_database_logging()
+    test_unsynced_leads_extraction()
     print("All Freshsales CRM agent unit tests passed successfully!")
 

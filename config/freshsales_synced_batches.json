@@ -1,0 +1,35 @@
+{
+  "vraghavan_nestack_com_aug_20_-_sep_20 - good - 7875 good - 9229 total": {
+    "file_stem": "vraghavan_nestack_com_aug_20_-_sep_20 - good - 7875 good - 9229 total",
+    "file_path": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\scratch\\millionverifier_cache\\vraghavan_nestack_com_aug_20_-_sep_20_categorized\\good\\vraghavan_nestack_com_aug_20_-_sep_20 - good - 7875 good - 9229 total.csv",
+    "tag": "vraghavan@nestack.com(aug 20 - sep 20)",
+    "synced_at": "2026-09-22 14:39:57",
+    "total_leads": 7875,
+    "created": 2787,
+    "updated": 513,
+    "tld_blocked": 103,
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vraghavan_nestack_com_aug_20_-_sep_20 - good - 7875 good - 9229 total_crm_audit.csv"
+  },
+  "vraghavan_nestack_com_aug_20_-_sep_20_-_good_-_7875_good_-_9229_total_unsynced_retry_4472": {
+    "file_stem": "vraghavan_nestack_com_aug_20_-_sep_20_-_good_-_7875_good_-_9229_total_unsynced_retry_4472",
+    "file_path": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vraghavan_nestack_com_aug_20_-_sep_20_-_good_-_7875_good_-_9229_total_unsynced_retry_4472.csv",
+    "tag": "vraghavan@nestack.com(aug 20 - sep 20)",
+    "synced_at": "2026-09-22 15:39:30",
+    "total_leads": 4472,
+    "created": 3700,
+    "updated": 772,
+    "tld_blocked": 0,
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vraghavan_nestack_com_aug_20_-_sep_20_-_good_-_7875_good_-_9229_total_unsynced_retry_4472_crm_audit.csv"
+  },
+  "madhava_reddy_nestack-tech_com_aug_20_-_sep_20 - good - 3121 good - 4237 total": {
+    "file_stem": "madhava_reddy_nestack-tech_com_aug_20_-_sep_20 - good - 3121 good - 4237 total",
+    "file_path": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\scratch\\millionverifier_cache\\madhava_reddy_nestack-tech_com_aug_20_-_sep_20_categorized\\good\\madhava_reddy_nestack-tech_com_aug_20_-_sep_20 - good - 3121 good - 4237 total.csv",
+    "tag": "madhava.reddy@nestack-tech.com(aug 20 - sep 20)",
+    "synced_at": "2026-09-24 11:39:54",
+    "total_leads": 3121,
+    "created": 2475,
+    "updated": 588,
+    "tld_blocked": 58,
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\madhava_reddy_nestack-tech_com_aug_20_-_sep_20 - good - 3121 good - 4237 total_crm_audit.csv"
+  }
+}

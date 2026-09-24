@@ -774,6 +774,10 @@
   // ============================================================
 
   function isApolloDomainColumnVisible() {
+    if (document.querySelector('[data-id="account.domain"]')) {
+      return true;
+    }
+
     const headers = Array.from(
       document.querySelectorAll('[role="columnheader"], th')
     );
@@ -787,8 +791,10 @@
       ).toLowerCase();
 
       if (
+        label.includes("domain") ||
         label === "domain" ||
-        label === "company domain" ||
+        label.includes("company · domain") ||
+        label.includes("company domain") ||
         label === "email domain" ||
         label === "primary domain"
       ) {
@@ -854,6 +860,13 @@
 
   function getApolloContactLinks() {
     const selectors = [
+      '[data-id="contact.name"] a[href*="/people/"]',
+      '[data-id="contact.name"] a[data-to*="/people/"]',
+      '[data-id="contact.name"] a[href*="/contacts/"]',
+      '[data-id="contact.name"] a[data-to*="/contacts/"]',
+      '[data-id="contact.name"] a',
+      '[data-testid="contact-name-cell"] a',
+      '[data-interaction-boundary="Contact Name Cell"] a',
       'a[href*="/contacts/"]',
       'a[data-to*="/contacts/"]',
       'a[href*="/people/"]',
@@ -866,15 +879,29 @@
       document.querySelectorAll(selectors.join(","))
     );
 
-    return found.filter(link => {
+    const uniqueLinks = [];
+    const seen = new Set();
+
+    for (const link of found) {
+      if (seen.has(link)) continue;
+      seen.add(link);
+
       const href = link.getAttribute("href") || link.getAttribute("data-to") || "";
       // Exclude navigation tabs or search filters
-      if (href.endsWith("/people") || href.endsWith("/contacts") || href.includes("?")) {
-        // Only accept if inside an actual data row
-        return Boolean(link.closest('[role="row"], tr'));
+      if (
+        href.endsWith("/people") ||
+        href.endsWith("/contacts") ||
+        (href.includes("?") && !href.includes("/people/") && !href.includes("/contacts/"))
+      ) {
+        continue;
       }
-      return Boolean(link.closest('[role="row"], tr'));
-    });
+
+      if (link.closest('[role="row"], tr, .zp_DZKPa, [id^="table-row-"]')) {
+        uniqueLinks.push(link);
+      }
+    }
+
+    return uniqueLinks;
   }
 
   // ============================================================
@@ -970,11 +997,11 @@
 
     if (ariaColumnIndex) {
       const indexedCell = row.querySelector(
-        `[role="cell"][aria-colindex="${ariaColumnIndex}"], td[aria-colindex="${ariaColumnIndex}"]`
+        `[role="cell"][aria-colindex="${ariaColumnIndex}"], td[aria-colindex="${ariaColumnIndex}"], [aria-colindex="${ariaColumnIndex}"]`
       );
 
       if (indexedCell) {
-        return indexedCell;
+        return indexedCell.closest('[role="cell"], td') || indexedCell;
       }
     }
 
@@ -989,11 +1016,41 @@
   }
 
   // ============================================================
+  // FIND ROW CELL BY DATA-ID (Supports Pinned & Split Sub-tables)
+  // ============================================================
+
+  function findCellByDataId(row, dataId) {
+    if (!row) return null;
+
+    // 1. Direct query inside row
+    let cell = row.querySelector(`[data-id="${dataId}"]`);
+    if (cell) return cell;
+
+    // 2. Query matching row ID across document if table is split into pinned & scrollable containers
+    const rowId = row.getAttribute("id");
+    if (rowId) {
+      cell = document.querySelector(`[id="${rowId}"] [data-id="${dataId}"]`);
+      if (cell) return cell;
+    }
+
+    // 3. Query matching aria-rowindex
+    const rowIndex = row.getAttribute("aria-rowindex");
+    if (rowIndex !== null && rowIndex !== undefined) {
+      cell = document.querySelector(
+        `[role="row"][aria-rowindex="${rowIndex}"] [data-id="${dataId}"], [aria-rowindex="${rowIndex}"] [data-id="${dataId}"]`
+      );
+      if (cell) return cell;
+    }
+
+    return null;
+  }
+
+  // ============================================================
   // EXTRACT APOLLO ROW (Flexible & Resilient to Custom Column Layouts)
   // ============================================================
 
   function extractContact(link, index, headersList = null) {
-    const row = link.closest('[role="row"], tr');
+    const row = link.closest('[role="row"], tr, .zp_DZKPa, [id^="table-row-"]');
 
     if (!row) {
       return null;
@@ -1021,28 +1078,33 @@
 
     const nameCell = nameCellIndex !== -1
       ? cells[nameCellIndex]
-      : (link.closest('[role="cell"], td') || link.parentElement);
+      : (link.closest('[data-id="contact.name"], [role="cell"], td') || link.parentElement);
 
-    // 1. Dynamic Title Detection (by header or next cell)
-    let titleCell = findCellByHeader(
-      row,
-      cells,
-      ["title", "job title", "position", "role"],
-      headersList
-    );
+    // 1. Dynamic Title Detection (data-id first, then header or next cell)
+    let titleCell = findCellByDataId(row, "contact.job_title") ||
+      findCellByHeader(
+        row,
+        cells,
+        ["title", "job title", "position", "role"],
+        headersList
+      );
     if (!titleCell && nameCellIndex !== -1 && nameCellIndex + 1 < cells.length) {
       titleCell = cells[nameCellIndex + 1];
     }
 
-    // 2. Dynamic Company Detection (by header, company link, or adjacent cell)
-    let companyCell = findCellByHeader(
-      row,
-      cells,
-      ["company", "company name", "organization", "account"],
-      headersList
-    );
+    // 2. Dynamic Company Detection (data-id first, then header, company link, or adjacent cell)
+    let companyCell = findCellByDataId(row, "contact.account") ||
+      findCellByHeader(
+        row,
+        cells,
+        ["company", "company name", "organization", "account"],
+        headersList
+      );
     if (!companyCell) {
-      const compLink = row.querySelector('a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]');
+      const rowId = row.getAttribute("id");
+      const compLink = (rowId ? document.querySelector(`[id="${rowId}"]`) || row : row).querySelector(
+        'a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]'
+      );
       if (compLink) {
         companyCell = compLink.closest('[role="cell"], td') || compLink.parentElement;
       }
@@ -1055,33 +1117,35 @@
       titleCell?.innerText || titleCell?.textContent || ""
     );
 
+    let compLink = (companyCell || row).querySelector(
+      'a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]'
+    );
     let company = cleanCompanyName(
-      companyCell?.innerText || companyCell?.textContent || ""
+      compLink ? (compLink.innerText || compLink.textContent) : (companyCell?.innerText || companyCell?.textContent || "")
     );
 
     if (!company) {
-      const compLink = row.querySelector('a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]');
-      if (compLink) {
-        company = cleanCompanyName(compLink.innerText || compLink.textContent);
+      const fallbackCompLink = row.querySelector('a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]');
+      if (fallbackCompLink) {
+        company = cleanCompanyName(fallbackCompLink.innerText || fallbackCompLink.textContent);
       }
     }
 
     // 3. Domain column (primary) + website link (fallback / second-pass candidate)
     let columnDomain = "";
-    const domainCell = row.querySelector('[data-id="account.domain"]');
+    const domainCell = findCellByDataId(row, "account.domain");
     if (domainCell) {
-      const rawColumnDomain = cleanText(
-        domainCell.querySelector(".zp_rVvAa")?.textContent ||
-        domainCell.querySelector("button span")?.textContent ||
-        ""
-      );
-      if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(rawColumnDomain)) {
-        columnDomain = extractRootDomain(rawColumnDomain);
+      const rawDomainText = cleanText(domainCell.innerText || domainCell.textContent || "");
+      const domainMatch = rawDomainText.match(/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})/i);
+      if (domainMatch) {
+        columnDomain = extractRootDomain(domainMatch[1]);
       }
     }
 
     let websiteUrl = "";
+    const socialCell = findCellByDataId(row, "account.social");
     const websiteLink =
+      (socialCell || row).querySelector('a[aria-label="website link"]') ||
       row.querySelector('[data-id="account.social"] a[aria-label="website link"]') ||
       row.querySelector('a[aria-label="website link"]');
     if (websiteLink) {
@@ -1097,7 +1161,7 @@
 
     // Fallback: globe icon without aria-label
     if (!websiteUrl) {
-      const globeIcon = row.querySelector("a > .apollo-icon-link");
+      const globeIcon = (socialCell || row).querySelector("a > .apollo-icon-link") || row.querySelector("a > .apollo-icon-link");
       if (globeIcon) {
         const parentLink = globeIcon.closest("a");
         const href = (
@@ -1116,9 +1180,16 @@
 
     // 4. Email Detection from row (if revealed / mailto link or email text)
     let email = "";
-    const mailtoLink = row.querySelector('a[href^="mailto:"]');
+    const emailsCell = findCellByDataId(row, "contact.emails");
+    const mailtoLink = (emailsCell || row).querySelector('a[href^="mailto:"]');
     if (mailtoLink) {
       email = (mailtoLink.getAttribute("href") || "").replace(/^mailto:/i, "").split("?")[0].trim();
+    }
+    if (!email && emailsCell) {
+      const emailMatch = (emailsCell.textContent || "").match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+      if (emailMatch) {
+        email = emailMatch[0].trim();
+      }
     }
     if (!email) {
       const emailMatch = (row.textContent || "").match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
@@ -1128,18 +1199,19 @@
     }
 
     // Location is optional
-    const locationCell = findCellByHeader(
-      row,
-      cells,
-      [
-        "company location",
-        "location",
-        "headquarters",
-        "headquarters location",
-        "hq location"
-      ],
-      headersList
-    );
+    const locationCell = findCellByDataId(row, "contact.location") ||
+      findCellByHeader(
+        row,
+        cells,
+        [
+          "company location",
+          "location",
+          "headquarters",
+          "headquarters location",
+          "hq location"
+        ],
+        headersList
+      );
 
     const location = cleanText(
       locationCell?.innerText ||
@@ -1148,18 +1220,20 @@
     );
 
     // Number of Employees is optional.
-    const employeesCell = findCellByHeader(
-      row,
-      cells,
-      [
-        "# employees",
-        "employees",
-        "number of employees",
-        "company size",
-        "num employees"
-      ],
-      headersList
-    );
+    const employeesCell = findCellByDataId(row, "account.number_of_employees") ||
+      findCellByHeader(
+        row,
+        cells,
+        [
+          "company · number of employees",
+          "# employees",
+          "employees",
+          "number of employees",
+          "company size",
+          "num employees"
+        ],
+        headersList
+      );
 
     let employeeCount = null;
     if (employeesCell) {
@@ -1170,9 +1244,9 @@
       }
     }
 
-    if (!jobTitle || !company) {
+    if (!company) {
       console.log(
-        "Contact Checker: incomplete row",
+        "Contact Checker: incomplete row (missing company)",
         {
           name,
           jobTitle,
@@ -1181,6 +1255,10 @@
       );
 
       return null;
+    }
+
+    if (!jobTitle) {
+      jobTitle = "Unknown";
     }
 
     const key = getContactKey(
@@ -2675,7 +2753,7 @@
     });
 
     const target =
-      document.querySelector('[role="grid"], .zp_table, [role="main"], #main-app') ||
+      document.querySelector('[data-id="scrollable-table-container"], [role="grid"], .zp_table, [role="main"], #main-app') ||
       document.body;
 
     state.observerTarget = target;

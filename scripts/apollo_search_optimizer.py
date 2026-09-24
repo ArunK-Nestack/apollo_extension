@@ -100,6 +100,40 @@ STATIC_TOP_KEYWORDS = [
     "Commercial", "Corporate", "Global", "Solutions", "Platform", "Strategy", "Analytics"
 ]
 
+# High-yield job title anchors that match all variations via Apollo substring search
+# e.g., "Director" matches Creative Director, Visual Director, Managing Director, etc.
+STATIC_JOB_TITLES = [
+    # Top Broad Seniority Anchors (catches ALL variations via substring/token search)
+    "Director", "Manager", "Vice President", "VP", "President", "Chief", "Officer",
+    "Head", "Partner", "Owner", "Founder", "Principal", "Executive", "Lead",
+    "Producer", "Strategist", "Consultant", "Supervisor", "Coordinator", "Specialist",
+    "Administrator", "Advisor", "Architect", "Associate",
+
+    # High-Yield Seniority Compounds (ideal slices when broad title exceeds 2,500 leads)
+    "Managing Director", "Executive Director", "Operations Director", "Sales Director",
+    "Creative Director", "Visual Director", "Marketing Director", "Finance Director",
+    "Art Director", "Design Director", "Technical Director", "Regional Director",
+    "General Manager", "Operations Manager", "Sales Manager", "Account Manager",
+    "Project Manager", "Production Manager", "Marketing Manager", "Creative Manager",
+    "Senior Vice President", "Executive Vice President", "SVP", "EVP",
+    "Chief Executive Officer", "Chief Operating Officer", "Chief Technology Officer",
+    "Chief Creative Officer", "Chief Marketing Officer", "Chief Commercial Officer",
+    "Head of Creative", "Head of Operations", "Head of Sales", "Head of Marketing",
+    "Head of Design", "Head of Production", "Head of Digital", "Head of Strategy",
+    "Managing Partner", "Senior Partner", "Co-Founder", "Senior Director",
+    "Executive Producer", "Digital Producer", "Creative Lead", "Design Lead",
+    "Creative Strategist", "Brand Strategist"
+]
+
+# High-Yield Functional & Departmental Leadership Roles
+STATIC_FUNCTIONAL_KEYWORDS = [
+    "Creative", "Visual", "Operations", "Sales", "Marketing", "Commercial",
+    "Design", "Production", "Digital", "Strategy", "Content", "Brand",
+    "Media", "Communications", "Technology", "Engineering", "Business Development",
+    "Client Services", "Accounts", "Finance", "Product", "Growth", "Editorial",
+    "Advertising", "Public Relations", "PR", "Analytics", "Solutions", "Enterprise"
+]
+
 
 # =====================================================================
 # 1. ACCOUNT, SEARCH & HISTORY LEDGER MANAGEMENT
@@ -205,20 +239,22 @@ def record_search_recommendations(
 # 2. AI KEYWORD & NAME GENERATION (gpt-4o-mini at < $0.0001)
 # =====================================================================
 
-def generate_slicing_candidates_ai(filters: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+def generate_title_and_functional_slicing_candidates(
+    filters: Dict[str, Any]
+) -> Tuple[List[str], List[str], List[str]]:
     """
-    Use gpt-4o-mini with compact token formatting to generate 25 top first names
-    and 25 high-volume sub-industry/technical keywords tailored to the target criteria.
-    Cost: < $0.0001.
+    Generate high-yield job title anchors, compound titles, functional leadership roles,
+    and fallback first names tailored to the target criteria.
+    
+    Job titles act as substring/token matches in Apollo's search bar:
+      - 'Director' automatically matches 'Visual Director', 'Creative Director', 'Managing Director', etc.
+      - 'Manager' automatically matches 'Operations Manager', 'General Manager', etc.
     """
-    if not OPENAI_API_KEY:
-        return list(STATIC_TOP_NAMES[:35]), list(STATIC_TOP_KEYWORDS[:35])
-
-    titles = filters.get("person_titles") or []
-    if isinstance(titles, list):
-        titles_str = ", ".join(titles[:10])
+    titles_in_filter = filters.get("person_titles") or []
+    if isinstance(titles_in_filter, list):
+        titles_str = ", ".join(titles_in_filter[:10])
     else:
-        titles_str = str(titles)
+        titles_str = str(titles_in_filter)
 
     locations = filters.get("person_locations") or []
     loc_str = ", ".join(locations[:6]) if isinstance(locations, list) else str(locations)
@@ -228,13 +264,22 @@ def generate_slicing_candidates_ai(filters: Dict[str, Any]) -> Tuple[List[str], 
 
     prompt_summary = f"Job Titles: {titles_str or 'Executives/Decision Makers'}. Location: {loc_str or 'United States'}. Industry/Keywords: {tags_str or 'Corporate/Tech'}."
 
+    if not OPENAI_API_KEY:
+        return list(STATIC_JOB_TITLES), list(STATIC_FUNCTIONAL_KEYWORDS), list(STATIC_TOP_NAMES[:35])
+
     try:
         from openai import OpenAI
         client = OpenAI(api_key=OPENAI_API_KEY, timeout=12.0)
         sys_prompt = (
-            "You are an Apollo search specialist. Given search criteria, return a JSON object with: "
-            "1) 'names': list of 30 common first names prevalent in this demographic/region, "
-            "2) 'keywords': list of 30 high-volume sub-industry, technical, functional, and specialty keywords for slicing. "
+            "You are an Apollo.io search optimization specialist. The goal is to slice large Apollo searches into "
+            "high-yield lead batches right below Apollo's 2,500 lead / 100-page limit using search bar keyword substring matching. "
+            "CRITICAL REQUIREMENT: Focus primarily on BROAD JOB TITLES and FUNCTIONAL LEADERSHIP ROLES (not personal first names). "
+            "Job titles like 'Director' or 'Manager' yield 10x-50x more leads because Apollo search matches all substring variations "
+            "(e.g., 'Director' matches Creative Director, Visual Director, Managing Director, Director of Operations, etc.). "
+            "Given the target criteria, return a JSON object with: "
+            "1) 'titles': list of 35 broad job title keyword anchors and high-yield title compounds (e.g., Director, Manager, Vice President, VP, Head, Partner, Owner, Chief, Officer, Creative Director, Visual Director, Operations Manager, etc.), "
+            "2) 'keywords': list of 30 functional, departmental, and sub-industry keywords (e.g., Creative, Visual, Operations, Commercial, Sales, Marketing, Strategy, Digital, Media, Design, etc.), "
+            "3) 'names': list of 15 common executive first names (e.g., Michael, David, John, James, etc.) as fallback. "
             "JSON output only."
         )
         resp = client.chat.completions.create(
@@ -245,31 +290,51 @@ def generate_slicing_candidates_ai(filters: Dict[str, Any]) -> Tuple[List[str], 
             ],
             response_format={"type": "json_object"},
             temperature=0.3,
-            max_tokens=450
+            max_tokens=500
         )
         content = resp.choices[0].message.content or "{}"
         parsed = json.loads(content)
-        ai_names = parsed.get("names", [])
+        ai_titles = parsed.get("titles", [])
         ai_keywords = parsed.get("keywords", [])
+        ai_names = parsed.get("names", [])
 
-        # Merge with fallback to ensure rich pool
-        combined_names = []
+        # Merge titles with fallback
+        combined_titles: List[str] = []
+        for t in ai_titles + STATIC_JOB_TITLES:
+            clean_t = str(t).strip()
+            if clean_t and clean_t not in combined_titles:
+                combined_titles.append(clean_t)
+
+        # Merge functional keywords
+        combined_functional: List[str] = []
+        for k in ai_keywords + STATIC_FUNCTIONAL_KEYWORDS:
+            clean_k = str(k).strip()
+            if clean_k and clean_k not in combined_functional:
+                combined_functional.append(clean_k)
+
+        # Merge names
+        combined_names: List[str] = []
         for n in ai_names + STATIC_TOP_NAMES:
             clean_n = str(n).strip().title()
             if clean_n and clean_n not in combined_names:
                 combined_names.append(clean_n)
 
-        combined_keywords = []
-        for k in ai_keywords + STATIC_TOP_KEYWORDS:
-            clean_k = str(k).strip().title()
-            if clean_k and clean_k not in combined_keywords:
-                combined_keywords.append(clean_k)
-
-        return combined_names[:260], combined_keywords[:40]
+        return combined_titles, combined_functional, combined_names
 
     except Exception as ex:
-        print(f"[Notice] AI generation fallback ({ex}); using pre-indexed demographic lexicon.")
-        return list(STATIC_TOP_NAMES[:260]), list(STATIC_TOP_KEYWORDS[:40])
+        print(f"[Notice] AI generation fallback ({ex}); using pre-indexed job title & functional lexicon.")
+        return list(STATIC_JOB_TITLES), list(STATIC_FUNCTIONAL_KEYWORDS), list(STATIC_TOP_NAMES[:35])
+
+
+def generate_slicing_candidates_ai(filters: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    """
+    Backward-compatible candidate generator.
+    Returns (job_titles_with_fallback_names, functional_keywords).
+    """
+    titles, functional, names = generate_title_and_functional_slicing_candidates(filters)
+    # Combine titles first, followed by names to ensure backward compatibility with tests checking for names
+    combined_primary = list(titles) + [n for n in names if n not in titles]
+    return combined_primary, functional
 
 
 # =====================================================================
@@ -528,25 +593,34 @@ def run_apollo_search_optimizer():
             print(f"  ... and {len(prev_keywords_dict) - 10} more previously recorded in history ledger.")
         print("-" * 100)
 
-    # 4. Generate AI Candidates
+    # 4. Generate AI Candidates focusing on Job Titles & Functional Leadership
     print("\n>>> Analyzing search criteria with AI (gpt-4o-mini at <$0.0001)...")
-    names, keywords = generate_slicing_candidates_ai(base_filters)
-    print(f"  ✓ Generated {len(names)} tailored first names and {len(keywords)} sub-industry terms.")
+    titles, functional, names = generate_title_and_functional_slicing_candidates(base_filters)
+    print(f"  ✓ Generated {len(titles)} tailored job titles and {len(functional)} functional leadership terms.")
 
-    # Filter out candidates already in history!
+    # Prioritize Job Title Anchors first (highest yield via substring search), then Functional Roles
     fresh_candidates: List[Tuple[str, str]] = []
-    for n in names:
-        if n.lower() not in prev_keywords_set:
-            fresh_candidates.append((n, "First Name"))
-    for k in keywords:
-        if k.lower() not in prev_keywords_set:
-            fresh_candidates.append((k, "Sub-Industry / Tech"))
+    for t in titles:
+        if t.lower() not in prev_keywords_set:
+            fresh_candidates.append((t, "Job Title"))
+    for f in functional:
+        if f.lower() not in prev_keywords_set:
+            fresh_candidates.append((f, "Functional Role"))
 
-    print(f"  ✓ Identified {len(fresh_candidates)} fresh, unexhausted candidates for testing.")
+    # Fallback to names only if we have fewer than 25 fresh title/functional candidates
+    if len(fresh_candidates) < 25:
+        for n in names:
+            if n.lower() not in prev_keywords_set:
+                fresh_candidates.append((n, "First Name"))
+
+    # Cap at top 60 candidates to keep scan lightning-fast (~15 seconds)
+    fresh_candidates = fresh_candidates[:60]
+
+    print(f"  ✓ Identified {len(fresh_candidates)} fresh, high-yield candidates for testing.")
 
     if not fresh_candidates:
         print("\n[Notice] All primary candidates have been previously recommended. Re-testing base pool...")
-        fresh_candidates = [(n, "First Name") for n in names] + [(k, "Sub-Industry / Tech") for k in keywords]
+        fresh_candidates = [(t, "Job Title") for t in titles[:35]] + [(f, "Functional Role") for f in functional[:25]]
 
     # 5. Fast Parallel Probing against Apollo
     t0 = time.perf_counter()
@@ -557,17 +631,17 @@ def run_apollo_search_optimizer():
         print("\n[Notice] No matching slicing keywords yielded leads. Try broader filters.")
         return
 
-    # 6. Rank Results (Optimal 80-100 pages at top, then medium)
+    # 6. Rank Results by Highest Lead & Page Count First
     # Sort by total_pages descending, then total_leads descending
     ranked = sorted(probe_results, key=lambda x: (x["total_pages"], x["total_leads"]), reverse=True)
     top_picks = ranked[:25]
 
     # 7. Display Top Recommendations
-    print("\n" + "=" * 100)
-    print(f"   TOP {len(top_picks)} FRESH RECOMMENDED SEARCH SLICES FOR: '{search_name.upper()}'")
-    print("=" * 100)
-    print(f"{'#':<3} | {'Keyword / Name to use in Apollo Web':<36} | {'Category':<22} | {'Leads Found':<14} | {'Pages':<8} | {'Yield Quality'}")
-    print("-" * 100)
+    print("\n" + "=" * 105)
+    print(f"   TOP {len(top_picks)} HIGH-YIELD SEARCH SLICES FOR: '{search_name.upper()}'")
+    print("=" * 105)
+    print(f"{'#':<3} | {'Keyword / Title to use in Apollo Web':<38} | {'Category':<18} | {'Leads Found':<14} | {'Pages':<8} | {'Yield Quality'}")
+    print("-" * 105)
 
     for idx, item in enumerate(top_picks, 1):
         kw_disp = f"'{item['keyword']}'"
@@ -575,19 +649,25 @@ def run_apollo_search_optimizer():
         leads_disp = f"{item['total_leads']:,d}"
         pages_disp = f"{item['total_pages']} pgs"
 
-        if item["total_pages"] >= 80:
-            quality_tag = "🟢 OPTIMAL (80-100 Pages)"
-        elif item["total_pages"] >= 30:
-            quality_tag = "🟡 MEDIUM (30-79 Pages)"
+        if item["total_pages"] >= 100 or item["total_leads"] >= 2500:
+            quality_tag = "🟢 MAX YIELD (100 pgs / 2,500+ Cap)"
+        elif item["total_pages"] >= 50:
+            quality_tag = "🟢 OPTIMAL (50-99 Pages)"
+        elif item["total_pages"] >= 20:
+            quality_tag = "🟡 HIGH (20-49 Pages)"
+        elif item["total_pages"] >= 5:
+            quality_tag = "🟠 MEDIUM (5-19 Pages)"
         else:
-            quality_tag = "⚪ LOW (<30 Pages)"
+            quality_tag = "⚪ LOW (<5 Pages)"
 
-        print(f"[{idx:<2}] | {kw_disp:<36} | {cat_disp:<22} | {leads_disp:<14} | {pages_disp:<8} | {quality_tag}")
+        print(f"[{idx:<2}] | {kw_disp:<38} | {cat_disp:<18} | {leads_disp:<14} | {pages_disp:<8} | {quality_tag}")
 
-    print("=" * 100)
-    print("  🟢 OPTIMAL: Delivers 80-100 full pages (2,000-2,500 leads) right under the Apollo page cap.")
-    print("  💡 Tip: Copy any of these names/keywords directly into the Apollo Web Search Bar, or use below!")
-    print("=" * 100)
+    print("=" * 105)
+    print("  🟢 OPTIMAL / MAX YIELD: Delivers 50-100 full pages (1,000-2,500+ leads) under Apollo's page cap.")
+    print("  💡 Substring Matching: Searching 'Director' automatically matches Visual Director, Managing Director,")
+    print("     Creative Director, Art Director, etc. across the entire Apollo search!")
+    print("  💡 Tip: Copy any of these titles/keywords directly into the Apollo Web Search Bar, or use below!")
+    print("=" * 105)
 
     # 8. Record in Persistent History Ledger
     record_search_recommendations(account_email, search_name, top_picks)

@@ -31,7 +31,7 @@ from openai import OpenAI
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uvicorn
 
 # ============================================================
@@ -2775,11 +2775,22 @@ class ApolloContact(BaseModel):
     company: str = ""
     location: str | None = ""
     company_domain: str | None = None
+    domain: str | None = None
     website_link: str | None = None
     email: str | None = ""
     linkedin_url: str | None = None
     apollo_profile_url: str | None = None
     employee_count: int | None = None
+
+    @model_validator(mode="after")
+    def _sync_domain_fields(self):
+        dom = self.company_domain or self.domain
+        if dom:
+            if not self.company_domain:
+                self.company_domain = dom
+            if not self.domain:
+                self.domain = dom
+        return self
 
 
 def lead_dict_to_contact(lead: dict[str, Any], key: str) -> ApolloContact:
@@ -3207,7 +3218,7 @@ def _filter_sync_contacts_one_per_domain(contacts: list, batch_tag: str, cur) ->
     for c in contacts:
         target_dom = canonical_lookup_domain(ApolloContact(
             key="sync_filter",
-            company_domain=(c.company_domain or c.domain or "").strip(),
+            company_domain=(getattr(c, "company_domain", None) or getattr(c, "domain", None) or "").strip(),
             website_link=(c.website_link or "").strip(),
             email=(c.email or "").strip(),
         ))
@@ -3258,7 +3269,7 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
             for idx, c in enumerate(contacts_to_sync):
                 target_dom = canonical_lookup_domain(ApolloContact(
                     key=f"sync_{idx}",
-                    company_domain=(c.company_domain or c.domain or "").strip(),
+                    company_domain=(getattr(c, "company_domain", None) or getattr(c, "domain", None) or "").strip(),
                     website_link=(c.website_link or "").strip(),
                     email=(c.email or "").strip(),
                 ))
@@ -3307,7 +3318,7 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
 
     # Immediately update in-memory trie, CRM domain cache and person cache so re-scrapes are caught instantly
     for c in contacts_to_sync:
-        target_dom = (c.company_domain or c.domain or "").strip().lower()
+        target_dom = (getattr(c, "company_domain", None) or getattr(c, "domain", None) or "").strip().lower()
         if target_dom:
             slug = _strip_tld(target_dom)
             cslug = _clean_slug(target_dom)

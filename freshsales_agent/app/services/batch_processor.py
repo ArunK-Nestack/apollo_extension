@@ -49,12 +49,21 @@ class BatchProcessor:
         reports_dir: Path,
         custom_tag: str | None = None,
         default_owner_id: str | None = None,
+        audit_cache_path: Path | None = None,
     ) -> FileProcessingResult:
+        """
+        Executes the end-to-end sync pipeline for a single file.
+        1. Parsing and In-File Deduplication.
+        2. 33-TLD Country Code Exclusion.
+        3. Pre-lookup & Non-overwrite Delta Resolution (uses audit_cache_path if provided to skip lookups).
+        4. Sliding-Window Bulk Upsert Dispatch (max 6 concurrent in Freshsales).
+        5. Completion Monitoring, Metrics & Audit CSV Generation.
+        """
         logger.info("=" * 70)
-        logger.info(f"Processing File: {file_path.name}")
+        logger.info(f"PROCESSING INPUT FILE: {file_path.name}")
         logger.info("=" * 70)
 
-        # 1. Parse & deduplicate file
+        # 1. Parse and Deduplicate
         parsed = parse_and_dedupe_file(file_path)
         tag_to_use = (custom_tag.strip() if custom_tag and custom_tag.strip() else None) or parsed.tag_applied
         owner_id_to_use = default_owner_id or settings.default_owner_id
@@ -110,17 +119,48 @@ class BatchProcessor:
             return result
 
         # 3. CRM Lookup & Delta Resolution
-        logger.info(f"Step 3/5: Batch looking up {len(valid_records)} emails in Freshsales CRM...")
         all_emails = [r.get(parsed.email_column, "").lower().strip() for r in valid_records if r.get(parsed.email_column)]
+        total_emails = len(all_emails)
 
-        # Lookup in chunks of 50
+        # Load precomputed classifications from audit cache if provided
+        precomputed_actions: dict[str, str] = {}
+        if audit_cache_path and Path(audit_cache_path).is_file():
+            try:
+                import pandas as pd
+                df_cache = pd.read_csv(audit_cache_path)
+                for _, r in df_cache.iterrows():
+                    em = str(r.get("email", "")).strip().lower()
+                    act = str(r.get("action", "")).strip().lower()
+                    if em and act in ("created", "updated"):
+                        precomputed_actions[em] = act
+                logger.info(f"Loaded {len(precomputed_actions):,d} precomputed contact statuses from audit cache: {Path(audit_cache_path).name}")
+            except Exception as exc:
+                logger.warning(f"Could not load audit cache: {exc}")
+
+        # Check which emails still require Freshsales API search
+        emails_to_lookup = [em for em in all_emails if em not in precomputed_actions]
         existing_crm_map: dict[str, dict[str, Any]] = {}
-        for i in range(0, len(all_emails), 50):
-            chunk = all_emails[i : i + 50]
-            found = self.client.batch_lookup_emails(chunk)
-            existing_crm_map.update(found)
 
-        logger.info(f"  -> Lookup complete: {len(existing_crm_map)} already exist in CRM, {len(valid_records) - len(existing_crm_map)} brand new.")
+        if emails_to_lookup:
+            total_lookup = len(emails_to_lookup)
+            logger.info(f"Step 3/5: Batch looking up {total_lookup:,d} emails in Freshsales CRM...")
+            t_lookup_start = time.time()
+            for i in range(0, total_lookup, 50):
+                chunk = emails_to_lookup[i : i + 50]
+                found = self.client.batch_lookup_emails(chunk)
+                existing_crm_map.update(found)
+                checked = min(i + len(chunk), total_lookup)
+                pct = (checked / max(1, total_lookup)) * 100
+                elapsed = time.time() - t_lookup_start
+                rate = checked / max(elapsed, 0.001)
+                eta_sec = int((total_lookup - checked) / max(rate, 0.001))
+                eta_str = f"{eta_sec // 60}m {eta_sec % 60}s" if eta_sec > 60 else f"{eta_sec}s"
+                logger.info(f"  -> [Lookup Progress] Checked {checked:,d} / {total_lookup:,d} ({pct:.1f}%) | Found in CRM: {len(existing_crm_map):,d} | ETA: {eta_str}")
+            logger.info(f"  -> Lookup complete: {len(existing_crm_map):,d} already exist in CRM, {total_lookup - len(existing_crm_map):,d} brand new.")
+        else:
+            cached_updates = sum(1 for em in all_emails if precomputed_actions.get(em) == "updated")
+            cached_creates = sum(1 for em in all_emails if precomputed_actions.get(em) == "created")
+            logger.info(f"Step 3/5: All {total_emails:,d} contacts resolved from audit cache ({cached_creates:,d} new creates, {cached_updates:,d} delta updates). Zero API lookups needed.")
 
         # Build payloads formatted for Freshsales Bulk Upsert API
         upsert_payloads: list[dict[str, Any]] = []
@@ -134,9 +174,10 @@ class BatchProcessor:
             )
             email_lower = incoming.email.lower().strip()
 
-            if email_lower in existing_crm_map:
+            cached_act = precomputed_actions.get(email_lower)
+            if cached_act == "updated" or email_lower in existing_crm_map:
                 # Existing contact -> resolve delta without overwrite
-                existing_record = existing_crm_map[email_lower]
+                existing_record = existing_crm_map.get(email_lower, {})
                 contact_id = existing_record.get("id")
                 delta = resolve_delta_update(
                     incoming=incoming,
@@ -181,59 +222,92 @@ class BatchProcessor:
                 })
                 batch_meta.append({"is_created": True, "email": incoming.email})
 
-        # 4. Dispatch Bulk Upsert Jobs (Batches of 100)
+        # 4. Sliding-Window Bulk Upsert Dispatch & Monitoring (Max 6 concurrent jobs to respect Freshsales limit of 10)
+        MAX_CONCURRENT_JOBS = 6
         batch_size = settings.batch_size
-        logger.info(f"Step 4/5: Dispatching {len(upsert_payloads)} records in batches of {batch_size} to Freshsales...")
+        poll_delay = min(settings.poll_interval_seconds, 5)
+        total_batches = (len(upsert_payloads) + batch_size - 1) // max(1, batch_size)
+        logger.info(f"Step 4/5: Dispatching {len(upsert_payloads):,d} records in {total_batches} batches (Max {MAX_CONCURRENT_JOBS} concurrent in Freshsales)...")
 
-        active_jobs: list[tuple[str, list[dict[str, Any]]]] = []
+        in_flight_jobs: list[tuple[str, list[dict[str, Any]]]] = []
+
+        def drain_finished_jobs(block_for_at_least_one: bool = False):
+            nonlocal in_flight_jobs
+            while in_flight_jobs:
+                still_running = []
+                completed_in_pass = 0
+                for jid, meta_slice in in_flight_jobs:
+                    try:
+                        status_data = self.client.get_job_status(jid)
+                        status_str = str(status_data.get("status", "")).lower()
+                        if status_str in ("completed", "finished", "success", "done"):
+                            c_count = sum(1 for m in meta_slice if m["is_created"])
+                            u_count = sum(1 for m in meta_slice if not m["is_created"])
+                            result.freshly_created_count += c_count
+                            result.updated_in_crm_count += u_count
+                            completed_in_pass += 1
+                            logger.info(f"  [OK] Job {jid}: COMPLETED (+{c_count} created, +{u_count} updated). Total synced: {result.freshly_created_count + result.updated_in_crm_count:,d}")
+                        elif status_str in ("failed", "error"):
+                            err_msg = status_data.get("error", "Job failure")
+                            logger.error(f"  [FAIL] Job {jid}: FAILED ({err_msg})")
+                            result.failed_errors_count += len(meta_slice)
+                            completed_in_pass += 1
+                            for item_meta in meta_slice:
+                                for ar in audit_rows:
+                                    if ar.get("email") == item_meta["email"]:
+                                        ar["error_reason"] = f"Bulk job failed: {err_msg}"
+                        else:
+                            still_running.append((jid, meta_slice))
+                    except Exception as exc:
+                        logger.warning(f"  [~ Retry] Error checking job {jid}: {exc}")
+                        still_running.append((jid, meta_slice))
+
+                in_flight_jobs = still_running
+                if not block_for_at_least_one or completed_in_pass > 0 or not in_flight_jobs:
+                    break
+                time.sleep(poll_delay)
+
+        batch_idx = 0
         for i in range(0, len(upsert_payloads), batch_size):
+            batch_idx += 1
             batch_slice = upsert_payloads[i : i + batch_size]
             meta_slice = batch_meta[i : i + batch_size]
-            try:
-                job_id = self.client.bulk_upsert_contacts(batch_slice)
-                active_jobs.append((job_id, meta_slice))
-                logger.info(f"  -> Batch [{len(active_jobs)}]: Dispatched job_id={job_id} ({len(batch_slice)} records)")
-            except Exception as exc:
-                logger.error(f"  -> Batch submission failed: {exc}")
+
+            # If at concurrency limit, wait until at least one finishes
+            while len(in_flight_jobs) >= MAX_CONCURRENT_JOBS:
+                drain_finished_jobs(block_for_at_least_one=True)
+
+            # Dispatch with automatic retry on 405 (transactions limit)
+            submitted = False
+            for attempt in range(1, 10):
+                try:
+                    job_id = self.client.bulk_upsert_contacts(batch_slice)
+                    in_flight_jobs.append((job_id, meta_slice))
+                    logger.info(f"  [Dispatch] Batch {batch_idx}/{total_batches}: Job {job_id} queued ({len(batch_slice)} records) | Active in CRM: {len(in_flight_jobs)}/{MAX_CONCURRENT_JOBS}")
+                    submitted = True
+                    break
+                except Exception as exc:
+                    exc_str = str(exc)
+                    if "405" in exc_str or "Max of 10 transactions" in exc_str:
+                        logger.warning(f"  [Queue Full] Freshsales 10-transaction limit active (attempt {attempt}/9). Waiting for in-flight jobs to finish...")
+                        drain_finished_jobs(block_for_at_least_one=True)
+                        time.sleep(5)
+                    else:
+                        logger.warning(f"  [Retry] Dispatch error: {exc}. Retrying in 5s (attempt {attempt}/9)...")
+                        time.sleep(5)
+
+            if not submitted:
+                logger.error(f"  [Error] Batch {batch_idx} could not be dispatched after retries.")
                 result.failed_errors_count += len(batch_slice)
                 for item_meta in meta_slice:
                     for ar in audit_rows:
                         if ar.get("email") == item_meta["email"]:
-                            ar["error_reason"] = f"Batch submission failed: {exc}"
+                            ar["error_reason"] = "Batch dispatch permanently failed"
 
-        # 5. Poll Job Status
-        poll_delay = min(settings.poll_interval_seconds, 5)
-        logger.info(f"Step 5/5: Monitoring {len(active_jobs)} bulk jobs until completion (Polling every {poll_delay}s)...")
-        pending_jobs = list(active_jobs)
-        while pending_jobs:
-            time.sleep(poll_delay)
-            remaining_jobs: list[tuple[str, list[dict[str, Any]]]] = []
-
-            for jid, meta_slice in pending_jobs:
-                try:
-                    status_data = self.client.get_job_status(jid)
-                    status_str = str(status_data.get("status", "")).lower()
-                    if status_str in ("completed", "finished", "success", "done"):
-                        created_count = sum(1 for m in meta_slice if m["is_created"])
-                        updated_count = sum(1 for m in meta_slice if not m["is_created"])
-                        result.freshly_created_count += created_count
-                        result.updated_in_crm_count += updated_count
-                        logger.info(f"  -> Job {jid}: COMPLETED ({created_count} created, {updated_count} updated)")
-                    elif status_str in ("failed", "error"):
-                        err_msg = status_data.get("error", "Unknown job failure")
-                        logger.error(f"  -> Job {jid}: FAILED ({err_msg})")
-                        result.failed_errors_count += len(meta_slice)
-                        for item_meta in meta_slice:
-                            for ar in audit_rows:
-                                if ar.get("email") == item_meta["email"]:
-                                    ar["error_reason"] = f"Bulk job failed: {err_msg}"
-                    else:
-                        remaining_jobs.append((jid, meta_slice))
-                except Exception as exc:
-                    logger.warning(f"  -> Error checking job {jid}: {exc}")
-                    remaining_jobs.append((jid, meta_slice))
-
-            pending_jobs = remaining_jobs
+        # Final drain: wait for all remaining in-flight jobs to complete
+        logger.info(f"Step 5/5: Monitoring remaining {len(in_flight_jobs)} bulk jobs until completion...")
+        while in_flight_jobs:
+            drain_finished_jobs(block_for_at_least_one=True)
 
         result.status = "completed"
         result.completed_at = datetime.now().isoformat()

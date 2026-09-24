@@ -298,6 +298,89 @@ def clean_apollo_dataframe(
     return df_final, stats
 
 
+def load_canonical_accounts_map() -> Tuple[Dict[str, Tuple[str, str]], List[Dict[str, Any]]]:
+    """
+    Load canonical accounts from config/apollo_accounts.json.
+    Returns:
+      1. lookup_map: lowercase email/identifier -> (canonical_email, canonical_name)
+      2. raw_accounts: full list of account dicts
+    """
+    accounts_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "config",
+        "apollo_accounts.json",
+    )
+    lookup: Dict[str, Tuple[str, str]] = {}
+    accounts = []
+    if os.path.exists(accounts_file):
+        try:
+            with open(accounts_file, "r", encoding="utf-8") as f:
+                accounts = json.load(f)
+                for acc in accounts:
+                    name = str(acc.get("name", "")).strip()
+                    email = str(acc.get("email", "")).strip()
+                    if email:
+                        canonical_email = email.upper()
+                        canonical_name = name or canonical_email
+                        lookup[canonical_email.lower()] = (canonical_email, canonical_name)
+                        lookup[canonical_email] = (canonical_email, canonical_name)
+        except Exception as e:
+            print(f"[Notice] Could not load canonical accounts from {accounts_file}: {e}")
+    return lookup, accounts
+
+
+def resolve_canonical_account(login_id: str, account_name: str = "", batch: str = "") -> Tuple[str, str]:
+    """
+    Map any login/account string (even if lowercase or shorthand) to official uppercase
+    account in apollo_accounts.json.
+    """
+    lookup, accounts = load_canonical_accounts_map()
+
+    clean_login = (login_id or "").strip()
+    clean_name = (account_name or "").strip()
+    clean_batch = (batch or "").strip().lower()
+
+    # 1. Direct email match (case-insensitive)
+    if clean_login.lower() in lookup:
+        return lookup[clean_login.lower()]
+    if clean_name.lower() in lookup:
+        return lookup[clean_name.lower()]
+
+    # 2. Domain / prefix matching from batch or login name if it matches an account's email domain
+    for acc in accounts:
+        acc_email = str(acc.get("email", "")).strip().upper()
+        acc_name = str(acc.get("name", "")).strip()
+        if not acc_email:
+            continue
+        acc_user, _, acc_domain = acc_email.partition("@")
+        acc_domain_slug = acc_domain.replace(".", "_").lower()
+        acc_user_clean = acc_user.replace(".", "").replace("_", "").lower()
+
+        if acc_domain_slug and acc_domain_slug in clean_batch:
+            if (acc_user.lower() in clean_login.lower() or 
+                acc_user.lower() in clean_batch or 
+                acc_user_clean in clean_batch.replace(".", "").replace("_", "") or
+                acc_name.lower() == clean_name.lower() or
+                acc_name.lower() == clean_login.lower()):
+                return (acc_email, acc_name)
+
+    # 3. Unique account name match (e.g. 'Recruiting', 'Vijay' if unambiguous)
+    matched_by_name = [
+        acc for acc in accounts 
+        if str(acc.get("name", "")).strip().lower() == clean_login.lower() 
+        or str(acc.get("name", "")).strip().lower() == clean_name.lower()
+    ]
+    if len(matched_by_name) == 1:
+        acc = matched_by_name[0]
+        return (str(acc.get("email", "")).strip().upper(), str(acc.get("name", "")).strip())
+
+    # Fallback: if login_id looks like an email, uppercase it
+    if "@" in clean_login:
+        return (clean_login.upper(), clean_name or clean_login.upper())
+
+    return (clean_login or "Unknown", clean_name or clean_login or "Unknown")
+
+
 def fetch_enriched_logins_summary(conn, table_name: str = "all") -> List[Dict[str, Any]]:
     """Query MySQL database for all logins/accounts that have enriched leads across active/all tables."""
     if table_name == "apollo_saved_leads":
@@ -326,7 +409,12 @@ def fetch_enriched_logins_summary(conn, table_name: str = "all") -> List[Dict[st
                 """)
                 rows = cur.fetchall()
                 for r in rows:
-                    key = (str(r[0] or "Unknown"), str(r[1] or "Unknown"))
+                    raw_login = str(r[0] or "Unknown")
+                    raw_name = str(r[1] or "Unknown")
+                    raw_batches = str(r[4] or "")
+
+                    canonical_login, canonical_name = resolve_canonical_account(raw_login, raw_name, raw_batches)
+                    key = (canonical_login, canonical_name)
                     if key not in combined:
                         combined[key] = {
                             "login_id": key[0],
@@ -386,6 +474,24 @@ def fetch_batches_for_login(conn, login_id: str, account_name: str = "", table_n
                     """
                     cur.execute(sql)
                 else:
+                    if "@" in login_id:
+                        match_condition = """
+                            (
+                                LOWER(COALESCE(e.login_email, '')) = LOWER(%s)
+                                OR LOWER(COALESCE(l.account_used, '')) = LOWER(%s)
+                            )
+                        """
+                        match_params = (login_id, login_id)
+                    else:
+                        match_condition = """
+                            (
+                                LOWER(COALESCE(e.login_email, '')) = LOWER(%s)
+                                OR LOWER(COALESCE(e.account_name, '')) = LOWER(%s)
+                                OR LOWER(COALESCE(l.account_used, '')) = LOWER(%s)
+                            )
+                        """
+                        match_params = (login_id, account_name or login_id, account_name or login_id)
+
                     sql = f"""
                         SELECT 
                             l.batch,
@@ -396,15 +502,11 @@ def fetch_batches_for_login(conn, login_id: str, account_name: str = "", table_n
                         LEFT JOIN batch_enrichment_ledger e 
                           ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
                         WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
-                          AND (
-                              COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
-                              OR COALESCE(NULLIF(e.account_name, ''), NULLIF(l.account_used, ''), 'Unknown') COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
-                              OR l.account_used COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
-                          )
+                          AND {match_condition}
                         GROUP BY l.batch
                         ORDER BY MAX(l.created_at) DESC;
                     """
-                    cur.execute(sql, (login_id, account_name or login_id, account_name or login_id))
+                    cur.execute(sql, match_params)
 
                 for r in cur.fetchall():
                     batch_rows.append({
@@ -445,14 +547,23 @@ def fetch_enriched_leads_for_login(
                 params = []
 
                 if login_id != "__ALL__":
-                    query_conditions.append("""
-                        (
-                            COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
-                            OR COALESCE(NULLIF(e.account_name, ''), NULLIF(l.account_used, ''), 'Unknown') COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
-                            OR l.account_used COLLATE utf8mb4_unicode_ci = %s COLLATE utf8mb4_unicode_ci
-                        )
-                    """)
-                    params.extend([login_id, account_name or login_id, account_name or login_id])
+                    if "@" in login_id:
+                        query_conditions.append("""
+                            (
+                                LOWER(COALESCE(e.login_email, '')) = LOWER(%s)
+                                OR LOWER(COALESCE(l.account_used, '')) = LOWER(%s)
+                            )
+                        """)
+                        params.extend([login_id, login_id])
+                    else:
+                        query_conditions.append("""
+                            (
+                                LOWER(COALESCE(e.login_email, '')) = LOWER(%s)
+                                OR LOWER(COALESCE(e.account_name, '')) = LOWER(%s)
+                                OR LOWER(COALESCE(l.account_used, '')) = LOWER(%s)
+                            )
+                        """)
+                        params.extend([login_id, account_name or login_id, account_name or login_id])
 
                 if batch_name and batch_name != "__ALL__":
                     query_conditions.append("l.batch = %s")

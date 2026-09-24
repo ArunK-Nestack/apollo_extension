@@ -321,6 +321,7 @@ def generate_slices(req: SlicingRequest):
         from scripts.apollo_search_optimizer import (
             generate_slicing_candidates_ai,
             get_search_history,
+            STATIC_JOB_TITLES,
             STATIC_TOP_NAMES,
             STATIC_TOP_KEYWORDS,
         )
@@ -336,12 +337,13 @@ def generate_slices(req: SlicingRequest):
         slicing_items = []
         for n in names[:15]:
             is_used = n.lower() in past_keywords
+            cat = "Job Title" if (n in STATIC_JOB_TITLES or n not in STATIC_TOP_NAMES) else "First Name"
             slicing_items.append({
                 "keyword": n,
-                "category": "First Name",
+                "category": cat,
                 "status": "Already Used" if is_used else "Fresh Recommendation",
-                "estimated_leads": 2100 if not is_used else 1800,
-                "pages": 84 if not is_used else 72,
+                "estimated_leads": 2200 if not is_used else 1800,
+                "pages": 88 if not is_used else 72,
                 "recommended": not is_used,
             })
         for k in kw_list[:15]:

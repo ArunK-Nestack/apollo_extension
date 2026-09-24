@@ -15,10 +15,17 @@ import os
 import sys
 import re
 import csv
+import time
 from datetime import datetime
 
 # Add project root to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# Force UTF-8 output so emoji/unicode symbols don't crash on Windows CP1252 terminals
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 try:
     import pandas as pd
@@ -563,11 +570,27 @@ def export_batch_action(batches, conn, table_name="apollo_saved_leads"):
                 if use_75_col_format:
                     cur.execute("""
                         SELECT 
-                            id, batch, '' as apollo_id, name, first_name, last_name, job_title, '' as email, '' as email_status,
-                            company, company_domain, website_link, '' as annual_revenue, '' as employee_count,
-                            '' as industry, '' as tech_stack, '' as keywords, '' as company_phone, '' as hq_address, location, linkedin_url,
-                            '' as company_linkedin_url, '' as apollo_profile_url, segment, '' as account_used, 0 as credits_charged,
-                            '' as raw_enrichment_data, NULL as enriched_at, created_at
+                            id, batch,
+                            COALESCE(apollo_id, '') as apollo_id,
+                            name, first_name, last_name, job_title,
+                            COALESCE(email, '') as email,
+                            COALESCE(email_status, '') as email_status,
+                            company, company_domain, website_link,
+                            COALESCE(annual_revenue, '') as annual_revenue,
+                            COALESCE(employee_count, '') as employee_count,
+                            COALESCE(industry, '') as industry,
+                            COALESCE(tech_stack, '') as tech_stack,
+                            COALESCE(keywords, '') as keywords,
+                            COALESCE(company_phone, '') as company_phone,
+                            COALESCE(hq_address, '') as hq_address,
+                            location, linkedin_url,
+                            COALESCE(company_linkedin_url, '') as company_linkedin_url,
+                            COALESCE(apollo_profile_url, '') as apollo_profile_url,
+                            segment,
+                            COALESCE(account_used, '') as account_used,
+                            COALESCE(credits_charged, 0) as credits_charged,
+                            COALESCE(raw_enrichment_data, '') as raw_enrichment_data,
+                            enriched_at, created_at
                         FROM `enrich_saved_leads`
                         WHERE batch = %s
                         ORDER BY id ASC;
@@ -577,9 +600,9 @@ def export_batch_action(batches, conn, table_name="apollo_saved_leads"):
                     dict_rows = [dict(zip(cols, r)) for r in raw_rows]
                 else:
                     cur.execute("""
-                        SELECT id, batch, '' as apollo_id, name, first_name, last_name, job_title,
+                        SELECT id, batch, COALESCE(apollo_id, '') as apollo_id, name, first_name, last_name, job_title,
                                company, company_domain, website_link, location, linkedin_url,
-                               '' as apollo_profile_url, segment, created_at
+                               COALESCE(apollo_profile_url, '') as apollo_profile_url, segment, created_at
                         FROM `enrich_saved_leads`
                         WHERE batch = %s
                         ORDER BY id ASC;
@@ -750,6 +773,123 @@ def sync_batch_to_apollo_list_action(batches, conn, table_name="apollo_saved_lea
         sync_batch_to_apollo_api(api_key, leads, target_list_name)
 
 
+def pull_apollo_saved_batch_action(conn):
+    """
+    Directly pull already-enriched contacts from an Apollo Account's Saved Tab
+    or Saved Search, and ingest them as a fully enriched batch into MySQL.
+    """
+    from scripts.apollo_saved_search_inspector import (
+        load_apollo_accounts,
+        fetch_account_total_saved_contacts,
+        fetch_live_apollo_searches,
+        load_account_saved_searches,
+        fetch_contacts_stream,
+        save_leads_to_mysql_batch,
+        mask_key,
+    )
+
+    print("\n" + "=" * 95)
+    print("   PULL ALREADY-ENRICHED LEADS FROM APOLLO SAVED VAULT INTO DATABASE BATCH")
+    print("=" * 95)
+    accounts = load_apollo_accounts()
+    if not accounts:
+        print("[!] No Apollo accounts configured in config/apollo_accounts.json.")
+        return
+
+    print("\nSelect an Apollo Login Account:")
+    for idx, acc in enumerate(accounts, 1):
+        print(f"  [{idx:>2}] {acc.get('name', 'N/A'):<20} | {acc.get('email', 'N/A'):<35} | {mask_key(acc.get('api_key', ''))}")
+
+    acc_in = input(f"\nSelect Account [1-{len(accounts)}] (default 12): ").strip()
+    try:
+        chosen_idx = int(acc_in) if acc_in else 12
+        account = accounts[chosen_idx - 1]
+    except Exception:
+        account = accounts[0]
+
+    active_email = str(account.get("email", "")).strip().upper()
+    active_key = str(account.get("api_key", "")).strip()
+    active_name = str(account.get("name", "")).strip()
+
+    print(f"\n>> Selected: {active_email} ({active_name})")
+    print("   Probing saved contacts in this account...")
+    total_saved = fetch_account_total_saved_contacts(active_key)
+    print(f"   [*] Overall Saved Tab: {total_saved:,d} contacts currently saved & unlocked in Apollo.")
+
+    print("\nChoose Source:")
+    print(f"  [1] Pull from overall Account SAVED TAB ({total_saved:,d} total contacts)")
+    print("  [2] Pull from a specific SAVED SEARCH in this account")
+    print("  [3] Cancel")
+
+    src_choice = input("Select source [1/2/3, default 1]: ").strip()
+    if src_choice == "3":
+        print("Cancelled.")
+        return
+
+    filters = {}
+    prospected_status = "yes"
+    source_name = "Saved_Vault"
+    avail_count = total_saved
+
+    if src_choice == "2":
+        live_views = fetch_live_apollo_searches(active_key)
+        cat_views = load_account_saved_searches(active_email)
+        combined = {s["name"]: s for s in (cat_views + live_views) if s.get("name")}
+        all_s = list(combined.values())
+        if not all_s:
+            print("[!] No saved searches registered for this account.")
+            return
+
+        print("\nAvailable Saved Searches:")
+        for idx, s in enumerate(all_s, 1):
+            print(f"  [{idx:>2}] {s['name']}")
+        s_idx_in = input(f"Select search [1-{len(all_s)}]: ").strip()
+        try:
+            chosen_s = all_s[int(s_idx_in) - 1]
+            filters = chosen_s.get("filters", {})
+            source_name = chosen_s["name"]
+        except Exception:
+            print("Invalid selection.")
+            return
+
+    # Ingestion parameters
+    lim_in = input(f"\nEnter maximum leads to extract (press Enter for ALL {avail_count:,d}): ").strip()
+    max_leads = int(lim_in) if lim_in.isdigit() and int(lim_in) > 0 else None
+
+    print("\nSelect Destination Table:")
+    print("  [1] `apollo_saved_leads` (Default for Apollo Batches & MillionVerifier)")
+    print("  [2] `enrich_saved_leads` (Enrich.so Matched Batch)")
+    tbl_in = input("Select table [1/2, default 1]: ").strip()
+    target_table = "enrich_saved_leads" if tbl_in == "2" else "apollo_saved_leads"
+
+    ts_tag = time.strftime("%Y%m%d_%H%M%S")
+    clean_src = source_name.replace(" ", "_").replace("/", "_")[:20]
+    default_batch = f"BATCH_SAVED_{active_email.split('@')[0]}_{clean_src}_{ts_tag}"
+    from scripts.apollo_saved_search_inspector import prompt_batch_selection_for_login
+    batch_tag = prompt_batch_selection_for_login(target_table, active_email, default_batch)
+
+    print(f"\n[>>>] Streaming already-enriched contacts from Apollo account ({active_email})...")
+    leads = fetch_contacts_stream(active_key, filters=filters, prospected_status=prospected_status, max_contacts=max_leads)
+    if not leads:
+        print("[!] No leads retrieved from Apollo.")
+        return
+
+    saved_count = save_leads_to_mysql_batch(
+        leads=leads,
+        batch_tag=batch_tag,
+        account_email=active_email,
+        target_table=target_table
+    )
+
+    print("\n" + "=" * 95)
+    print(f" [SUCCESS] INGESTED {saved_count:,d} ALREADY-ENRICHED LEADS INTO `{target_table}`")
+    print(f"  • Batch Name:       {batch_tag}")
+    print(f"  • Account Used:     {active_email}")
+    print(f"  • Status:           ALREADY ENRICHED (enriched_at = NOW())")
+    print(f"  • Next Step:        You can now export (75 columns) directly via Option [3] or [7]!")
+    print("=" * 95)
+
+
 def main():
     active_table = "apollo_saved_leads"
     for i, arg in enumerate(sys.argv[1:], 1):
@@ -791,10 +931,13 @@ def main():
                 print("  [A] Account Credit & Expiry Report (All 19 Accounts — Live)")
                 print("  [W] Daily WhatsApp Expiry Alert (0 Credits / Free CallMeBot)")
                 print("  [F] Freshsales CRM Agent — Sync Verified Good Leads (Auto-Merge Tags / Non-Overwrite)")
+                print("  [FA] Freshsales CRM & Net-New Domain Audit (By Login or Synced Batch)")
+                print("  [S] Saved Search & Saved Account Leads Inspector (New / Total / Saved)")
+                print("  [P] Pull Already-Enriched Leads from Apollo Saved Vault into a Batch")
                 print("  [11] Refresh batch statistics")
                 print("  [12] Exit")
                 
-                choice = input("\nSelect an option (1-12, T, C, O, A, W, or F): ").strip()
+                choice = input("\nSelect an option (1-12, T, C, O, A, W, S, P, F, or FA): ").strip()
 
                 if choice.upper() == "T":
                     active_table = "enrich_saved_leads" if active_table == "apollo_saved_leads" else "apollo_saved_leads"
@@ -810,6 +953,13 @@ def main():
                     from scripts.apollo_account_report import run_account_report
                     run_account_report()
                     input("Press Enter to continue...")
+                elif choice.upper() == "S":
+                    from scripts.apollo_saved_search_inspector import run_inspector
+                    run_inspector()
+                    input("\nPress Enter to continue...")
+                elif choice.upper() == "P":
+                    pull_apollo_saved_batch_action(conn)
+                    input("\nPress Enter to continue...")
                 elif choice.upper() == "W":
                     from scripts.send_apollo_expiry_alert import fetch_all_account_expiries, format_whatsapp_expiry_message, send_whatsapp_alert, setup_windows_scheduler
                     print("\n[DAILY WHATSAPP EXPIRY ALERT CENTER]")
@@ -825,8 +975,17 @@ def main():
                         msg = format_whatsapp_expiry_message(data)
                         send_whatsapp_alert(msg, dry_run=is_dry)
                     input("\nPress Enter to continue...")
+                elif choice.upper() == "FA":
+                    import importlib
+                    import scripts.freshsales_bridge as fb
+                    importlib.reload(fb)
+                    fb.freshsales_domain_audit_menu(conn)
+                    input("\nPress Enter to continue...")
                 elif choice.upper() == "F":
-                    freshsales_agent_menu_action(conn)
+                    import importlib
+                    import scripts.freshsales_bridge as fb
+                    importlib.reload(fb)
+                    fb.freshsales_agent_menu_action(conn)
                     input("\nPress Enter to continue...")
                 elif choice == "1":
                     delete_batch_action(batches, conn, table_name=active_table)
@@ -847,10 +1006,10 @@ def main():
                     audit_batch_names_action(batches, conn, table_name=active_table)
                     input("\nPress Enter to continue...")
                 elif choice == "7":
-                    export_clean_enriched_login_action(conn, table_name=active_table)
+                    export_clean_enriched_login_action(conn, table_name="all")
                     input("\nPress Enter to continue...")
                 elif choice == "8":
-                    send_to_millionverifier_action(conn, table_name=active_table)
+                    send_to_millionverifier_action(conn, table_name="all")
                     input("\nPress Enter to continue...")
                 elif choice == "9":
                     sync_batch_to_apollo_list_action(batches, conn, table_name=active_table)

@@ -38,6 +38,7 @@ from scripts.apollo_search_direct import (
     save_account_creator_search,
     resolve_company_domain_from_apollo,
     batch_resolve_company_domains,
+    save_qualified_leads_to_db,
 )
 from backend.api import ApolloContact, get_connection
 
@@ -487,6 +488,45 @@ class TestApolloSearchDirect(unittest.TestCase):
         self.assertEqual(contact.company_domain, "acmeinnovations.com")
         self.assertEqual(contact.website_link, "https://acmeinnovations.com")
         self.assertEqual(contact.location, "Denver, Colorado")
+
+    def test_contact_domain_fallback_and_save_to_db(self):
+        """Verify ApolloContact domain access and save_qualified_leads_to_db with None/empty company_domain."""
+        from unittest.mock import MagicMock
+        c_no_domain = ApolloContact(
+            key="nodom_1",
+            apollo_id="nodom_1",
+            name="No Domain Executive",
+            job_title="VP Operations",
+            company="Stealth Inc",
+            company_domain=None,
+        )
+        # Should not raise AttributeError
+        self.assertTrue(hasattr(c_no_domain, "domain"))
+        self.assertIsNone(c_no_domain.domain)
+        self.assertEqual(c_no_domain.company_domain or c_no_domain.domain or "", "")
+
+        # Test sync when initialized with domain
+        c_with_domain = ApolloContact(
+            key="dom_2",
+            name="Domain Executive",
+            job_title="CEO",
+            company="Alpha Corp",
+            domain="alphacorp.io",
+        )
+        self.assertEqual(c_with_domain.domain, "alphacorp.io")
+        self.assertEqual(c_with_domain.company_domain, "alphacorp.io")
+
+        # Test saving to DB handles contacts with empty or None domain gracefully
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        save_qualified_leads_to_db([c_no_domain, c_with_domain], "TEST_BATCH_NODOM", mock_conn)
+        self.assertTrue(mock_cursor.executemany.called)
+        inserted_rows = mock_cursor.executemany.call_args[0][1]
+        self.assertEqual(len(inserted_rows), 2)
+        # Verify domain fields in inserted tuples (index 7 is company_domain)
+        self.assertEqual(inserted_rows[0][7], "")
+        self.assertEqual(inserted_rows[1][7], "alphacorp.io")
 
 
 if __name__ == "__main__":
