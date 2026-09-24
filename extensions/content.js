@@ -896,7 +896,7 @@
         continue;
       }
 
-      if (link.closest('[role="row"], tr, .zp_DZKPa, [id^="table-row-"]')) {
+      if (link.closest('[role="row"], tr, .zp_DZKPa, [id^="table-row-"], [role="gridcell"]')) {
         uniqueLinks.push(link);
       }
     }
@@ -996,23 +996,30 @@
       : header.getAttribute?.("aria-colindex");
 
     if (ariaColumnIndex) {
-      const indexedCell = row.querySelector(
-        `[role="cell"][aria-colindex="${ariaColumnIndex}"], td[aria-colindex="${ariaColumnIndex}"], [aria-colindex="${ariaColumnIndex}"]`
-      );
+      // Check gridcell wrapper first (new Apollo layout), then inner cell
+      const indexedCell =
+        row.querySelector(`[role="gridcell"][aria-colindex="${ariaColumnIndex}"]`) ||
+        row.querySelector(`[role="cell"][aria-colindex="${ariaColumnIndex}"]`) ||
+        row.querySelector(`td[aria-colindex="${ariaColumnIndex}"]`) ||
+        row.querySelector(`[aria-colindex="${ariaColumnIndex}"]`);
 
       if (indexedCell) {
-        return indexedCell.closest('[role="cell"], td') || indexedCell;
+        // Prefer inner cell with data-id; fall back to the matched element
+        return indexedCell.querySelector('[role="cell"], [data-id]') ||
+          indexedCell.closest('[role="cell"], td') ||
+          indexedCell;
       }
     }
 
-    // Fallback: use visible header order.
+    // Fallback: use visible header order against the cells array.
+    // cells[] are the direct gridcell/cell children of the row (positionally stable).
     const headerIndex = header.index !== undefined ? header.index : headers.indexOf(header);
+    const outerCell = headerIndex >= 0 ? cells[headerIndex] || null : null;
+    if (!outerCell) return null;
 
-    return (
-      headerIndex >= 0
-        ? cells[headerIndex] || null
-        : null
-    );
+    // If the direct child is a gridcell, return the inner data cell (has data-id / text)
+    const innerCell = outerCell.querySelector('[role="cell"], [data-id]');
+    return innerCell || outerCell;
   }
 
   // ============================================================
@@ -1084,17 +1091,25 @@
     // Find all Apollo cells inside this row
     // ----------------------------------------------------------
 
-    const cells = Array.from(
-      row.querySelectorAll('[role="cell"], td')
-    );
+    // Use direct children of the row for positional indexing.
+    // Apollo now wraps [role="cell"] inside [role="gridcell"] — taking direct
+    // children keeps column positions aligned with column headers.
+    const cells = Array.from(row.children).filter(c => {
+      const r = c.getAttribute('role');
+      return r === 'gridcell' || r === 'cell' || c.tagName === 'TD';
+    });
 
     const nameCellIndex = cells.findIndex(
-      cell => cell.contains(link)
+      cell => cell === link.closest('[role="gridcell"], [role="cell"], td') ||
+              cell.contains(link)
     );
 
-    const nameCell = nameCellIndex !== -1
-      ? cells[nameCellIndex]
-      : (link.closest('[data-id="contact.name"], [role="cell"], td') || link.parentElement);
+    // nameCell: prefer the inner cell with data-id (for badge targeting)
+    const nameCellOuter = nameCellIndex !== -1 ? cells[nameCellIndex] : null;
+    const nameCell = (nameCellOuter?.querySelector('[data-id="contact.name"], [role="cell"]') ||
+      nameCellOuter ||
+      link.closest('[data-id="contact.name"], [role="cell"], [role="gridcell"], td') ||
+      link.parentElement);
 
     // 1. Dynamic Title Detection (data-id first, then header or next cell)
     let titleCell = findCellByDataId(row, "contact.job_title", index) ||
@@ -1105,7 +1120,8 @@
         headersList
       );
     if (!titleCell && nameCellIndex !== -1 && nameCellIndex + 1 < cells.length) {
-      titleCell = cells[nameCellIndex + 1];
+      const nextOuter = cells[nameCellIndex + 1];
+      titleCell = nextOuter?.querySelector('[role="cell"], [data-id]') || nextOuter;
     }
     let rawTitle = cleanText(titleCell?.innerText || titleCell?.textContent || "");
     if (rawTitle.includes("\n")) {
@@ -1131,7 +1147,8 @@
       }
     }
     if (!companyCell && nameCellIndex !== -1 && nameCellIndex + 2 < cells.length) {
-      companyCell = cells[nameCellIndex + 2];
+      const compOuter = cells[nameCellIndex + 2];
+      companyCell = compOuter?.querySelector('[role="cell"], [data-id]') || compOuter;
     }
 
     let compLink = (companyCell || row).querySelector(
