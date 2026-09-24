@@ -1004,9 +1004,9 @@
         row.querySelector(`[aria-colindex="${ariaColumnIndex}"]`);
 
       if (indexedCell) {
-        // Prefer inner cell with data-id; fall back to the matched element
+        // Prefer inner cell with data-id or ancestor cell with data-id/role; fall back to the matched element
         return indexedCell.querySelector('[role="cell"], [data-id]') ||
-          indexedCell.closest('[role="cell"], td') ||
+          indexedCell.closest('[role="cell"], [data-id], td') ||
           indexedCell;
       }
     }
@@ -1079,14 +1079,23 @@
       return null;
     }
 
-    // Name: try link text first, then any nested text node / span (new Apollo layout)
-    const name = cleanText(
+    // Name: try link text first, nested text node / span, or enclosing name cell container
+    const nameCellContainer = link.closest(
+      '[data-id="contact.name"], [data-testid="contact-name-cell"], [data-interaction-boundary="Contact Name Cell"], [role="gridcell"], [role="cell"]'
+    );
+    let rawName = cleanText(
       link.innerText ||
       link.textContent ||
       link.querySelector('span, div, [class*="name"]')?.innerText ||
       link.querySelector('span, div, [class*="name"]')?.textContent ||
+      nameCellContainer?.innerText ||
+      nameCellContainer?.textContent ||
       ""
     );
+    if (rawName.includes("\n")) {
+      rawName = rawName.split("\n")[0].trim();
+    }
+    const name = cleanText(rawName);
 
     if (!name) {
       return null;
@@ -1142,7 +1151,7 @@
     if (!companyCell) {
       const rowId = row.getAttribute("id");
       const compLink = (rowId ? document.querySelector(`[id="${rowId}"]`) || row : row).querySelector(
-        'a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]'
+        'a[href*="/accounts/"], a[href*="/companies/"], a[href*="/organizations/"], a[data-to*="/accounts/"], a[data-to*="/companies/"], a[data-to*="/organizations/"]'
       );
       if (compLink) {
         companyCell = compLink.closest('[role="cell"], td') || compLink.parentElement;
@@ -1154,7 +1163,7 @@
     }
 
     let compLink = (companyCell || row).querySelector(
-      'a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]'
+      'a[href*="/accounts/"], a[href*="/companies/"], a[href*="/organizations/"], a[data-to*="/accounts/"], a[data-to*="/companies/"], a[data-to*="/organizations/"]'
     );
     let rawCompanyName = compLink
       ? (compLink.innerText || compLink.textContent)
@@ -1166,7 +1175,9 @@
     let company = cleanCompanyName(rawCompanyName);
 
     if (!company) {
-      const fallbackCompLink = row.querySelector('a[href*="/accounts/"], a[href*="/companies/"], a[data-to*="/accounts/"], a[data-to*="/companies/"]');
+      const fallbackCompLink = row.querySelector(
+        'a[href*="/accounts/"], a[href*="/companies/"], a[href*="/organizations/"], a[data-to*="/accounts/"], a[data-to*="/companies/"], a[data-to*="/organizations/"]'
+      );
       if (fallbackCompLink) {
         company = cleanCompanyName(fallbackCompLink.innerText || fallbackCompLink.textContent);
       }
@@ -1174,7 +1185,13 @@
 
     // 3. Domain column (primary) + website link (fallback / second-pass candidate)
     let columnDomain = "";
-    const domainCell = findCellByDataId(row, "account.domain", index);
+    const domainCell = findCellByDataId(row, "account.domain", index) ||
+      findCellByHeader(
+        row,
+        cells,
+        ["company · domain", "domain", "company domain", "website"],
+        headersList
+      );
     if (domainCell) {
       const rawDomainText = cleanText(domainCell.innerText || domainCell.textContent || "");
       const domainMatch = rawDomainText.match(/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})/i);
@@ -1205,7 +1222,7 @@
       }
     }
 
-    // Fallback: globe icon without aria-label
+    // Fallback 1: globe icon without aria-label
     if (!websiteUrl) {
       const globeIcon = (socialCell || row).querySelector("a > .apollo-icon-link") || row.querySelector("a > .apollo-icon-link");
       if (globeIcon) {
@@ -1218,6 +1235,18 @@
         if (href && !href.includes("apollo.io")) {
           websiteUrl = href;
         }
+      }
+    }
+
+    // Fallback 2: any external HTTP link in the row that is not social media or Apollo
+    if (!websiteUrl) {
+      const candidateLinks = Array.from((socialCell || row).querySelectorAll('a[href^="http://"], a[href^="https://"], a[data-href^="http://"], a[data-href^="https://"]'));
+      const foundWebLink = candidateLinks.find(a => {
+        const h = (a.getAttribute("data-href") || a.getAttribute("href") || "").toLowerCase();
+        return h && !h.includes("apollo.io") && !h.includes("linkedin.com") && !h.includes("twitter.com") && !h.includes("x.com") && !h.includes("facebook.com");
+      });
+      if (foundWebLink) {
+        websiteUrl = (foundWebLink.getAttribute("data-href") || foundWebLink.getAttribute("href") || "").trim();
       }
     }
 
@@ -2454,14 +2483,17 @@
     let failedExtractionCount = 0;
 
     links.forEach((link, index) => {
-      const contact = extractContact(link, index, headersList);
+      let contact = null;
+      try {
+        contact = extractContact(link, index, headersList);
+      } catch (err) {
+        console.warn("[ContactChecker] Failed to extract contact at index", index, err);
+      }
 
       if (!contact) {
         failedExtractionCount++;
         return;
       }
-
-      failedExtractionCount = 0;
 
       if (currentContacts.has(contact.key)) {
         return;
@@ -2489,7 +2521,7 @@
     state.currentContacts = currentContacts;
     updateDomainColumnWarning();
 
-    if (failedExtractionCount > 0 && currentContacts.size === 0 && links.length > 0) {
+    if (currentContacts.size === 0 && links.length > 0) {
       addActivity(
         "DOM_PARSE_FAILURE",
         `⚠ Apollo DOM changed? Found ${links.length} contact link(s) but could not extract data from any of them. The scraper may be blind.`,
