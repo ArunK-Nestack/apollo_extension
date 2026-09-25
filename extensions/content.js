@@ -57,7 +57,8 @@
     isEvaluatingBatch: false,
     lastEvaluatedPendingTimestamp: 0,
     lastNavigatedKey: "",
-    domainColumnWarningLogged: false
+    domainColumnWarningLogged: false,
+    consecutiveExtractionFailures: 0
   };
 
   globalThis[STATE_KEY] = state;
@@ -423,6 +424,21 @@
     // Strip trailing punctuation
     text = text.replace(/[·•|–—-]+$/, "").trim();
     return cleanText(text);
+  }
+
+  function extractCompanyFromLinkedInUrl(url) {
+    if (!url) return "";
+    const match = url.match(/linkedin\.com\/company\/([^/?#]+)/i);
+    if (!match) return "";
+    let slug = decodeURIComponent(match[1]).trim();
+    slug = slug.replace(/^www\./i, "");
+    slug = slug.replace(/\.(?:com|org|io|net|co|edu|gov)$/i, "");
+    slug = slug.replace(/[-_.]+/g, " ").trim();
+    if (!slug) return "";
+    return slug
+      .split(/\s+/)
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
   }
 
   function activityClock(timestamp) {
@@ -859,25 +875,41 @@
   // ============================================================
 
   function getApolloContactLinks() {
-    const selectors = [
+    // 1. Specific contact name cell selectors (strictly within name column/cell)
+    const specificSelectors = [
       '[data-id="contact.name"] a[href*="/people/"]',
       '[data-id="contact.name"] a[data-to*="/people/"]',
       '[data-id="contact.name"] a[href*="/contacts/"]',
       '[data-id="contact.name"] a[data-to*="/contacts/"]',
       '[data-id="contact.name"] a',
       '[data-testid="contact-name-cell"] a',
-      '[data-interaction-boundary="Contact Name Cell"] a',
-      'a[href*="/contacts/"]',
-      'a[data-to*="/contacts/"]',
-      'a[href*="/people/"]',
-      'a[data-to*="/people/"]',
-      'a[href*="#/people/"]',
-      'a[href*="#/contacts/"]'
+      '[data-interaction-boundary="Contact Name Cell"] a'
     ];
 
-    const found = Array.from(
-      document.querySelectorAll(selectors.join(","))
+    let found = Array.from(
+      document.querySelectorAll(specificSelectors.join(","))
     );
+
+    // 2. Fallback only if no specific contact name elements found
+    if (!found.length) {
+      const fallbackSelectors = [
+        '[role="row"] a[href*="/contacts/"]',
+        '[role="row"] a[data-to*="/contacts/"]',
+        '[role="row"] a[href*="/people/"]',
+        '[role="row"] a[data-to*="/people/"]',
+        '[role="row"] a[href*="#/people/"]',
+        '[role="row"] a[href*="#/contacts/"]',
+        'tr a[href*="/contacts/"]',
+        'tr a[data-to*="/contacts/"]',
+        'tr a[href*="/people/"]',
+        'tr a[data-to*="/people/"]',
+        '[id^="table-row-"] a[href*="/people/"]',
+        '[id^="table-row-"] a[data-to*="/people/"]'
+      ];
+      found = Array.from(
+        document.querySelectorAll(fallbackSelectors.join(","))
+      );
+    }
 
     const uniqueLinks = [];
     const seen = new Set();
@@ -885,6 +917,23 @@
     for (const link of found) {
       if (seen.has(link)) continue;
       seen.add(link);
+
+      // Exclude action buttons, exit-to-app icons, or header controls
+      if (
+        link.closest('[data-id="actions"]') ||
+        link.closest('[data-interaction-boundary="People Finder - Actions Cell"]') ||
+        link.closest('[data-id="leftActions"]') ||
+        link.getAttribute("data-icon-button-variant") ||
+        link.closest('[role="columnheader"], thead, [role="presentation"]')
+      ) {
+        continue;
+      }
+
+      // Must not be an icon-only button with no name text
+      const text = cleanText(link.innerText || link.textContent || "");
+      if (!text && link.querySelector('.mdi-exit-to-app, .apollo-icon, svg, i')) {
+        continue;
+      }
 
       const href = link.getAttribute("href") || link.getAttribute("data-to") || "";
       // Exclude navigation tabs or search filters
@@ -968,7 +1017,8 @@
       value => cleanText(value).toLowerCase()
     );
 
-    const header = headers.find(item => {
+    // 1. Pass 1: exact label match
+    let header = headers.find(item => {
       const label = item.label !== undefined
         ? item.label
         : cleanText(
@@ -978,12 +1028,37 @@
             ""
           ).toLowerCase();
 
-      return accepted.some(
-        expected =>
-          label === expected ||
-          label.includes(expected)
-      );
+      return accepted.some(expected => label === expected);
     });
+
+    // 2. Pass 2: partial label match, but filter out compound sub-columns when looking for company/title
+    if (!header) {
+      const compoundSubWords = [
+        "links", "link", "domain", "social", "industries",
+        "industry", "keywords", "keyword", "number of employees",
+        "employees", "score"
+      ];
+      header = headers.find(item => {
+        const label = item.label !== undefined
+          ? item.label
+          : cleanText(
+              item.innerText ||
+              item.textContent ||
+              item.getAttribute("aria-label") ||
+              ""
+            ).toLowerCase();
+
+        return accepted.some(expected => {
+          if (!label.includes(expected)) return false;
+          // If searching for "company", do not match compound headers like "company · links" or "company · domain"
+          if (expected === "company" || expected === "company name" || expected === "account") {
+            const hasCompound = compoundSubWords.some(sub => label.includes(sub));
+            if (hasCompound) return false;
+          }
+          return true;
+        });
+      });
+    }
 
     if (!header) {
       return null;
@@ -1142,6 +1217,7 @@
 
     // 2. Dynamic Company Detection (data-id first, then header, company link, or adjacent cell)
     let companyCell = findCellByDataId(row, "contact.account", index) ||
+      findCellByDataId(row, "account.name", index) ||
       findCellByHeader(
         row,
         cells,
@@ -1159,7 +1235,11 @@
     }
     if (!companyCell && nameCellIndex !== -1 && nameCellIndex + 2 < cells.length) {
       const compOuter = cells[nameCellIndex + 2];
-      companyCell = compOuter?.querySelector('[role="cell"], [data-id]') || compOuter;
+      const candidateCell = compOuter?.querySelector('[role="cell"], [data-id]') || compOuter;
+      const dataId = candidateCell?.getAttribute("data-id") || "";
+      if (!dataId.includes("social") && !dataId.includes("domain") && !dataId.includes("industries") && !dataId.includes("keywords") && !dataId.includes("employees")) {
+        companyCell = candidateCell;
+      }
     }
 
     let compLink = (companyCell || row).querySelector(
@@ -1183,6 +1263,21 @@
       }
     }
 
+    // Modern Apollo Layout Fallback: Extract from Company LinkedIn in account.social
+    if (!company) {
+      const socialCell = findCellByDataId(row, "account.social", index) || row.querySelector('[data-id="account.social"]');
+      const companyLinkedInLink = (socialCell || row).querySelector(
+        'a[href*="linkedin.com/company/"], a[data-href*="linkedin.com/company/"]'
+      );
+      if (companyLinkedInLink) {
+        const href = companyLinkedInLink.getAttribute("data-href") || companyLinkedInLink.getAttribute("href") || "";
+        const fromSlug = extractCompanyFromLinkedInUrl(href);
+        if (fromSlug) {
+          company = cleanCompanyName(fromSlug);
+        }
+      }
+    }
+
     // 3. Domain column (primary) + website link (fallback / second-pass candidate)
     let columnDomain = "";
     const domainCell = findCellByDataId(row, "account.domain", index) ||
@@ -1194,19 +1289,16 @@
       );
     if (domainCell) {
       const rawDomainText = cleanText(domainCell.innerText || domainCell.textContent || "");
-      const domainMatch = rawDomainText.match(/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})/i);
-      if (domainMatch) {
-        columnDomain = extractRootDomain(domainMatch[1]);
+      if (rawDomainText && rawDomainText !== "-") {
+        const domainMatch = rawDomainText.match(/([a-z0-9][a-z0-9.-]*\.[a-z]{2,})/i);
+        if (domainMatch) {
+          columnDomain = extractRootDomain(domainMatch[1]);
+        }
       }
     }
 
-    // If company is still somehow empty, fallback to domain root name or Unknown
-    if (!company) {
-      company = columnDomain ? columnDomain.split(".")[0] : "Unknown";
-    }
-
     let websiteUrl = "";
-    const socialCell = findCellByDataId(row, "account.social", index);
+    const socialCell = findCellByDataId(row, "account.social", index) || row.querySelector('[data-id="account.social"]');
     const websiteLink =
       (socialCell || row).querySelector('a[aria-label="website link"]') ||
       row.querySelector('[data-id="account.social"] a[aria-label="website link"]') ||
@@ -1252,6 +1344,16 @@
 
     const websiteDomain = websiteUrl ? extractRootDomain(websiteUrl) : "";
     const lookupDomain = columnDomain || websiteDomain;
+
+    // If company is still empty, derive from domain or Unknown
+    if (!company) {
+      if (lookupDomain) {
+        const root = lookupDomain.split(".")[0].replace(/[-_.]+/g, " ");
+        company = root.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+      } else {
+        company = "Unknown";
+      }
+    }
 
     // 4. Email Detection from row (if revealed / mailto link or email text)
     let email = "";
@@ -2521,13 +2623,30 @@
     state.currentContacts = currentContacts;
     updateDomainColumnWarning();
 
-    if (currentContacts.size === 0 && links.length > 0) {
-      addActivity(
-        "DOM_PARSE_FAILURE",
-        `⚠ Apollo DOM changed? Found ${links.length} contact link(s) but could not extract data from any of them. The scraper may be blind.`,
-        "error"
-      );
-      showStatus("⚠ Apollo layout change detected — scraper may need an update", 5000, false);
+    // Check if real data body rows actually exist in the table
+    const tableBodyRows = document.querySelectorAll(
+      '[id^="table-row-"], [role="rowgroup"] [role="row"]:not([role="columnheader"]), .zp_Gjvi9 [role="row"], tbody tr'
+    );
+
+    if (currentContacts.size === 0 && links.length > 0 && tableBodyRows.length > 0) {
+      state.consecutiveExtractionFailures = (state.consecutiveExtractionFailures || 0) + 1;
+      // Only warn user if extraction repeatedly failed across multiple scans (not transient loading)
+      if (state.consecutiveExtractionFailures >= 3) {
+        addActivity(
+          "DOM_PARSE_FAILURE",
+          `⚠ Apollo DOM changed? Found ${links.length} contact link(s) across ${tableBodyRows.length} rows but could not extract data from any of them. The scraper may be blind.`,
+          "error"
+        );
+        showStatus("⚠ Apollo layout change detected — scraper may need an update", 5000, false);
+      }
+    } else if (currentContacts.size > 0) {
+      state.consecutiveExtractionFailures = 0;
+      // If layout warning is showing, dismiss it immediately
+      const statusEl = document.getElementById("contact-checker-status");
+      if (statusEl && statusEl.textContent.includes("layout change detected")) {
+        statusEl.remove();
+        clearTimeout(state.statusTimer);
+      }
     }
 
     const currentSignature = Array.from(currentContacts.keys()).join("|");
@@ -2814,7 +2933,7 @@
     });
 
     const target =
-      document.querySelector('[data-id="scrollable-table-container"], [role="grid"], .zp_table, [role="main"], #main-app') ||
+      document.querySelector('[data-id="scrollable-table-container"], [role="treegrid"], [role="grid"], [data-testid="table-refetch-content"], .zp_table, [role="main"], #main-app') ||
       document.body;
 
     state.observerTarget = target;
