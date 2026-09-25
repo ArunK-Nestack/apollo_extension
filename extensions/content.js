@@ -875,44 +875,37 @@
   // ============================================================
 
   function getApolloContactLinks() {
-    // 1. Specific contact name cell selectors (strictly within name column/cell)
-    const specificSelectors = [
+    const selectors = [
       '[data-id="contact.name"] a[href*="/people/"]',
       '[data-id="contact.name"] a[data-to*="/people/"]',
       '[data-id="contact.name"] a[href*="/contacts/"]',
       '[data-id="contact.name"] a[data-to*="/contacts/"]',
       '[data-id="contact.name"] a',
       '[data-testid="contact-name-cell"] a',
-      '[data-interaction-boundary="Contact Name Cell"] a'
+      '[data-interaction-boundary="Contact Name Cell"] a',
+      '[role="row"] a[href*="/contacts/"]',
+      '[role="row"] a[data-to*="/contacts/"]',
+      '[role="row"] a[href*="/people/"]',
+      '[role="row"] a[data-to*="/people/"]',
+      '[role="row"] a[href*="#/people/"]',
+      '[role="row"] a[href*="#/contacts/"]',
+      'tr a[href*="/contacts/"]',
+      'tr a[data-to*="/contacts/"]',
+      'tr a[href*="/people/"]',
+      'tr a[data-to*="/people/"]',
+      '.zp_DZKPa a[href*="/people/"]',
+      '.zp_DZKPa a[data-to*="/people/"]',
+      '[id^="table-row-"] a[href*="/people/"]',
+      '[id^="table-row-"] a[data-to*="/people/"]'
     ];
 
-    let found = Array.from(
-      document.querySelectorAll(specificSelectors.join(","))
+    const found = Array.from(
+      document.querySelectorAll(selectors.join(","))
     );
-
-    // 2. Fallback only if no specific contact name elements found
-    if (!found.length) {
-      const fallbackSelectors = [
-        '[role="row"] a[href*="/contacts/"]',
-        '[role="row"] a[data-to*="/contacts/"]',
-        '[role="row"] a[href*="/people/"]',
-        '[role="row"] a[data-to*="/people/"]',
-        '[role="row"] a[href*="#/people/"]',
-        '[role="row"] a[href*="#/contacts/"]',
-        'tr a[href*="/contacts/"]',
-        'tr a[data-to*="/contacts/"]',
-        'tr a[href*="/people/"]',
-        'tr a[data-to*="/people/"]',
-        '[id^="table-row-"] a[href*="/people/"]',
-        '[id^="table-row-"] a[data-to*="/people/"]'
-      ];
-      found = Array.from(
-        document.querySelectorAll(fallbackSelectors.join(","))
-      );
-    }
 
     const uniqueLinks = [];
     const seen = new Set();
+    const seenRows = new Set();
 
     for (const link of found) {
       if (seen.has(link)) continue;
@@ -924,14 +917,14 @@
         link.closest('[data-interaction-boundary="People Finder - Actions Cell"]') ||
         link.closest('[data-id="leftActions"]') ||
         link.getAttribute("data-icon-button-variant") ||
-        link.closest('[role="columnheader"], thead, [role="presentation"]')
+        link.closest('[role="columnheader"], thead')
       ) {
         continue;
       }
 
-      // Must not be an icon-only button with no name text
+      // Must have contact name text (action icons, checkboxes, or buttons have no text)
       const text = cleanText(link.innerText || link.textContent || "");
-      if (!text && link.querySelector('.mdi-exit-to-app, .apollo-icon, svg, i')) {
+      if (!text || (text.length < 2 && link.querySelector('.mdi-exit-to-app, .apollo-icon, svg, i'))) {
         continue;
       }
 
@@ -945,7 +938,19 @@
         continue;
       }
 
-      if (link.closest('[role="row"], tr, .zp_DZKPa, [id^="table-row-"]')) {
+      const row = link.closest('[role="row"], tr, .zp_DZKPa, [id^="table-row-"]');
+      if (row) {
+        // If row was already seen, prioritize contact name cell if previous was generic
+        if (seenRows.has(row)) {
+          if (link.closest('[data-id="contact.name"], [data-testid="contact-name-cell"], [data-interaction-boundary="Contact Name Cell"]')) {
+            const existingIdx = uniqueLinks.findIndex(l => l.closest('[role="row"], tr, .zp_DZKPa, [id^="table-row-"]') === row);
+            if (existingIdx !== -1) {
+              uniqueLinks[existingIdx] = link;
+            }
+          }
+          continue;
+        }
+        seenRows.add(row);
         uniqueLinks.push(link);
       }
     }
