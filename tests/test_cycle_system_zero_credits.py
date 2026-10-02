@@ -432,3 +432,46 @@ def test_js_extension_cycle_parity():
     assert out["day20"] == "sep 20 - oct 20"
     assert out["day10"] == "sep 10 - oct 10"
     assert out["day03"] == "sep 03 - oct 03"
+
+
+def test_cycle_days_list_and_auto_display_on_login():
+    """Verify computeAccountCycleDetails lists Day 1..Day 30/31 and displays Day 30 or Day 31 on 3rd of month."""
+    node_script = """
+    const fs = require('fs');
+    const code = fs.readFileSync('extensions/content.js', 'utf8');
+    const match = code.match(/function computeAccountCycleDetails\\([^{]+{([\\s\\S]+?)\\n  }/);
+    if (!match) throw new Error('computeAccountCycleDetails not found');
+    const fn = new Function('renewalDay', 'targetDate', match[1]);
+
+    // 1. On 3rd of October, account with renewalDay 3 (September has 30 days):
+    const oct3 = new Date('2026-10-03T12:00:00Z');
+    const res03 = fn(3, oct3);
+
+    // 2. On 3rd of September, account with renewalDay 3 (August has 31 days):
+    const sep3 = new Date('2026-09-03T12:00:00Z');
+    const resSep3 = fn(3, sep3);
+
+    // 3. On 3rd of October, account with renewalDay 20 (Sep 20 - Oct 20):
+    const res20 = fn(20, oct3);
+
+    console.log(JSON.stringify({
+      oct3_day: res03.currentDayLabel,
+      oct3_cycle: res03.cycleTag,
+      oct3_total: res03.totalDays,
+      sep3_day: resSep3.currentDayLabel,
+      sep3_cycle: resSep3.cycleTag,
+      sep3_total: resSep3.totalDays,
+      res20_day: res20.currentDayLabel,
+      has_days_list: Array.isArray(res03.daysList) && res03.daysList.length === res03.totalDays
+    }));
+    """
+
+    res = subprocess.run(["node", "-e", node_script], capture_output=True, text=True, check=True)
+    out = json.loads(res.stdout.strip())
+
+    # On the 3rd of the month for renewalDay 3:
+    assert out["oct3_day"] in ("Day 30", "Day 31")
+    assert out["oct3_day"] == "Day 30"
+    assert out["sep3_day"] == "Day 31"
+    assert out["res20_day"] == "Day 14"
+    assert out["has_days_list"] is True

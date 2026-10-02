@@ -53,15 +53,71 @@
     return `${sMonth} ${sDay} - ${eMonth} ${eDay}`;
   }
 
+  function computeAccountCycleDetails(renewalDay, targetDate = new Date()) {
+    const d = new Date(targetDate);
+    const targetUtcYear = d.getUTCFullYear();
+    const targetUtcMonth = d.getUTCMonth();
+    const targetUtcDate = d.getUTCDate();
+
+    let start, end;
+    // When targetUtcDate <= renewalDay:
+    // Today is within or at the final day of the cycle that started last month on renewalDay!
+    // Example: If renewalDay is 3, on Oct 3rd the cycle is sep 03 - oct 03 and today is Day 30 or Day 31.
+    // If targetUtcDate > renewalDay: the cycle started this month on renewalDay and ends next month on renewalDay.
+    if (targetUtcDate <= renewalDay) {
+      end = new Date(Date.UTC(targetUtcYear, targetUtcMonth, renewalDay));
+      start = new Date(Date.UTC(targetUtcYear, targetUtcMonth - 1, renewalDay));
+    } else {
+      start = new Date(Date.UTC(targetUtcYear, targetUtcMonth, renewalDay));
+      end = new Date(Date.UTC(targetUtcYear, targetUtcMonth + 1, renewalDay));
+    }
+
+    const sMonth = start.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
+    const eMonth = end.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
+    const sDay = String(start.getUTCDate()).padStart(2, "0");
+    const eDay = String(end.getUTCDate()).padStart(2, "0");
+    const cycleTag = `${sMonth} ${sDay} - ${eMonth} ${eDay}`;
+
+    const msPerDay = 86400000;
+    const totalDays = Math.round((end.getTime() - start.getTime()) / msPerDay);
+
+    const targetMidnight = new Date(Date.UTC(targetUtcYear, targetUtcMonth, targetUtcDate));
+    let currentDayNum = Math.floor((targetMidnight.getTime() - start.getTime()) / msPerDay) + 1;
+    if (currentDayNum < 1) currentDayNum = 1;
+    if (currentDayNum > totalDays) currentDayNum = totalDays;
+
+    const daysList = [];
+    for (let i = 1; i <= totalDays; i++) {
+      const dt = new Date(start.getTime() + (i - 1) * msPerDay);
+      const mName = dt.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
+      const dayNumStr = String(dt.getUTCDate()).padStart(2, "0");
+      daysList.push({
+        dayNum: i,
+        dayLabel: `Day ${i}`,
+        dateStr: `${mName} ${dayNumStr}`,
+        fullLabel: `Day ${i} (${mName} ${dayNumStr})`,
+        isToday: i === currentDayNum
+      });
+    }
+
+    return {
+      cycleTag,
+      totalDays,
+      currentDayNum,
+      currentDayLabel: `Day ${currentDayNum}`,
+      daysList
+    };
+  }
+
   function renderLoginCycleOptions(currentBatch) {
     let html = `<option value="" disabled ${!currentBatch ? "selected" : ""}>-- Select Login & Cycle (19 Accounts) --</option>`;
     for (const acc of APOLLO_19_LOGINS) {
-      const cycle = computeAccountActiveCycle(acc.renewalDay);
-      const val = `${acc.email}(${cycle})`;
-      const isSel = currentBatch === val;
-      html += `<option value="${val}" ${isSel ? "selected" : ""}>${acc.name} (${cycle})</option>`;
+      const details = computeAccountCycleDetails(acc.renewalDay);
+      const val = `${acc.email}(${details.cycleTag}) - ${details.currentDayLabel}`;
+      const isSel = currentBatch && (currentBatch === val || currentBatch === `${acc.email}(${details.cycleTag})`);
+      html += `<option value="${val}" ${isSel ? "selected" : ""}>${acc.name} (${details.cycleTag}) - ${details.currentDayLabel}</option>`;
     }
-    const isKnown = APOLLO_19_LOGINS.some(a => `${a.email}(${computeAccountActiveCycle(a.renewalDay)})` === currentBatch);
+    const isKnown = APOLLO_19_LOGINS.some(a => currentBatch && currentBatch.includes(a.email));
     const isCustom = currentBatch && currentBatch !== "batch_1" && !isKnown;
     html += `<option value="__CUSTOM__" ${isCustom ? "selected" : ""}>➕ Custom Batch Tag...</option>`;
     return html;
@@ -93,8 +149,9 @@
   }
 
   const _defaultAcc = APOLLO_19_LOGINS[0];
-  const _defaultCycle = computeAccountActiveCycle(_defaultAcc.renewalDay);
-  const _defaultBatch = `${_defaultAcc.email}(${_defaultCycle})`;
+  const _defaultCycleDetails = computeAccountCycleDetails(_defaultAcc.renewalDay);
+  const _defaultCycle = _defaultCycleDetails.cycleTag;
+  const _defaultBatch = `${_defaultAcc.email}(${_defaultCycle}) - ${_defaultCycleDetails.currentDayLabel}`;
 
   // ============================================================
   // TOGGLE OFF
@@ -115,6 +172,8 @@
     batchName: _defaultBatch,
     accountEmail: _defaultAcc.email,
     cycleTag: _defaultCycle,
+    cycleDay: _defaultCycleDetails.currentDayNum,
+    cycleDayLabel: _defaultCycleDetails.currentDayLabel,
     titleGuardrailEnabled: true,
     indianGuardrailEnabled: true,
     hasUnsavedRequiredContacts: false,
@@ -447,6 +506,97 @@
       border-color: #38bdf8;
       box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
       background: rgba(15, 23, 42, 1);
+    }
+
+    /* CYCLE DAYS STRIP PRO MAX */
+    .cc-cycle-days-container {
+      padding: 8px 12px;
+      background: rgba(30, 41, 59, 0.55);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .cc-cycle-days-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 10.5px;
+      font-weight: 700;
+    }
+
+    .cc-cycle-days-title {
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .cc-cycle-days-today-badge {
+      color: #34d399;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      border-radius: 10px;
+      padding: 1px 7px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
+    .cc-cycle-days-strip {
+      display: flex;
+      gap: 5px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+      scrollbar-width: thin;
+    }
+
+    .cc-cycle-days-strip::-webkit-scrollbar {
+      height: 4px;
+    }
+    .cc-cycle-days-strip::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.18);
+      border-radius: 4px;
+    }
+
+    .cc-day-chip {
+      flex-shrink: 0;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 10.5px;
+      font-weight: 700;
+      color: #94a3b8;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .cc-day-chip:hover {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: #38bdf8;
+      color: #f1f5f9;
+      transform: translateY(-1px);
+    }
+
+    .cc-day-chip.active {
+      background: linear-gradient(135deg, #0284c7, #0369a1);
+      border-color: #38bdf8;
+      color: white;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
+    }
+
+    .cc-day-chip.is-today {
+      border-color: #10b981;
+    }
+    .cc-day-chip.is-today::after {
+      content: "•";
+      color: #10b981;
+      font-size: 12px;
     }
 
     .cc-picker-list {
@@ -2911,8 +3061,8 @@
       "contact-checker-controls"
     );
 
-    // If an older controls dock exists in DOM without the new Pro Max picker wrap or dedupe button, refresh it
-    if (controls && (!controls.querySelector("#cc-cycle-picker-wrap") || !controls.querySelector("#contact-checker-dedupe-btn"))) {
+    // If an older controls dock exists in DOM without the new Pro Max picker wrap or days container, refresh it
+    if (controls && (!controls.querySelector("#cc-cycle-days-strip") || !controls.querySelector("#contact-checker-dedupe-btn"))) {
       controls.remove();
       controls = null;
     }
@@ -2938,6 +3088,14 @@
                 <span class="cc-popover-badge">19 Logins</span>
               </div>
               <input id="cc-search-input" class="cc-search-input" type="text" placeholder="🔍 Search by name, email, or cycle..." autocomplete="off" />
+            </div>
+            <!-- CYCLE DAYS STRIP (Day 1, Day 2, Day 3... Day 30/31) -->
+            <div id="cc-cycle-days-container" class="cc-cycle-days-container">
+              <div class="cc-cycle-days-header">
+                <span id="cc-cycle-days-info" class="cc-cycle-days-title">Current Cycle: 📅 ...</span>
+                <span id="cc-cycle-days-today" class="cc-cycle-days-today-badge">Today: Day ...</span>
+              </div>
+              <div id="cc-cycle-days-strip" class="cc-cycle-days-strip"></div>
             </div>
             <div id="cc-cycle-list" class="cc-picker-list"></div>
             <div class="cc-popover-footer">
@@ -2995,27 +3153,100 @@
         if (!triggerAvatar || !triggerName || !triggerCycle) return;
 
         let matched = null;
-        let matchedCycle = null;
+        let matchedDetails = null;
         for (const acc of APOLLO_19_LOGINS) {
-          const cycle = computeAccountActiveCycle(acc.renewalDay);
-          if (`${acc.email}(${cycle})` === currentBatch) {
+          if (currentBatch.includes(acc.email)) {
             matched = acc;
-            matchedCycle = cycle;
+            matchedDetails = computeAccountCycleDetails(acc.renewalDay);
             break;
           }
         }
 
-        if (matched) {
+        if (matched && matchedDetails) {
+          const dayLabel = state.cycleDayLabel || matchedDetails.currentDayLabel;
           triggerAvatar.textContent = getInitials(matched.name);
           triggerAvatar.style.background = getAvatarGradient(matched.name);
-          triggerName.textContent = matched.name;
-          triggerCycle.textContent = `📅 ${matchedCycle}`;
+          triggerName.textContent = `${matched.name} • ${dayLabel}`;
+          triggerCycle.textContent = `📅 ${matchedDetails.cycleTag}`;
         } else {
           triggerAvatar.textContent = "🏷️";
           triggerAvatar.style.background = "linear-gradient(135deg, #475569, #334155)";
-          triggerName.textContent = currentBatch.length > 18 ? currentBatch.slice(0, 18) + "…" : currentBatch;
+          triggerName.textContent = currentBatch.length > 20 ? currentBatch.slice(0, 20) + "…" : currentBatch;
           triggerCycle.textContent = state.cycleTag ? `📅 ${state.cycleTag}` : "Custom Tag";
         }
+      }
+
+      function renderDaysStrip(acc) {
+        const daysContainer = controls.querySelector("#cc-cycle-days-container");
+        const daysInfo = controls.querySelector("#cc-cycle-days-info");
+        const daysToday = controls.querySelector("#cc-cycle-days-today");
+        const daysStrip = controls.querySelector("#cc-cycle-days-strip");
+        if (!daysContainer || !daysStrip || !acc) return;
+
+        const details = computeAccountCycleDetails(acc.renewalDay);
+        daysInfo.textContent = `📅 ${details.cycleTag}`;
+        daysToday.textContent = `Today: ${details.currentDayLabel}`;
+
+        const selectedDayNum = state.cycleDay || details.currentDayNum;
+
+        daysStrip.innerHTML = "";
+        for (const d of details.daysList) {
+          const chip = document.createElement("div");
+          const isSelected = d.dayNum === selectedDayNum;
+          chip.className = `cc-day-chip ${isSelected ? "active" : ""} ${d.isToday ? "is-today" : ""}`;
+          chip.title = `${d.fullLabel}${d.isToday ? " - Today" : ""}`;
+          chip.textContent = d.fullLabel;
+          chip.addEventListener("click", (e) => {
+            e.stopPropagation();
+            selectDay(acc, details, d.dayNum, d.dayLabel);
+          });
+          daysStrip.appendChild(chip);
+
+          if (isSelected) {
+            setTimeout(() => {
+              chip.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+            }, 60);
+          }
+        }
+      }
+
+      function selectDay(acc, details, dayNum, dayLabel) {
+        state.cycleDay = dayNum;
+        state.cycleDayLabel = dayLabel;
+        state.cycleTag = details.cycleTag;
+        state.accountEmail = acc.email;
+
+        const batchVal = `${acc.email}(${details.cycleTag}) - ${dayLabel}`;
+        state.batchName = batchVal;
+
+        if (batchSelect) batchSelect.value = batchVal;
+        if (batchInput) batchInput.value = batchVal;
+
+        if (chrome?.storage?.local) {
+          chrome.storage.local.set({
+            [BATCH_NAME_STORAGE_KEY]: batchVal,
+            contactCheckerAccountEmail: acc.email,
+            contactCheckerCycleTag: details.cycleTag,
+            contactCheckerCycleDay: dayNum,
+            contactCheckerCycleDayLabel: dayLabel
+          });
+        }
+
+        state.syncedLeadKeys.clear();
+        saveRequiredContactsNow();
+        showStatus(`✓ ${acc.name} ${dayLabel} (${details.cycleTag}) active`, 3500);
+        addActivity("CYCLE_DAY_SELECTED", `Active cycle day set to ${dayLabel} for '${acc.email}' (${details.cycleTag}).`, "info", { batch: batchVal, cycle: details.cycleTag, day: dayNum });
+
+        updateTriggerDisplay();
+        renderDaysStrip(acc);
+        renderCards(searchInput?.value || "");
+      }
+
+      function selectAccount(acc) {
+        const details = computeAccountCycleDetails(acc.renewalDay);
+        // Defaults to today's cycle day (e.g. Day 30 or Day 31 if today is 3rd of month)
+        selectDay(acc, details, details.currentDayNum, details.currentDayLabel);
+        pickerWrap.classList.remove("open");
       }
 
       function renderCards(filterText = "") {
@@ -3026,16 +3257,16 @@
 
         let visibleCount = 0;
         for (const acc of APOLLO_19_LOGINS) {
-          const cycle = computeAccountActiveCycle(acc.renewalDay);
-          const val = `${acc.email}(${cycle})`;
+          const details = computeAccountCycleDetails(acc.renewalDay);
           const initials = getInitials(acc.name);
           const grad = getAvatarGradient(acc.name);
-          const isSelected = currentBatch === val;
+          const isSelected = currentBatch.includes(acc.email);
 
           if (q) {
             const match = acc.name.toLowerCase().includes(q) ||
                           acc.email.toLowerCase().includes(q) ||
-                          cycle.toLowerCase().includes(q) ||
+                          details.cycleTag.toLowerCase().includes(q) ||
+                          details.currentDayLabel.toLowerCase().includes(q) ||
                           String(acc.renewalDay).includes(q);
             if (!match) continue;
           }
@@ -3043,21 +3274,23 @@
           visibleCount++;
           const card = document.createElement("div");
           card.className = `cc-account-item ${isSelected ? "active" : ""}`;
-          card.setAttribute("data-batch-val", val);
+          card.setAttribute("data-email", acc.email);
           card.innerHTML = `
             <div class="cc-account-item-avatar" style="background:${grad}">${initials}</div>
             <div class="cc-account-item-body">
               <div class="cc-account-item-header">
                 <span class="cc-account-item-name">${acc.name}</span>
-                <span class="cc-account-item-renewal">Day ${acc.renewalDay}</span>
+                <span class="cc-account-item-renewal" style="color:#38bdf8;font-weight:700;">Day ${acc.renewalDay} Renewal</span>
               </div>
               <span class="cc-account-item-email">${acc.email.toLowerCase()}</span>
-              <span class="cc-account-item-cycle">📅 ${cycle}</span>
+              <span class="cc-account-item-cycle">
+                📅 ${details.cycleTag} • <strong style="color:#34d399;font-weight:800;">${details.currentDayLabel}</strong><span style="color:#94a3b8;font-size:9.5px;"> (of ${details.totalDays}d)</span>
+              </span>
             </div>
             <span class="cc-account-item-check">✓</span>
           `;
           card.addEventListener("click", () => {
-            selectAccount(acc.email, acc.name, cycle);
+            selectAccount(acc);
           });
           pickerList.appendChild(card);
         }
@@ -3070,39 +3303,13 @@
         }
       }
 
-      function selectAccount(email, name, cycle) {
-        const val = `${email}(${cycle})`;
-        state.batchName = val;
-        state.accountEmail = email;
-        state.cycleTag = cycle;
-
-        if (batchSelect) batchSelect.value = val;
-        if (batchInput) batchInput.value = val;
-
-        if (chrome?.storage?.local) {
-          chrome.storage.local.set({
-            [BATCH_NAME_STORAGE_KEY]: val,
-            contactCheckerAccountEmail: email,
-            contactCheckerCycleTag: cycle
-          });
-        }
-        state.syncedLeadKeys.clear();
-        saveRequiredContactsNow();
-        showStatus(`✓ Login Cycle: '${val}' — syncing to MySQL`, 3500);
-        addActivity("CYCLE_SELECTED", `Login cycle set to '${val}'. Leads will be tagged exclusively with this cycle in database.`, "info", { batch: val, cycle });
-
-        updateTriggerDisplay();
-        renderCards(searchInput?.value || "");
-        pickerWrap.classList.remove("open");
-      }
-
       function selectCustomBatch(rawVal) {
         const val = cleanText(rawVal).replace(/[^a-zA-Z0-9_(). -]/g, "_") || "batch_1";
         state.batchName = val;
         if (batchSelect) batchSelect.value = "__CUSTOM__";
         if (batchInput) batchInput.value = val;
 
-        const m = val.match(/^([^()]+)\(([^)]+)\)$/);
+        const m = val.match(/^([^()]+)\s*\(([^)]+)\)/);
         if (m) {
           state.accountEmail = m[1].trim();
           state.cycleTag = m[2].trim();
@@ -3129,6 +3336,8 @@
         e.stopPropagation();
         const isOpen = pickerWrap.classList.toggle("open");
         if (isOpen) {
+          const activeAcc = APOLLO_19_LOGINS.find(a => (state.batchName || "").includes(a.email)) || APOLLO_19_LOGINS[0];
+          renderDaysStrip(activeAcc);
           if (searchInput) {
             searchInput.value = "";
             renderCards("");
@@ -3164,6 +3373,8 @@
         });
       }
 
+      const activeAcc = APOLLO_19_LOGINS.find(a => (state.batchName || "").includes(a.email)) || APOLLO_19_LOGINS[0];
+      renderDaysStrip(activeAcc);
       updateTriggerDisplay();
       renderCards("");
 
@@ -3174,9 +3385,11 @@
             selectCustomBatch(batchInput.value || "batch_1");
             return;
           }
-          const m = val.match(/^([^()]+)\(([^)]+)\)$/);
+          const m = val.match(/^([^()]+)\s*\(([^)]+)\)/);
           if (m) {
-            selectAccount(m[1].trim(), m[1].trim(), m[2].trim());
+            const acc = APOLLO_19_LOGINS.find(a => a.email.toLowerCase() === m[1].trim().toLowerCase()) || { name: m[1].trim(), email: m[1].trim(), renewalDay: 20 };
+            const details = computeAccountCycleDetails(acc.renewalDay);
+            selectDay(acc, details, details.currentDayNum, details.currentDayLabel);
           } else {
             selectCustomBatch(val);
           }
@@ -3248,24 +3461,24 @@
     const triggerCycle = controls.querySelector("#cc-trigger-cycle");
     if (triggerAvatar && triggerName && triggerCycle) {
       let matched = null;
-      let matchedCycle = null;
+      let matchedDetails = null;
       for (const acc of APOLLO_19_LOGINS) {
-        const cycle = computeAccountActiveCycle(acc.renewalDay);
-        if (`${acc.email}(${cycle})` === currentBatch) {
+        if (currentBatch.includes(acc.email)) {
           matched = acc;
-          matchedCycle = cycle;
+          matchedDetails = computeAccountCycleDetails(acc.renewalDay);
           break;
         }
       }
-      if (matched) {
+      if (matched && matchedDetails) {
+        const dayLabel = state.cycleDayLabel || matchedDetails.currentDayLabel;
         triggerAvatar.textContent = getInitials(matched.name);
         triggerAvatar.style.background = getAvatarGradient(matched.name);
-        triggerName.textContent = matched.name;
-        triggerCycle.textContent = `📅 ${matchedCycle}`;
+        triggerName.textContent = `${matched.name} • ${dayLabel}`;
+        triggerCycle.textContent = `📅 ${matchedDetails.cycleTag}`;
       } else {
         triggerAvatar.textContent = "🏷️";
         triggerAvatar.style.background = "linear-gradient(135deg, #475569, #334155)";
-        triggerName.textContent = currentBatch.length > 18 ? currentBatch.slice(0, 18) + "…" : currentBatch;
+        triggerName.textContent = currentBatch.length > 20 ? currentBatch.slice(0, 20) + "…" : currentBatch;
         triggerCycle.textContent = state.cycleTag ? `📅 ${state.cycleTag}` : "Custom Tag";
       }
     }
@@ -3273,9 +3486,9 @@
     const batchSelectExisting = controls.querySelector("#contact-checker-batch-select");
     const batchInputExisting = controls.querySelector("#contact-checker-batch-input");
     if (batchSelectExisting) {
-      const matchingOpt = Array.from(batchSelectExisting.options).find(o => o.value === currentBatch);
+      const matchingOpt = Array.from(batchSelectExisting.options).find(o => o.value === currentBatch || (currentBatch && o.value.includes(currentBatch)));
       if (matchingOpt) {
-        batchSelectExisting.value = currentBatch;
+        batchSelectExisting.value = matchingOpt.value;
       } else if (currentBatch && currentBatch !== "batch_1") {
         batchSelectExisting.value = "__CUSTOM__";
       } else {

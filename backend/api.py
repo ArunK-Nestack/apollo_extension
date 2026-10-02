@@ -3274,7 +3274,7 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
 
     # If not passed explicitly, infer account_used and cycle if batch_tag matches: login(cycle)
     if not cycle_val or not account_used_val:
-        m = re.match(r"^([^()]+)\s*\(([^)]+)\)$", batch_tag)
+        m = re.match(r"^([^()]+)\s*\(([^)]+)\)", batch_tag)
         if m:
             if not account_used_val:
                 account_used_val = m.group(1).strip()
