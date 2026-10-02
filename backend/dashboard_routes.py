@@ -1617,3 +1617,367 @@ def stream_task(task_id: str):
                     _TASK_QUEUES[task_id].remove(q)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# =====================================================================
+# 4. REST API: COMPREHENSIVE OPERATIONS & SAVING REPORTS (BLOOMERANG SPEC)
+# =====================================================================
+
+@dashboard_router.get("/api/reports/saving-summary")
+def get_saving_summary():
+    """
+    Section 1: Apollo Saving CRUD / Full Saving Ledger Table.
+    Aggregates all records from apollo_saved_leads grouped by account
+    to report login name, email, credits used, emails saved, total contacts,
+    and exact last save timestamp.
+    """
+    accs_file = CONFIG_DIR / "apollo_accounts.json"
+    accs = []
+    if accs_file.exists():
+        try:
+            with open(accs_file, "r", encoding="utf-8") as f:
+                accs = json.load(f)
+        except Exception:
+            pass
+
+    acc_map = {}
+    for a in accs:
+        key = a["email"].strip().lower()
+        acc_map[key] = {
+            "id": a["id"],
+            "name": a["name"],
+            "email": a["email"],
+            "source": "Web Extension",
+            "total_leads": 0,
+            "saved_emails": 0,
+            "credits_used": 0,
+            "last_saved": None,
+            "batches": []
+        }
+
+    unassigned = {
+        "id": 0,
+        "name": "Legacy & Direct Saves",
+        "email": "fleet_vault@nestack.com",
+        "source": "Web Extension",
+        "total_leads": 0,
+        "saved_emails": 0,
+        "credits_used": 0,
+        "last_saved": None,
+        "batches": []
+    }
+
+    try:
+        from backend.api import get_connection
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    COALESCE(account_used, '') as acc,
+                    batch,
+                    COUNT(*) as cnt,
+                    COUNT(email) as emails_cnt,
+                    SUM(credits_charged) as creds,
+                    MIN(created_at) as min_dt,
+                    MAX(created_at) as max_dt
+                FROM apollo_saved_leads
+                GROUP BY account_used, batch;
+            """)
+            rows = cur.fetchall()
+
+        for r in rows:
+            acc, batch, cnt, emails_cnt, creds, min_dt, max_dt = r
+            acc_str = (acc or "").strip()
+            batch_str = (batch or "").strip()
+
+            matched_key = None
+            if "@" in acc_str:
+                clean_acc = acc_str.lower()
+                if clean_acc in acc_map:
+                    matched_key = clean_acc
+
+            if not matched_key and acc_str:
+                acc_low = acc_str.lower()
+                for k, v in acc_map.items():
+                    if v["name"].lower() == acc_low or k == acc_low:
+                        matched_key = k
+                        break
+
+            if not matched_key and batch_str:
+                b_low = batch_str.lower().replace(".", "_").replace("-", "_")
+                for k, v in acc_map.items():
+                    clean_k = k.replace(".", "_").replace("-", "_")
+                    email_user = k.split("@")[0].replace(".", "_").replace("-", "_")
+                    domain_part = k.split("@")[1].split(".")[0]
+                    if email_user in b_low and domain_part in b_low:
+                        matched_key = k
+                        break
+                if not matched_key:
+                    for k, v in acc_map.items():
+                        clean_k = k.replace(".", "_").replace("-", "_")
+                        if clean_k in b_low or k in batch_str.lower():
+                            matched_key = k
+                            break
+
+            target = acc_map[matched_key] if matched_key else unassigned
+            target["total_leads"] += cnt
+            target["saved_emails"] += emails_cnt
+            target["credits_used"] += int(creds or 0)
+            target["batches"].append({"batch": batch_str, "count": cnt})
+            if max_dt and (not target["last_saved"] or max_dt > target["last_saved"]):
+                target["last_saved"] = max_dt
+            if "api" in batch_str.lower() or int(creds or 0) > 0:
+                target["source"] = "Apollo API" if target["credits_used"] == target["total_leads"] else "Hybrid (Web+API)"
+
+    except Exception as e:
+        print(f"[Reports] Error querying saving summary: {e}", flush=True)
+
+    records = list(acc_map.values())
+    if unassigned["total_leads"] > 0:
+        records.append(unassigned)
+
+    for r in records:
+        if r["last_saved"]:
+            r["last_saved_str"] = r["last_saved"].strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            r["last_saved_str"] = "—"
+        del r["last_saved"]
+
+    records.sort(key=lambda x: x["total_leads"], reverse=True)
+
+    total_saved = sum(r["total_leads"] for r in records)
+    total_emails = sum(r["saved_emails"] for r in records)
+    total_credits = sum(r["credits_used"] for r in records)
+
+    return {
+        "status": "ok",
+        "total_accounts": len(accs),
+        "active_accounts": sum(1 for r in records if r["total_leads"] > 0 and r["id"] > 0),
+        "total_saved_leads": total_saved,
+        "total_emails_saved": total_emails,
+        "total_credits_used": total_credits,
+        "records": records
+    }
+
+
+@dashboard_router.get("/api/reports/verification-summary")
+def get_verification_summary():
+    """
+    Section 2: Mail Verifier & Negative Suppression Ledger.
+    Calculates deliverability health, bad/invalid counts, risky/catch-all counts,
+    and credits avoided directly via million_verifier_cache.
+    """
+    accs_file = CONFIG_DIR / "apollo_accounts.json"
+    accs = []
+    if accs_file.exists():
+        try:
+            with open(accs_file, "r", encoding="utf-8") as f:
+                accs = json.load(f)
+        except Exception:
+            pass
+
+    mv_jobs_file = CONFIG_DIR / "millionverifier_jobs.json"
+    mv_jobs_data = []
+    if mv_jobs_file.exists():
+        try:
+            with open(mv_jobs_file, "r", encoding="utf-8") as f:
+                mv_jobs_data = json.load(f)
+        except Exception:
+            pass
+
+    def _resolve_owner_to_acc(o_low: str) -> int:
+        if "@" in o_low:
+            for a in accs:
+                if a["email"].lower() == o_low:
+                    return a["id"]
+            for a in accs:
+                if a["email"].lower() in o_low or o_low in a["email"].lower():
+                    return a["id"]
+        if "jith" in o_low: return 5
+        if "madhava" in o_low and "tech" in o_low: return 14
+        if "madhava" in o_low: return 16
+        if "recruiting" in o_low: return 8
+        if "abel" in o_low: return 1
+        if "rchandran" in o_low and "biz" in o_low: return 11
+        if "rchandran" in o_low and "info" in o_low: return 15
+        if "vraghav" in o_low and "technology" in o_low: return 19
+        if "vraghavan" in o_low and "tech" in o_low: return 13
+        if "vraghavan" in o_low and "net" in o_low: return 18
+        if "vraghavan" in o_low and "technologies" in o_low: return 2
+        if "vraghavan" in o_low: return 12
+        if "vijay" in o_low and "tech" in o_low: return 4
+        if "vijay" in o_low and "technologies" in o_low: return 2
+        if "vijay" in o_low and "net" in o_low: return 18
+        if "vijay" in o_low: return 7
+        if "rahul" in o_low and "co.in" in o_low: return 6
+        if "rahul" in o_low and "nestaktechnology" in o_low: return 9
+        if "rahul" in o_low and "chandran" in o_low: return 3
+        if "rahul" in o_low: return 10
+        return 0
+
+    acc_suppression = {a["id"]: {"bad": 0, "risky": 0} for a in accs}
+    acc_suppression[0] = {"bad": 0, "risky": 0}
+
+    try:
+        from backend.api import get_connection
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT login_owner, verification_status, COUNT(*) 
+                FROM million_verifier_cache 
+                GROUP BY login_owner, verification_status;
+            """)
+            for login_owner, status, cnt in cur.fetchall():
+                aid = _resolve_owner_to_acc((login_owner or "").strip().lower())
+                if status in ("bad", "risky"):
+                    acc_suppression[aid][status] += cnt
+    except Exception as e:
+        print(f"[Reports] Error querying verification cache: {e}", flush=True)
+
+    acc_verif = []
+    total_good = 0
+    total_bad = 0
+    total_risky = 0
+    total_checked = 0
+
+    for a in accs:
+        em = a["email"].strip().lower()
+        nm = a["name"].strip()
+        prefix = em.split("@")[0].replace(".", "_").replace("-", "_")
+
+        supp = acc_suppression.get(a["id"], {"bad": 0, "risky": 0})
+        bad_cnt = supp["bad"]
+        risky_cnt = supp["risky"]
+
+        good_cnt = 0
+        checked_cnt = 0
+        for job in mv_jobs_data:
+            job_login = (job.get("login") or "").strip().lower()
+            clean_jl = job_login.replace(".", "_").replace("-", "_")
+            if em == job_login or prefix in clean_jl:
+                good_cnt += int(job.get("good_count", 0) or 0)
+                checked_cnt += int(job.get("total_rows", 0) or 0)
+
+        if checked_cnt < (good_cnt + bad_cnt + risky_cnt):
+            checked_cnt = good_cnt + bad_cnt + risky_cnt
+
+        rate = round((good_cnt / checked_cnt * 100), 1) if checked_cnt > 0 else 0.0
+        avoided_credits = bad_cnt + risky_cnt
+
+        total_good += good_cnt
+        total_bad += bad_cnt
+        total_risky += risky_cnt
+        total_checked += checked_cnt
+
+        acc_verif.append({
+            "id": a["id"],
+            "name": nm,
+            "email": a["email"],
+            "total_checked": checked_cnt,
+            "good": good_cnt,
+            "bad": bad_cnt,
+            "risky": risky_cnt,
+            "deliverability_rate": rate,
+            "credits_avoided": avoided_credits,
+            "status": "Secured" if bad_cnt + risky_cnt > 0 else "Pending Inspection"
+        })
+
+    total_suppressed = total_bad + total_risky
+
+    return {
+        "status": "ok",
+        "total_checked": total_checked,
+        "total_good": total_good,
+        "total_bad": total_bad,
+        "total_risky": total_risky,
+        "overall_deliverability": round((total_good / total_checked * 100), 1) if total_checked > 0 else 0.0,
+        "total_suppressed": total_suppressed,
+        "credits_avoided_total": total_suppressed,
+        "records": acc_verif
+    }
+
+
+@dashboard_router.get("/api/reports/crm-sync-summary")
+def get_crm_sync_summary():
+    """
+    Section 3: Freshsales CRM Sync & Master Ingestion Ledger.
+    Reconciles all batches synced to Freshsales, tracking contacts created,
+    contacts updated, TLD/GDPR cleaned out, and CRM import labels.
+    """
+    fs_ledger_file = CONFIG_DIR / "freshsales_synced_batches.json"
+    fs_ledger = {}
+    if fs_ledger_file.exists():
+        try:
+            with open(fs_ledger_file, "r", encoding="utf-8") as f:
+                fs_ledger = json.load(f)
+        except Exception:
+            pass
+
+    label_map = {
+        "vraghavan@nestack.com": "5407–5412",
+        "madhava.reddy@nestack-tech.com": "5413–5418",
+        "vraghav@nestacktechnology.com": "5419–5424",
+        "vijay.raghavan@nestacktech.com": "5425–5429",
+        "vijay.raghavan@nestack.net": "5430",
+        "madhava.reddy@nestacktech.com": "5439",
+        "rchandran@nestack.info": "5440",
+        "rahul@nestaktechnology.com": "5441–5444",
+        "rahul@nestack-tech.com": "5445–5448",
+        "vraghavan@nestacktech.com": "5449–5452",
+        "rahul@nestack.co.in": "5453–5454",
+    }
+
+    records = []
+    total_leads = 0
+    total_created = 0
+    total_updated = 0
+    total_blocked = 0
+
+    for key, v in fs_ledger.items():
+        tag = v.get("tag", "") or ""
+        leads = int(v.get("total_leads", 0) or 0)
+        created = int(v.get("created", 0) or 0)
+        updated = int(v.get("updated", 0) or 0)
+        blocked = int(v.get("tld_blocked", 0) or 0)
+        ts = v.get("synced_at") or v.get("timestamp") or "2026-09-30 18:30:00"
+
+        owner = "Freshsales Sync"
+        matched_label = "5400-Series"
+        for em, lbl in label_map.items():
+            prefix = em.split("@")[0].replace(".", "_").replace("-", "_")
+            if prefix in tag.lower().replace(".", "_").replace("-", "_") or em in tag.lower():
+                owner = em
+                matched_label = lbl
+                break
+
+        total_leads += leads
+        total_created += created
+        total_updated += updated
+        total_blocked += blocked
+
+        records.append({
+            "batch_key": key,
+            "login_owner": owner,
+            "tag": tag,
+            "import_label": matched_label,
+            "initial_leads": leads,
+            "cleaned_out": blocked,
+            "contacts_created": created,
+            "contacts_updated": updated,
+            "sync_timestamp": ts,
+            "status": "Synced & Audited",
+            "has_audit_file": bool(v.get("audit_file"))
+        })
+
+    records.sort(key=lambda x: x["sync_timestamp"], reverse=True)
+
+    return {
+        "status": "ok",
+        "total_batches_synced": len(records),
+        "total_initial_leads": total_leads,
+        "total_contacts_created": total_created,
+        "total_contacts_updated": total_updated,
+        "total_cleaned_out": total_blocked,
+        "records": records
+    }
+
