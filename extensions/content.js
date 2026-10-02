@@ -67,6 +67,31 @@
     return html;
   }
 
+  const AVATAR_GRADIENTS = [
+    "linear-gradient(135deg, #6366f1, #8b5cf6)", // Indigo - Purple
+    "linear-gradient(135deg, #0284c7, #06b6d4)", // Sky - Cyan
+    "linear-gradient(135deg, #10b981, #059669)", // Emerald - Teal
+    "linear-gradient(135deg, #f59e0b, #d97706)", // Amber - Orange
+    "linear-gradient(135deg, #ec4899, #be185d)", // Pink - Rose
+    "linear-gradient(135deg, #8b5cf6, #4f46e5)", // Violet - Indigo
+    "linear-gradient(135deg, #14b8a6, #0284c7)", // Teal - Sky
+    "linear-gradient(135deg, #3b82f6, #1d4ed8)", // Blue - Navy
+  ];
+
+  function getAvatarGradient(str) {
+    if (!str) return AVATAR_GRADIENTS[0];
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) hash = (hash << 5) - hash + str.charCodeAt(i);
+    return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+  }
+
+  function getInitials(name) {
+    if (!name) return "AP";
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return name.slice(0, 2).toUpperCase();
+  }
+
   const _defaultAcc = APOLLO_19_LOGINS[0];
   const _defaultCycle = computeAccountActiveCycle(_defaultAcc.renewalDay);
   const _defaultBatch = `${_defaultAcc.email}(${_defaultCycle})`;
@@ -210,59 +235,471 @@
       margin-bottom: 4px;
     }
 
+    /* ============================================================
+       PRO MAX OBSIDIAN HUD CONTROLS
+       ============================================================ */
     #contact-checker-controls {
       position: fixed;
       right: 20px;
-      bottom: 70px;
+      bottom: 60px;
       z-index: 2147483647;
       display: flex;
       align-items: center;
       gap: 10px;
-      background: #111827;
-      color: white;
-      padding: 10px 12px;
-      border-radius: 8px;
-      font-family: Arial, sans-serif;
+      background: rgba(15, 23, 42, 0.94);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      color: #f8fafc;
+      padding: 7px 14px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
       font-size: 12px;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.25);
+      box-shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.06), 0 0 24px rgba(56, 189, 248, 0.08);
+      user-select: none;
     }
 
+    .contact-checker-live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 6px;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      color: #34d399;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .contact-checker-live-badge::before {
+      content: "";
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+      animation: cc-pulse-dot 2s infinite ease-in-out;
+    }
+
+    @keyframes cc-pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.85); }
+    }
+
+    /* CUSTOM CYCLE PICKER PRO MAX */
+    .cc-picker-wrap {
+      position: relative;
+      display: inline-block;
+    }
+
+    .cc-picker-trigger {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 4px 10px;
+      background: rgba(30, 41, 59, 0.85);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      border-radius: 8px;
+      cursor: pointer;
+      color: #f1f5f9;
+      font-family: inherit;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .cc-picker-trigger:hover {
+      background: rgba(51, 65, 85, 0.95);
+      border-color: #38bdf8;
+      box-shadow: 0 0 14px rgba(56, 189, 248, 0.25);
+    }
+
+    .cc-picker-avatar {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 800;
+      color: white;
+      text-transform: uppercase;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+      flex-shrink: 0;
+    }
+
+    .cc-picker-meta {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      line-height: 1.15;
+    }
+
+    .cc-picker-name {
+      font-size: 11px;
+      font-weight: 700;
+      color: #f8fafc;
+      white-space: nowrap;
+      max-width: 145px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cc-picker-cycle-badge {
+      font-size: 9.5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #38bdf8;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .cc-picker-chevron {
+      font-size: 10px;
+      color: #94a3b8;
+      transition: transform 0.2s ease;
+      margin-left: 2px;
+    }
+
+    .cc-picker-wrap.open .cc-picker-chevron {
+      transform: rotate(180deg);
+      color: #38bdf8;
+    }
+
+    /* FLOATING POPOVER */
+    .cc-picker-popover {
+      position: absolute;
+      bottom: calc(100% + 12px);
+      left: 0;
+      width: 390px;
+      max-width: 92vw;
+      background: rgba(15, 23, 42, 0.98);
+      backdrop-filter: blur(28px) saturate(180%);
+      -webkit-backdrop-filter: blur(28px) saturate(180%);
+      border: 1px solid rgba(56, 189, 248, 0.28);
+      border-radius: 14px;
+      box-shadow: 0 24px 50px -10px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0 35px rgba(56, 189, 248, 0.12);
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+      z-index: 2147483647;
+      animation: cc-popover-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .cc-picker-wrap.open .cc-picker-popover {
+      display: flex;
+    }
+
+    @keyframes cc-popover-in {
+      from { opacity: 0; transform: translateY(8px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .cc-popover-header {
+      padding: 11px 12px 9px;
+      background: rgba(30, 41, 59, 0.65);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .cc-popover-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .cc-popover-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .cc-popover-badge {
+      font-size: 10px;
+      font-weight: 700;
+      color: #38bdf8;
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.28);
+      border-radius: 12px;
+      padding: 2px 7px;
+    }
+
+    .cc-search-input {
+      width: 100%;
+      box-sizing: border-box;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      padding: 7px 10px;
+      color: #f1f5f9;
+      font-size: 11.5px;
+      font-family: inherit;
+      outline: none;
+      transition: all 0.15s ease;
+    }
+
+    .cc-search-input:focus {
+      border-color: #38bdf8;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
+      background: rgba(15, 23, 42, 1);
+    }
+
+    .cc-picker-list {
+      max-height: 290px;
+      overflow-y: auto;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .cc-picker-list::-webkit-scrollbar {
+      width: 5px;
+    }
+    .cc-picker-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .cc-picker-list::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
+    }
+    .cc-picker-list::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.28);
+    }
+
+    .cc-account-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .cc-account-item:hover {
+      background: rgba(56, 189, 248, 0.08);
+      border-color: rgba(56, 189, 248, 0.25);
+      transform: translateX(2px);
+    }
+
+    .cc-account-item.active {
+      background: rgba(16, 185, 129, 0.12);
+      border-color: rgba(16, 185, 129, 0.4);
+    }
+
+    .cc-account-item-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 800;
+      color: white;
+      text-transform: uppercase;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      flex-shrink: 0;
+    }
+
+    .cc-account-item-body {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .cc-account-item-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    .cc-account-item-name {
+      font-size: 12px;
+      font-weight: 700;
+      color: #f8fafc;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .cc-account-item-renewal {
+      font-size: 10px;
+      color: #94a3b8;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 1px 5px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+
+    .cc-account-item-email {
+      font-size: 10.5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #94a3b8;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .cc-account-item-cycle {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #38bdf8;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+
+    .cc-account-item-check {
+      color: #10b981;
+      font-size: 14px;
+      font-weight: 800;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .cc-account-item.active .cc-account-item-check {
+      opacity: 1;
+    }
+
+    .cc-popover-footer {
+      padding: 9px 12px;
+      background: rgba(15, 23, 42, 0.85);
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .cc-custom-batch-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .cc-custom-batch-input {
+      flex: 1;
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 6px;
+      padding: 5px 8px;
+      color: #38bdf8;
+      font-size: 11px;
+      font-weight: 600;
+      outline: none;
+    }
+
+    .cc-custom-batch-input:focus {
+      border-color: #38bdf8;
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+    }
+
+    .cc-custom-batch-btn {
+      background: #0284c7;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .cc-custom-batch-btn:hover {
+      background: #0369a1;
+    }
+
+    /* ACTION BUTTON ENHANCEMENTS */
+    #contact-checker-rescan-btn,
     #contact-checker-export-required,
     #contact-checker-dedupe-btn,
     #contact-checker-clear-required,
-    #contact-checker-activity-toggle,
-    #contact-checker-clear-activity {
-      border: 0;
-      border-radius: 6px;
-      background: #f97316;
-      color: white;
-      padding: 7px 10px;
-      font-size: 12px;
-      font-weight: 700;
-      cursor: pointer;
+    #contact-checker-activity-toggle {
+      border: 1px solid transparent !important;
+      border-radius: 8px !important;
+      padding: 6px 11px !important;
+      font-size: 11.5px !important;
+      font-weight: 700 !important;
+      letter-spacing: 0.01em !important;
+      cursor: pointer !important;
+      transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1) !important;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.25) !important;
+    }
+
+    #contact-checker-rescan-btn {
+      background: linear-gradient(135deg, #0284c7, #0369a1) !important;
+      border-color: rgba(56, 189, 248, 0.3) !important;
+      color: white !important;
+    }
+    #contact-checker-rescan-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(2, 132, 199, 0.45) !important;
+    }
+
+    #contact-checker-export-required {
+      background: linear-gradient(135deg, #10b981, #059669) !important;
+      border-color: rgba(52, 211, 153, 0.3) !important;
+      color: white !important;
+    }
+    #contact-checker-export-required:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(16, 185, 129, 0.45) !important;
     }
 
     #contact-checker-dedupe-btn {
-      background: #eab308 !important;
-      color: #111827 !important;
+      background: linear-gradient(135deg, #f59e0b, #d97706) !important;
+      border-color: rgba(251, 191, 36, 0.3) !important;
+      color: #0f172a !important;
+    }
+    #contact-checker-dedupe-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(245, 158, 11, 0.45) !important;
     }
 
     #contact-checker-clear-required {
-      background: #6b7280;
+      background: rgba(51, 65, 85, 0.8) !important;
+      border-color: rgba(148, 163, 184, 0.2) !important;
+      color: #cbd5e1 !important;
+    }
+    #contact-checker-clear-required:hover {
+      background: rgba(239, 68, 68, 0.85) !important;
+      border-color: rgba(239, 68, 68, 0.4) !important;
+      color: white !important;
+      transform: translateY(-1px);
+    }
+
+    #contact-checker-activity-toggle {
+      background: linear-gradient(135deg, #4f46e5, #4338ca) !important;
+      border-color: rgba(129, 140, 248, 0.3) !important;
+      color: white !important;
+    }
+    #contact-checker-activity-toggle:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(79, 70, 229, 0.45) !important;
     }
 
     #contact-checker-export-required:disabled,
     #contact-checker-dedupe-btn:disabled,
     #contact-checker-clear-required:disabled,
-    #contact-checker-activity-toggle:disabled,
-    #contact-checker-clear-activity:disabled {
-      cursor: default;
-      opacity: 0.5;
-    }
-
-
-    #contact-checker-activity-toggle {
-      background: #2563eb !important;
+    #contact-checker-activity-toggle:disabled {
+      cursor: default !important;
+      opacity: 0.45 !important;
+      transform: none !important;
+      box-shadow: none !important;
     }
 
     #contact-checker-clear-activity {
@@ -2474,8 +2911,8 @@
       "contact-checker-controls"
     );
 
-    // If an older controls dock exists in DOM without the batch select dropdown or dedupe button, refresh it
-    if (controls && (!controls.querySelector("#contact-checker-batch-select") || !controls.querySelector("#contact-checker-dedupe-btn"))) {
+    // If an older controls dock exists in DOM without the new Pro Max picker wrap or dedupe button, refresh it
+    if (controls && (!controls.querySelector("#cc-cycle-picker-wrap") || !controls.querySelector("#contact-checker-dedupe-btn"))) {
       controls.remove();
       controls = null;
     }
@@ -2484,30 +2921,43 @@
       controls = document.createElement("div");
       controls.id = "contact-checker-controls";
       controls.innerHTML = `
-        <span id="contact-checker-live-status" class="contact-checker-live-badge">✓ Ready</span>
-        <div class="contact-checker-batch-pill" style="display:inline-flex;align-items:center;background:#1e293b;border:1px solid #334155;border-radius:6px;padding:2px 8px;gap:5px;">
-          <span style="color:#94a3b8;font-size:11px;font-weight:700;">🏷️ Login & Cycle:</span>
-          <select
-            id="contact-checker-batch-select"
-            title="Select Apollo Account Login & Active Billing Cycle"
-            style="background:#0f172a;border:1px solid #38bdf8;color:#38bdf8;font-weight:700;font-size:11px;padding:2px 4px;border-radius:4px;outline:none;cursor:pointer;max-width:270px;"
-          >
+        <span id="contact-checker-live-status" class="contact-checker-live-badge">Ready</span>
+        <div id="cc-cycle-picker-wrap" class="cc-picker-wrap">
+          <div id="cc-cycle-trigger" class="cc-picker-trigger" title="Select Apollo Account Login & Active Billing Cycle">
+            <div id="cc-trigger-avatar" class="cc-picker-avatar">VR</div>
+            <div class="cc-picker-meta">
+              <span id="cc-trigger-name" class="cc-picker-name">Loading...</span>
+              <span id="cc-trigger-cycle" class="cc-picker-cycle-badge">📅 ...</span>
+            </div>
+            <span class="cc-picker-chevron">▼</span>
+          </div>
+          <div id="cc-cycle-popover" class="cc-picker-popover">
+            <div class="cc-popover-header">
+              <div class="cc-popover-title-row">
+                <span class="cc-popover-title">Apollo Accounts & Active Cycles</span>
+                <span class="cc-popover-badge">19 Logins</span>
+              </div>
+              <input id="cc-search-input" class="cc-search-input" type="text" placeholder="🔍 Search by name, email, or cycle..." autocomplete="off" />
+            </div>
+            <div id="cc-cycle-list" class="cc-picker-list"></div>
+            <div class="cc-popover-footer">
+              <div style="font-size:10px;font-weight:700;color:#94a3b8;margin-bottom:3px;letter-spacing:0.03em;">OR ENTER CUSTOM BATCH TAG:</div>
+              <div class="cc-custom-batch-row">
+                <input id="cc-custom-input" class="cc-custom-batch-input" type="text" placeholder="e.g. sample_1, q4_leads" />
+                <button id="cc-custom-apply-btn" class="cc-custom-batch-btn" type="button">Apply</button>
+              </div>
+            </div>
+          </div>
+          <!-- Hidden inputs for backward compatibility with tests & legacy readers -->
+          <select id="contact-checker-batch-select" style="display:none !important;" tabindex="-1">
             ${renderLoginCycleOptions(state.batchName)}
           </select>
-          <input
-            id="contact-checker-batch-input"
-            type="text"
-            value="${state.batchName || 'batch_1'}"
-            placeholder="Custom Batch"
-            title="Custom batch name tag for Database saves"
-            style="background:transparent;border:none;color:#38bdf8;font-weight:700;font-size:12px;width:105px;outline:none;display:none;"
-          />
+          <input id="contact-checker-batch-input" type="text" value="${state.batchName || 'batch_1'}" style="display:none !important;" tabindex="-1" />
         </div>
         <span id="contact-checker-required-count"></span>
         <button
           id="contact-checker-rescan-btn"
           type="button"
-          style="background: #0284c7;"
         >⟳ Rescan Page</button>
         <button
           id="contact-checker-export-required"
@@ -2516,7 +2966,6 @@
         <button
           id="contact-checker-dedupe-btn"
           type="button"
-          style="background: #eab308; color: #111827; font-weight: 700;"
           title="Scan and delete all duplicate contacts from the same company in local storage"
         >⚡ Deduplicate List</button>
         <button
@@ -2529,55 +2978,212 @@
         >Activity</button>
       `;
 
+      const pickerWrap = controls.querySelector("#cc-cycle-picker-wrap");
+      const pickerTrigger = controls.querySelector("#cc-cycle-trigger");
+      const pickerList = controls.querySelector("#cc-cycle-list");
+      const searchInput = controls.querySelector("#cc-search-input");
+      const customInput = controls.querySelector("#cc-custom-input");
+      const customApplyBtn = controls.querySelector("#cc-custom-apply-btn");
       const batchSelect = controls.querySelector("#contact-checker-batch-select");
       const batchInput = controls.querySelector("#contact-checker-batch-input");
+
+      function updateTriggerDisplay() {
+        const currentBatch = state.batchName || _defaultBatch;
+        const triggerAvatar = controls.querySelector("#cc-trigger-avatar");
+        const triggerName = controls.querySelector("#cc-trigger-name");
+        const triggerCycle = controls.querySelector("#cc-trigger-cycle");
+        if (!triggerAvatar || !triggerName || !triggerCycle) return;
+
+        let matched = null;
+        let matchedCycle = null;
+        for (const acc of APOLLO_19_LOGINS) {
+          const cycle = computeAccountActiveCycle(acc.renewalDay);
+          if (`${acc.email}(${cycle})` === currentBatch) {
+            matched = acc;
+            matchedCycle = cycle;
+            break;
+          }
+        }
+
+        if (matched) {
+          triggerAvatar.textContent = getInitials(matched.name);
+          triggerAvatar.style.background = getAvatarGradient(matched.name);
+          triggerName.textContent = matched.name;
+          triggerCycle.textContent = `📅 ${matchedCycle}`;
+        } else {
+          triggerAvatar.textContent = "🏷️";
+          triggerAvatar.style.background = "linear-gradient(135deg, #475569, #334155)";
+          triggerName.textContent = currentBatch.length > 18 ? currentBatch.slice(0, 18) + "…" : currentBatch;
+          triggerCycle.textContent = state.cycleTag ? `📅 ${state.cycleTag}` : "Custom Tag";
+        }
+      }
+
+      function renderCards(filterText = "") {
+        if (!pickerList) return;
+        pickerList.innerHTML = "";
+        const q = (filterText || "").toLowerCase().trim();
+        const currentBatch = state.batchName || _defaultBatch;
+
+        let visibleCount = 0;
+        for (const acc of APOLLO_19_LOGINS) {
+          const cycle = computeAccountActiveCycle(acc.renewalDay);
+          const val = `${acc.email}(${cycle})`;
+          const initials = getInitials(acc.name);
+          const grad = getAvatarGradient(acc.name);
+          const isSelected = currentBatch === val;
+
+          if (q) {
+            const match = acc.name.toLowerCase().includes(q) ||
+                          acc.email.toLowerCase().includes(q) ||
+                          cycle.toLowerCase().includes(q) ||
+                          String(acc.renewalDay).includes(q);
+            if (!match) continue;
+          }
+
+          visibleCount++;
+          const card = document.createElement("div");
+          card.className = `cc-account-item ${isSelected ? "active" : ""}`;
+          card.setAttribute("data-batch-val", val);
+          card.innerHTML = `
+            <div class="cc-account-item-avatar" style="background:${grad}">${initials}</div>
+            <div class="cc-account-item-body">
+              <div class="cc-account-item-header">
+                <span class="cc-account-item-name">${acc.name}</span>
+                <span class="cc-account-item-renewal">Day ${acc.renewalDay}</span>
+              </div>
+              <span class="cc-account-item-email">${acc.email.toLowerCase()}</span>
+              <span class="cc-account-item-cycle">📅 ${cycle}</span>
+            </div>
+            <span class="cc-account-item-check">✓</span>
+          `;
+          card.addEventListener("click", () => {
+            selectAccount(acc.email, acc.name, cycle);
+          });
+          pickerList.appendChild(card);
+        }
+
+        if (visibleCount === 0) {
+          const empty = document.createElement("div");
+          empty.style.cssText = "padding: 16px; text-align: center; color: #94a3b8; font-size: 11px;";
+          empty.textContent = `No accounts matching "${filterText}"`;
+          pickerList.appendChild(empty);
+        }
+      }
+
+      function selectAccount(email, name, cycle) {
+        const val = `${email}(${cycle})`;
+        state.batchName = val;
+        state.accountEmail = email;
+        state.cycleTag = cycle;
+
+        if (batchSelect) batchSelect.value = val;
+        if (batchInput) batchInput.value = val;
+
+        if (chrome?.storage?.local) {
+          chrome.storage.local.set({
+            [BATCH_NAME_STORAGE_KEY]: val,
+            contactCheckerAccountEmail: email,
+            contactCheckerCycleTag: cycle
+          });
+        }
+        state.syncedLeadKeys.clear();
+        saveRequiredContactsNow();
+        showStatus(`✓ Login Cycle: '${val}' — syncing to MySQL`, 3500);
+        addActivity("CYCLE_SELECTED", `Login cycle set to '${val}'. Leads will be tagged exclusively with this cycle in database.`, "info", { batch: val, cycle });
+
+        updateTriggerDisplay();
+        renderCards(searchInput?.value || "");
+        pickerWrap.classList.remove("open");
+      }
+
+      function selectCustomBatch(rawVal) {
+        const val = cleanText(rawVal).replace(/[^a-zA-Z0-9_(). -]/g, "_") || "batch_1";
+        state.batchName = val;
+        if (batchSelect) batchSelect.value = "__CUSTOM__";
+        if (batchInput) batchInput.value = val;
+
+        const m = val.match(/^([^()]+)\(([^)]+)\)$/);
+        if (m) {
+          state.accountEmail = m[1].trim();
+          state.cycleTag = m[2].trim();
+        }
+
+        if (chrome?.storage?.local) {
+          chrome.storage.local.set({
+            [BATCH_NAME_STORAGE_KEY]: val,
+            contactCheckerAccountEmail: state.accountEmail,
+            contactCheckerCycleTag: state.cycleTag
+          });
+        }
+        state.syncedLeadKeys.clear();
+        saveRequiredContactsNow();
+        showStatus(`✓ Batch set to '${val}' — syncing leads to MySQL`, 3500);
+        addActivity("BATCH_RENAMED", `Batch name updated to '${val}'.`, "info", { batch: val });
+
+        updateTriggerDisplay();
+        renderCards(searchInput?.value || "");
+        pickerWrap.classList.remove("open");
+      }
+
+      pickerTrigger?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const isOpen = pickerWrap.classList.toggle("open");
+        if (isOpen) {
+          if (searchInput) {
+            searchInput.value = "";
+            renderCards("");
+            setTimeout(() => searchInput.focus(), 60);
+          }
+        }
+      });
+
+      searchInput?.addEventListener("input", (e) => {
+        renderCards(e.target.value);
+      });
+
+      const handleCustomSubmit = () => {
+        if (customInput && customInput.value.trim()) {
+          selectCustomBatch(customInput.value.trim());
+          customInput.value = "";
+        }
+      };
+
+      customApplyBtn?.addEventListener("click", handleCustomSubmit);
+      customInput?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          handleCustomSubmit();
+        }
+      });
+
+      if (typeof window !== "undefined" && window.addEventListener) {
+        window.addEventListener("click", (e) => {
+          if (pickerWrap && pickerWrap.classList?.contains?.("open") && !pickerWrap.contains?.(e.target)) {
+            pickerWrap.classList.remove("open");
+          }
+        });
+      }
+
+      updateTriggerDisplay();
+      renderCards("");
+
       if (batchSelect && batchInput) {
         batchSelect.addEventListener("change", (e) => {
           const val = e.target.value;
           if (val === "__CUSTOM__") {
-            batchInput.style.display = "inline-block";
-            batchInput.focus();
+            selectCustomBatch(batchInput.value || "batch_1");
             return;
           }
-          batchInput.style.display = "none";
-          state.batchName = val;
-          batchInput.value = val;
-
           const m = val.match(/^([^()]+)\(([^)]+)\)$/);
           if (m) {
-            state.accountEmail = m[1].trim();
-            state.cycleTag = m[2].trim();
+            selectAccount(m[1].trim(), m[1].trim(), m[2].trim());
+          } else {
+            selectCustomBatch(val);
           }
-
-          if (chrome?.storage?.local) {
-            chrome.storage.local.set({
-              [BATCH_NAME_STORAGE_KEY]: val,
-              contactCheckerAccountEmail: state.accountEmail,
-              contactCheckerCycleTag: state.cycleTag
-            });
-          }
-          state.syncedLeadKeys.clear();
-          saveRequiredContactsNow();
-          showStatus(`✓ Login Cycle: '${val}' — syncing to MySQL`, 3500);
-          addActivity("CYCLE_SELECTED", `Login cycle set to '${val}'. Leads will be tagged exclusively with this cycle in database.`, "info", { batch: val, cycle: state.cycleTag });
         });
 
         batchInput.addEventListener("change", (e) => {
-          const val = cleanText(e.target.value).replace(/[^a-zA-Z0-9_(). -]/g, "_") || "batch_1";
-          state.batchName = val;
-          batchInput.value = val;
-          const m = val.match(/^([^()]+)\(([^)]+)\)$/);
-          if (m) {
-            state.accountEmail = m[1].trim();
-            state.cycleTag = m[2].trim();
-          }
-          if (chrome?.storage?.local) {
-            chrome.storage.local.set({ [BATCH_NAME_STORAGE_KEY]: val });
-          }
-          state.syncedLeadKeys.clear();
-          saveRequiredContactsNow();
-          showStatus(`✓ Batch set to '${val}' — syncing leads to MySQL 'apollo_saved_leads'`, 3500);
-          addActivity("BATCH_RENAMED", `Batch name updated to '${val}'.`, "info", { batch: val });
+          selectCustomBatch(e.target.value);
         });
       }
 
@@ -2636,24 +3242,46 @@
       renderActivityPanel();
     }
 
+    const currentBatch = state.batchName || _defaultBatch;
+    const triggerAvatar = controls.querySelector("#cc-trigger-avatar");
+    const triggerName = controls.querySelector("#cc-trigger-name");
+    const triggerCycle = controls.querySelector("#cc-trigger-cycle");
+    if (triggerAvatar && triggerName && triggerCycle) {
+      let matched = null;
+      let matchedCycle = null;
+      for (const acc of APOLLO_19_LOGINS) {
+        const cycle = computeAccountActiveCycle(acc.renewalDay);
+        if (`${acc.email}(${cycle})` === currentBatch) {
+          matched = acc;
+          matchedCycle = cycle;
+          break;
+        }
+      }
+      if (matched) {
+        triggerAvatar.textContent = getInitials(matched.name);
+        triggerAvatar.style.background = getAvatarGradient(matched.name);
+        triggerName.textContent = matched.name;
+        triggerCycle.textContent = `📅 ${matchedCycle}`;
+      } else {
+        triggerAvatar.textContent = "🏷️";
+        triggerAvatar.style.background = "linear-gradient(135deg, #475569, #334155)";
+        triggerName.textContent = currentBatch.length > 18 ? currentBatch.slice(0, 18) + "…" : currentBatch;
+        triggerCycle.textContent = state.cycleTag ? `📅 ${state.cycleTag}` : "Custom Tag";
+      }
+    }
+
     const batchSelectExisting = controls.querySelector("#contact-checker-batch-select");
     const batchInputExisting = controls.querySelector("#contact-checker-batch-input");
-    if (batchSelectExisting && document.activeElement !== batchSelectExisting && document.activeElement !== batchInputExisting) {
-      const currentVal = state.batchName || _defaultBatch;
-      const matchingOpt = Array.from(batchSelectExisting.options).find(o => o.value === currentVal);
+    if (batchSelectExisting) {
+      const matchingOpt = Array.from(batchSelectExisting.options).find(o => o.value === currentBatch);
       if (matchingOpt) {
-        batchSelectExisting.value = currentVal;
-        if (batchInputExisting) batchInputExisting.style.display = "none";
-      } else if (currentVal && currentVal !== "batch_1") {
+        batchSelectExisting.value = currentBatch;
+      } else if (currentBatch && currentBatch !== "batch_1") {
         batchSelectExisting.value = "__CUSTOM__";
-        if (batchInputExisting) {
-          batchInputExisting.style.display = "inline-block";
-          batchInputExisting.value = currentVal;
-        }
       } else {
         batchSelectExisting.value = _defaultBatch;
-        if (batchInputExisting) batchInputExisting.style.display = "none";
       }
+      if (batchInputExisting) batchInputExisting.value = currentBatch;
     }
 
     const visibleRequiredCount =
