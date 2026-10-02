@@ -14,6 +14,59 @@
   const EXTENSION_ENABLED_STORAGE_KEY =
     "contactCheckerExtensionEnabled";
 
+  const APOLLO_19_LOGINS = [
+    { name: "Abel Abraham", email: "abel.abraham@nestacktechnologies.com", renewalDay: 10 },
+    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACKTECHNOLOGIES.COM", renewalDay: 22 },
+    { name: "Rahul Chandran", email: "RAHUL.CHANDRAN@NESTACK-TECH.COM", renewalDay: 3 },
+    { name: "Vijay", email: "VIJAY@NESTACKTECH.COM", renewalDay: 8 },
+    { name: "Jith", email: "JITH@NESTACK.INFO", renewalDay: 10 },
+    { name: "Rahul", email: "RAHUL@NESTACK.CO.IN", renewalDay: 13 },
+    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACK.COM", renewalDay: 14 },
+    { name: "Recruiting", email: "RECRUITING@NESTACK.COM", renewalDay: 16 },
+    { name: "Rahul", email: "RAHUL@NESTAKTECHNOLOGY.COM", renewalDay: 18 },
+    { name: "Rahul", email: "RAHUL@NESTACK-TECH.COM", renewalDay: 30 },
+    { name: "R Chandran", email: "RCHANDRAN@NESTACK.BIZ", renewalDay: 19 },
+    { name: "V Raghavan", email: "VRAGHAVAN@NESTACK.COM", renewalDay: 20 },
+    { name: "V Raghavan", email: "VRAGHAVAN@NESTACKTECH.COM", renewalDay: 20 },
+    { name: "Madhava Reddy", email: "MADHAVA.REDDY@NESTACK-TECH.COM", renewalDay: 20 },
+    { name: "R Chandran", email: "RCHANDRAN@NESTACK.INFO", renewalDay: 21 },
+    { name: "Madhava Reddy", email: "MADHAVA.REDDY@NESTACKTECH.COM", renewalDay: 21 },
+    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACKTECH.COM", renewalDay: 24 },
+    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACK.NET", renewalDay: 26 },
+    { name: "V Raghav", email: "VRAGHAV@NESTACKTECHNOLOGY.COM", renewalDay: 27 },
+  ];
+
+  function computeAccountActiveCycle(renewalDay, targetDate = new Date()) {
+    const d = new Date(targetDate);
+    let start, end;
+    if (d.getUTCDate() >= renewalDay) {
+      start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), renewalDay));
+      end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, renewalDay));
+    } else {
+      end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), renewalDay));
+      start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, renewalDay));
+    }
+    const sMonth = start.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
+    const eMonth = end.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
+    const sDay = String(start.getUTCDate()).padStart(2, "0");
+    const eDay = String(end.getUTCDate()).padStart(2, "0");
+    return `${sMonth} ${sDay} - ${eMonth} ${eDay}`;
+  }
+
+  function renderLoginCycleOptions(currentBatch) {
+    let html = `<option value="" disabled ${!currentBatch ? "selected" : ""}>-- Select Login Cycle --</option>`;
+    for (const acc of APOLLO_19_LOGINS) {
+      const cycle = computeAccountActiveCycle(acc.renewalDay);
+      const val = `${acc.email}(${cycle})`;
+      const isSel = currentBatch === val;
+      html += `<option value="${val}" ${isSel ? "selected" : ""}>${acc.name} (${cycle})</option>`;
+    }
+    const isKnown = APOLLO_19_LOGINS.some(a => `${a.email}(${computeAccountActiveCycle(a.renewalDay)})` === currentBatch);
+    const isCustom = currentBatch && !isKnown;
+    html += `<option value="__CUSTOM__" ${isCustom ? "selected" : ""}>➕ Custom Batch Tag...</option>`;
+    return html;
+  }
+
   // ============================================================
   // TOGGLE OFF
   // ============================================================
@@ -31,6 +84,8 @@
     active: true,
     batchNumber: 1,
     batchName: "batch_1",
+    accountEmail: "",
+    cycleTag: "",
     titleGuardrailEnabled: true,
     indianGuardrailEnabled: true,
     hasUnsavedRequiredContacts: false,
@@ -1556,6 +1611,11 @@
       result => {
         if (result?.[BATCH_NAME_STORAGE_KEY]) {
           state.batchName = String(result[BATCH_NAME_STORAGE_KEY]).trim();
+          const m = state.batchName.match(/^([^()]+)\(([^)]+)\)$/);
+          if (m) {
+            state.accountEmail = m[1].trim();
+            state.cycleTag = m[2].trim();
+          }
         } else if (result?.[BATCH_NUMBER_STORAGE_KEY]) {
           state.batchNumber = Number(result[BATCH_NUMBER_STORAGE_KEY]) || 1;
           state.batchName = `batch_${state.batchNumber}`;
@@ -1645,7 +1705,9 @@
         type: "SYNC_SAVED_LEADS",
         batch: activeBatch,
         contacts: contactsToSync,
-        replace_all: false
+        replace_all: false,
+        cycle: state.cycleTag || "",
+        account_used: state.accountEmail || ""
       }, (res) => {
         const lastErr = chrome.runtime?.lastError;
         if (!lastErr && res?.success) {
@@ -2410,14 +2472,21 @@
       controls.innerHTML = `
         <span id="contact-checker-live-status" class="contact-checker-live-badge">✓ Ready</span>
         <div class="contact-checker-batch-pill" style="display:inline-flex;align-items:center;background:#1e293b;border:1px solid #334155;border-radius:6px;padding:2px 8px;gap:5px;">
-          <span style="color:#94a3b8;font-size:11px;font-weight:700;">🏷️ Batch:</span>
+          <span style="color:#94a3b8;font-size:11px;font-weight:700;">🏷️ Login & Cycle:</span>
+          <select
+            id="contact-checker-batch-select"
+            title="Select Apollo Account Login & Active Billing Cycle"
+            style="background:#0f172a;border:1px solid #38bdf8;color:#38bdf8;font-weight:700;font-size:11px;padding:2px 4px;border-radius:4px;outline:none;cursor:pointer;max-width:270px;"
+          >
+            ${renderLoginCycleOptions(state.batchName)}
+          </select>
           <input
             id="contact-checker-batch-input"
             type="text"
             value="${state.batchName || 'batch_1'}"
-            placeholder="Batch Tag"
-            title="Custom batch name tag for Database saves and CSV downloads"
-            style="background:transparent;border:none;color:#38bdf8;font-weight:700;font-size:12px;width:110px;outline:none;"
+            placeholder="Custom Batch"
+            title="Custom batch name tag for Database saves"
+            style="background:transparent;border:none;color:#38bdf8;font-weight:700;font-size:12px;width:105px;outline:none;display:none;"
           />
         </div>
         <span id="contact-checker-required-count"></span>
@@ -2446,19 +2515,55 @@
         >Activity</button>
       `;
 
+      const batchSelect = controls.querySelector("#contact-checker-batch-select");
       const batchInput = controls.querySelector("#contact-checker-batch-input");
-      if (batchInput) {
-        batchInput.addEventListener("change", (e) => {
-          const val = cleanText(e.target.value).replace(/[^a-zA-Z0-9_-]/g, "_") || "batch_1";
+      if (batchSelect && batchInput) {
+        batchSelect.addEventListener("change", (e) => {
+          const val = e.target.value;
+          if (val === "__CUSTOM__") {
+            batchInput.style.display = "inline-block";
+            batchInput.focus();
+            return;
+          }
+          batchInput.style.display = "none";
           state.batchName = val;
           batchInput.value = val;
+
+          const m = val.match(/^([^()]+)\(([^)]+)\)$/);
+          if (m) {
+            state.accountEmail = m[1].trim();
+            state.cycleTag = m[2].trim();
+          }
+
+          if (chrome?.storage?.local) {
+            chrome.storage.local.set({
+              [BATCH_NAME_STORAGE_KEY]: val,
+              contactCheckerAccountEmail: state.accountEmail,
+              contactCheckerCycleTag: state.cycleTag
+            });
+          }
+          state.syncedLeadKeys.clear();
+          saveRequiredContactsNow();
+          showStatus(`✓ Login Cycle: '${val}' — syncing to MySQL`, 3500);
+          addActivity("CYCLE_SELECTED", `Login cycle set to '${val}'. Leads will be tagged exclusively with this cycle in database.`, "info", { batch: val, cycle: state.cycleTag });
+        });
+
+        batchInput.addEventListener("change", (e) => {
+          const val = cleanText(e.target.value).replace(/[^a-zA-Z0-9_(). -]/g, "_") || "batch_1";
+          state.batchName = val;
+          batchInput.value = val;
+          const m = val.match(/^([^()]+)\(([^)]+)\)$/);
+          if (m) {
+            state.accountEmail = m[1].trim();
+            state.cycleTag = m[2].trim();
+          }
           if (chrome?.storage?.local) {
             chrome.storage.local.set({ [BATCH_NAME_STORAGE_KEY]: val });
           }
           state.syncedLeadKeys.clear();
           saveRequiredContactsNow();
           showStatus(`✓ Batch set to '${val}' — syncing leads to MySQL 'apollo_saved_leads'`, 3500);
-          addActivity("BATCH_RENAMED", `Batch name updated to '${val}'. Stored leads synced under this batch tag in database.`, "info", { batch: val });
+          addActivity("BATCH_RENAMED", `Batch name updated to '${val}'.`, "info", { batch: val });
         });
       }
 
@@ -2517,9 +2622,22 @@
       renderActivityPanel();
     }
 
+    const batchSelectExisting = controls.querySelector("#contact-checker-batch-select");
     const batchInputExisting = controls.querySelector("#contact-checker-batch-input");
-    if (batchInputExisting && document.activeElement !== batchInputExisting && batchInputExisting.value !== (state.batchName || "batch_1")) {
-      batchInputExisting.value = state.batchName || "batch_1";
+    if (batchSelectExisting && document.activeElement !== batchSelectExisting && document.activeElement !== batchInputExisting) {
+      if (batchSelectExisting.value !== (state.batchName || "")) {
+        const matchingOpt = Array.from(batchSelectExisting.options).find(o => o.value === state.batchName);
+        if (matchingOpt) {
+          batchSelectExisting.value = state.batchName;
+          if (batchInputExisting) batchInputExisting.style.display = "none";
+        } else if (state.batchName) {
+          batchSelectExisting.value = "__CUSTOM__";
+          if (batchInputExisting) {
+            batchInputExisting.style.display = "inline-block";
+            batchInputExisting.value = state.batchName;
+          }
+        }
+      }
     }
 
     const visibleRequiredCount =

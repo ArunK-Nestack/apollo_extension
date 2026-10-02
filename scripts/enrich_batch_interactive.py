@@ -291,6 +291,7 @@ def update_leads_in_db(
     dry_run: bool = False,
     conn=None,
     table_name: str = "apollo_saved_leads",
+    cycle: str = "",
 ):
     """Update enriched columns directly in `apollo_saved_leads` or `enrich_saved_leads` under the same batch."""
     if dry_run or not results:
@@ -312,6 +313,7 @@ def update_leads_in_db(
             `hq_address` = %s,
             `company_linkedin_url` = %s,
             `account_used` = %s,
+            `cycle` = IF(%s != '', %s, `cycle`),
             `credits_charged` = %s,
             `raw_enrichment_data` = %s,
             `enriched_at` = NOW()
@@ -335,6 +337,8 @@ def update_leads_in_db(
             r.get("hq_address") or "",
             r.get("company_linkedin_url") or "",
             account_name,
+            cycle,
+            cycle,
             r.get("credits_charged", 0),
             json.dumps(r.get("raw_match") or {}),
             r["db_id"],
@@ -591,9 +595,12 @@ def run_interactive_enricher():
 
     login_email = (selected_account.get("email") or "").strip()
     session_id = str(uuid.uuid4())
+    from scripts.apollo_saved_search_inspector import get_account_cycle_window
+    _, _, active_cycle = get_account_cycle_window(login_email)
 
     print(f"\n✓ Confirmed: Enriching {len(leads_to_process)} leads using account '{selected_account['name']}'.")
     print(f"  • Login email:     {login_email or '(not set in config)'}")
+    print(f"  • Active Cycle:    {active_cycle}")
     print(f"  • Session ID:      {session_id}")
     print(f"  • Chunks of 10:    {total_chunks} calls")
     print(f"  • Rate Throttle:   0.9s per chunk (~600 leads/minute)")
@@ -645,6 +652,7 @@ def run_interactive_enricher():
                     dry_run=False,
                     conn=conn,
                     table_name=target_table,
+                    cycle=active_cycle,
                 )
                 conn.commit()
 

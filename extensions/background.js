@@ -80,7 +80,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     body = {
       batch: message.batch || "batch_1",
       contacts: message.contacts || [],
-      replace_all: Boolean(message.replace_all)
+      replace_all: Boolean(message.replace_all),
+      cycle: message.cycle || "",
+      account_used: message.account_used || ""
     };
   } else if (message.type === "EVALUATE_PENDING_TITLES" || message.type === "EVALUATE_PENDING_BATCH") {
     endpoint = "/evaluate-pending-titles";

@@ -18,11 +18,13 @@ from __future__ import annotations
 import os
 import sys
 import json
+from datetime import datetime, timezone
 import time
 import copy
 import argparse
 from typing import Dict, Any, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dateutil.relativedelta import relativedelta
 
 import requests
 from dotenv import load_dotenv
@@ -43,6 +45,39 @@ load_dotenv()
 
 from scripts.apollo_export_formatter import APOLLO_75_HEADERS, format_apollo_lead_row
 from backend.api import get_connection, ensure_apollo_saved_leads_table
+
+
+def get_account_cycle_window(account_email: str, target_date: Optional[datetime] = None) -> Tuple[datetime, datetime, str]:
+    """
+    Returns (cycle_start, cycle_end, cycle_tag) for a given account.
+    Example: (2026-09-20 00:00:00 UTC, 2026-10-20 00:00:00 UTC, 'sep 20 - oct 20')
+    """
+    now = target_date or datetime.now(timezone.utc)
+    renewal_day = 20  # default
+    report_path = os.path.join(PROJECT_ROOT, "config", "apollo_live_account_report.json")
+    if os.path.exists(report_path):
+        try:
+            with open(report_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for acc in data.get("accounts", []):
+                if acc.get("email", "").strip().lower() == account_email.strip().lower():
+                    exp_str = acc.get("expiry_utc")
+                    if exp_str:
+                        exp_dt = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                        renewal_day = exp_dt.day
+                        break
+        except Exception:
+            pass
+
+    if now.day >= renewal_day:
+        start_dt = now.replace(day=renewal_day, hour=0, minute=0, second=0, microsecond=0)
+        end_dt = start_dt + relativedelta(months=1)
+    else:
+        end_dt = now.replace(day=renewal_day, hour=0, minute=0, second=0, microsecond=0)
+        start_dt = end_dt - relativedelta(months=1)
+
+    cycle_tag = f"{start_dt.strftime('%b %d').lower()} - {end_dt.strftime('%b %d').lower()}"
+    return start_dt, end_dt, cycle_tag
 from backend.enrich_api import ensure_enrich_saved_leads_table
 
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config", "apollo_accounts.json")
@@ -288,12 +323,14 @@ def fetch_contacts_stream(
     prospected_status: Optional[str] = None,
     max_contacts: Optional[int] = None,
     page_delay: float = 0.5,
+    since_date: Optional[datetime] = None,
+    until_date: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
     """
     Stream contacts across pages from Apollo REST API.
-    If prospected_status == 'yes' (Saved tab), queries /contacts/search for unlocked full names & emails.
-    Otherwise queries /mixed_people/api_search.
-    Paginates automatically until max_contacts or end of available results.
+    If prospected_status == 'yes' (Saved tab), queries /contacts/search for unlocked full names & emails
+    sorted by contact_created_at descending.
+    If since_date or until_date are supplied, filters strictly to that cycle date range and exits early.
     """
     headers = {"Content-Type": "application/json", "X-Api-Key": api_key}
     p = copy.deepcopy(filters)
@@ -305,6 +342,8 @@ def fetch_contacts_stream(
 
     if prospected_status == "yes":
         url = "https://api.apollo.io/api/v1/contacts/search"
+        p["sort_by_field"] = "contact_created_at"
+        p["sort_ascending"] = False
     else:
         url = "https://api.apollo.io/api/v1/mixed_people/api_search"
 
@@ -328,11 +367,30 @@ def fetch_contacts_stream(
                 if not batch_contacts:
                     break
 
-                all_contacts.extend(batch_contacts)
-                print(f"  [Page {page:02d}] Fetched {len(batch_contacts)} leads | Cumulative: {len(all_contacts):,d} leads", flush=True)
+                reached_cutoff = False
+                retained_in_batch = 0
+                for c in batch_contacts:
+                    c_created_str = c.get("created_at")
+                    if c_created_str and (since_date or until_date):
+                        try:
+                            c_dt = datetime.fromisoformat(c_created_str.replace("Z", "+00:00"))
+                            if until_date and c_dt >= until_date:
+                                continue  # Lead saved after cycle end (in a newer cycle)
+                            if since_date and c_dt < since_date:
+                                reached_cutoff = True
+                                break  # Lead saved before cycle start, all following are older
+                        except Exception:
+                            pass
+                    all_contacts.append(c)
+                    retained_in_batch += 1
+                    if max_contacts and len(all_contacts) >= max_contacts:
+                        break
 
-                if max_contacts and len(all_contacts) >= max_contacts:
-                    all_contacts = all_contacts[:max_contacts]
+                print(f"  [Page {page:02d}] Fetched {len(batch_contacts)} leads | In-Cycle Retained: {retained_in_batch} | Total Retained: {len(all_contacts):,d}", flush=True)
+
+                if reached_cutoff or (max_contacts and len(all_contacts) >= max_contacts):
+                    if reached_cutoff:
+                        print(f"  [Cycle Cutoff] Encountered contact saved prior to cycle start ({since_date.strftime('%Y-%m-%d %H:%M:%S UTC')}). Reached end of current cycle window.", flush=True)
                     break
 
                 pagination = data.get("pagination") or {}
@@ -379,11 +437,15 @@ def save_leads_to_mysql_batch(
     batch_tag: str,
     account_email: str,
     target_table: str = "enrich_saved_leads",
+    cycle: str = "",
 ) -> int:
     """Save extracted Apollo contacts directly into MySQL table under a batch, preserving full enriched status."""
     if not leads:
         print("[!] No leads to save to database.")
         return 0
+
+    if not cycle:
+        _, _, cycle = get_account_cycle_window(account_email)
 
     table_name = "enrich_saved_leads" if target_table == "enrich_saved_leads" else "apollo_saved_leads"
     saved_count = 0
@@ -477,6 +539,7 @@ def save_leads_to_mysql_batch(
                 apollo_profile_url,
                 "Saved_Enriched_Lead",
                 account_email,
+                cycle,
                 0,  # credits charged
                 raw_data
             ))
@@ -488,14 +551,14 @@ def save_leads_to_mysql_batch(
                 `annual_revenue`, `employee_count`, `industry`, `tech_stack`, `keywords`,
                 `company_phone`, `hq_address`, `location`, `linkedin_url`,
                 `company_linkedin_url`, `apollo_profile_url`, `segment`,
-                `account_used`, `credits_charged`, `enriched_at`, `raw_enrichment_data`
+                `account_used`, `cycle`, `credits_charged`, `enriched_at`, `raw_enrichment_data`
             ) VALUES (
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s,
-                %s, %s, NOW(), %s
+                %s, %s, %s, NOW(), %s
             )
             ON DUPLICATE KEY UPDATE
                 `email` = IF(VALUES(`email`) != '', VALUES(`email`), `email`),
@@ -508,6 +571,7 @@ def save_leads_to_mysql_batch(
                 `company_phone` = IF(VALUES(`company_phone`) != '', VALUES(`company_phone`), `company_phone`),
                 `hq_address` = IF(VALUES(`hq_address`) != '', VALUES(`hq_address`), `hq_address`),
                 `company_linkedin_url` = IF(VALUES(`company_linkedin_url`) != '', VALUES(`company_linkedin_url`), `company_linkedin_url`),
+                `cycle` = IF(VALUES(`cycle`) != '', VALUES(`cycle`), `cycle`),
                 `raw_enrichment_data` = VALUES(`raw_enrichment_data`),
                 `enriched_at` = NOW();
         """
@@ -764,17 +828,33 @@ def run_inspector(selected_account_idx: Optional[int] = None):
                         export_leads_to_csv(leads, f"saved_account_leads_{active_email}", active_email)
                     input("\nPress Enter to continue...")
                 elif sub_opt == "3":
-                    lim_in = input(f"Enter number of leads to extract (press Enter for ALL {total_saved_in_account:,d}): ").strip()
+                    start_dt, end_dt, cycle_tag = get_account_cycle_window(active_email)
+                    print(f"\nTarget Billing Cycle: [{cycle_tag.upper()}] (Renewal Day: {start_dt.day})")
+                    print(f"  [1] Pull ONLY Current Cycle leads ({cycle_tag}) [Recommended - Only leads saved in this billing cycle]")
+                    print(f"  [2] Pull ALL-TIME saved leads (all historical dates)")
+                    c_mode = input("Select cycle scope [1/2, default 1]: ").strip()
+
+                    since_dt = start_dt if c_mode != "2" else None
+                    until_dt = end_dt if c_mode != "2" else None
+                    chosen_cycle = cycle_tag if c_mode != "2" else ""
+
+                    lim_in = input(f"Enter number of leads to extract (press Enter for ALL in cycle): ").strip()
                     max_leads = int(lim_in) if lim_in.isdigit() and int(lim_in) > 0 else None
                     tbl_in = input("Save to [1] `apollo_saved_leads` (Default for batch sync) or [2] `enrich_saved_leads`? [1/2, default 1]: ").strip()
                     target_tbl = "enrich_saved_leads" if tbl_in == "2" else "apollo_saved_leads"
-                    ts_tag = time.strftime("%Y%m%d_%H%M%S")
-                    def_batch = f"BATCH_SAVED_{active_email.split('@')[0]}_{ts_tag}"
+                    def_batch = f"{active_email}({cycle_tag})" if chosen_cycle else f"BATCH_SAVED_{active_email.split('@')[0]}_{time.strftime('%Y%m%d_%H%M%S')}"
                     chosen_batch = prompt_batch_selection_for_login(target_tbl, active_email, def_batch)
                     print(f"\nStreaming saved contacts from Apollo account {active_email} across pages...")
-                    leads = fetch_contacts_stream(active_key, filters={}, prospected_status="yes", max_contacts=max_leads)
+                    leads = fetch_contacts_stream(
+                        active_key,
+                        filters={},
+                        prospected_status="yes",
+                        max_contacts=max_leads,
+                        since_date=since_dt,
+                        until_date=until_dt,
+                    )
                     if leads:
-                        save_leads_to_mysql_batch(leads, chosen_batch, active_email, target_table=target_tbl)
+                        save_leads_to_mysql_batch(leads, chosen_batch, active_email, target_table=target_tbl, cycle=chosen_cycle)
                     input("\nPress Enter to continue...")
                 elif sub_opt == "4":
                     break
@@ -837,18 +917,34 @@ def run_inspector(selected_account_idx: Optional[int] = None):
                         export_leads_to_csv(new_leads, f"net_new_{s_name}", active_email)
                     input("\nPress Enter to continue...")
                 elif act == "5":
-                    lim_in = input(f"Enter number of saved leads to extract (press Enter for ALL {chosen_search.get('saved', 0):,d}): ").strip()
+                    start_dt, end_dt, cycle_tag = get_account_cycle_window(active_email)
+                    print(f"\nTarget Billing Cycle for '{s_name}': [{cycle_tag.upper()}] (Renewal Day: {start_dt.day})")
+                    print(f"  [1] Pull ONLY Current Cycle leads ({cycle_tag}) [Recommended - Only leads saved in this billing cycle]")
+                    print(f"  [2] Pull ALL-TIME saved leads (all historical dates)")
+                    c_mode = input("Select cycle scope [1/2, default 1]: ").strip()
+
+                    since_dt = start_dt if c_mode != "2" else None
+                    until_dt = end_dt if c_mode != "2" else None
+                    chosen_cycle = cycle_tag if c_mode != "2" else ""
+
+                    lim_in = input(f"Enter number of saved leads to extract (press Enter for ALL in cycle): ").strip()
                     max_leads = int(lim_in) if lim_in.isdigit() and int(lim_in) > 0 else None
                     tbl_in = input("Save to [1] `apollo_saved_leads` (Default for batch sync) or [2] `enrich_saved_leads`? [1/2, default 1]: ").strip()
                     target_tbl = "enrich_saved_leads" if tbl_in == "2" else "apollo_saved_leads"
-                    ts_tag = time.strftime("%Y%m%d_%H%M%S")
                     clean_s = s_name.replace(" ", "_")[:20]
-                    def_batch = f"BATCH_{clean_s}_{ts_tag}"
+                    def_batch = f"{active_email}({cycle_tag})" if chosen_cycle else f"BATCH_{clean_s}_{time.strftime('%Y%m%d_%H%M%S')}"
                     chosen_batch = prompt_batch_selection_for_login(target_tbl, active_email, def_batch)
                     print(f"\nStreaming saved leads for '{s_name}' from Apollo across pages...")
-                    saved_leads = fetch_contacts_stream(active_key, s_filters, prospected_status="yes", max_contacts=max_leads)
+                    saved_leads = fetch_contacts_stream(
+                        active_key,
+                        s_filters,
+                        prospected_status="yes",
+                        max_contacts=max_leads,
+                        since_date=since_dt,
+                        until_date=until_dt,
+                    )
                     if saved_leads:
-                        save_leads_to_mysql_batch(saved_leads, chosen_batch, active_email, target_table=target_tbl)
+                        save_leads_to_mysql_batch(saved_leads, chosen_batch, active_email, target_table=target_tbl, cycle=chosen_cycle)
                     input("\nPress Enter to continue...")
                 elif act == "6":
                     break

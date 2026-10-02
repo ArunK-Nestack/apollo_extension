@@ -2835,6 +2835,8 @@ class SyncSavedLeadsRequest(BaseModel):
     batch: str = "batch_1"
     contacts: list[SyncSavedLeadItem]
     replace_all: bool = False
+    cycle: str | None = ""
+    account_used: str | None = ""
 
 
 class EvaluatePendingTitlesRequest(BaseModel):
@@ -3008,6 +3010,18 @@ def ensure_apollo_saved_leads_table(conn):
             """)
             try:
                 cur.execute("ALTER TABLE `apollo_saved_leads` ADD COLUMN `website_link` VARCHAR(512) DEFAULT '' AFTER `company_domain`;")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD COLUMN `cycle` VARCHAR(64) NOT NULL DEFAULT '' AFTER `account_used`;")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD INDEX `idx_cycle` (`cycle`);")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD INDEX `idx_account_cycle` (`account_used`, `cycle`);")
             except Exception:
                 pass
     except Exception as e:
@@ -3255,6 +3269,17 @@ def _filter_sync_contacts_one_per_domain(contacts: list, batch_tag: str, cur) ->
 def sync_saved_leads(request: SyncSavedLeadsRequest):
     """Direct sync endpoint: immediately persists all collected required leads into MySQL apollo_saved_leads with batch name and website_link."""
     batch_tag = str(request.batch or "batch_1").strip()[:64]
+    cycle_val = (request.cycle or "").strip()
+    account_used_val = (request.account_used or "").strip()
+
+    # If not passed explicitly, infer account_used and cycle if batch_tag matches: login(cycle)
+    if not cycle_val or not account_used_val:
+        m = re.match(r"^([^()]+)\s*\(([^)]+)\)$", batch_tag)
+        if m:
+            if not account_used_val:
+                account_used_val = m.group(1).strip()
+            if not cycle_val:
+                cycle_val = m.group(2).strip()
 
     with get_connection() as conn:
         ensure_apollo_saved_leads_table(conn)
@@ -3295,15 +3320,17 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
                     _s(c.location, 250),
                     _s(c.linkedin_url, 512),
                     _s(c.apollo_profile_url, 512),
-                    _s(c.segment or "Required_Lead", 128)
+                    _s(c.segment or "Required_Lead", 128),
+                    _s(account_used_val, 128),
+                    _s(cycle_val, 64),
                 ))
 
             sql = """
                 INSERT INTO `apollo_saved_leads` (
                     `batch`, `apollo_id`, `name`, `first_name`, `last_name`,
                     `job_title`, `company`, `company_domain`, `website_link`, `location`,
-                    `linkedin_url`, `apollo_profile_url`, `segment`
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    `linkedin_url`, `apollo_profile_url`, `segment`, `account_used`, `cycle`
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     `name` = VALUES(`name`),
                     `first_name` = VALUES(`first_name`),
@@ -3312,7 +3339,9 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
                     `company` = VALUES(`company`),
                     `company_domain` = VALUES(`company_domain`),
                     `website_link` = VALUES(`website_link`),
-                    `segment` = VALUES(`segment`);
+                    `segment` = VALUES(`segment`),
+                    `account_used` = IF(VALUES(`account_used`) != '', VALUES(`account_used`), `account_used`),
+                    `cycle` = IF(VALUES(`cycle`) != '', VALUES(`cycle`), `cycle`);
             """
             cur.executemany(sql, rows_to_insert)
 
