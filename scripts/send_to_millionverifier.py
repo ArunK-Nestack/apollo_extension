@@ -252,49 +252,137 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
 
     prep_csv_path = cache_dir / f"{base_stem}_{timestamp_str}_prepared.csv"
 
-    # Save prepared CSV
-    df_clean.to_csv(prep_csv_path, index=False, encoding="utf-8-sig")
-
     # Build email to original row dictionary to preserve ALL 75+ columns
     email_to_orig: Dict[str, Dict[str, str]] = {}
     original_headers = list(df_clean.columns)
+    all_emails_to_check = []
     for _, row in df_clean.iterrows():
         em = str(row.get("Email", "")).strip().lower()
         if em:
             email_to_orig[em] = {k: ("" if pd.isna(v) else str(v)) for k, v in row.to_dict().items()}
+            all_emails_to_check.append(em)
+
+    # --- PHASE A: MILLION VERIFIER SMART CACHING (PRE-CHECK) ---
+    print("\n  [SMART CACHE] Checking MySQL database for previously verified emails...")
+    known_emails_cache = {}
+    if all_emails_to_check:
+        try:
+            with conn.cursor() as cursor:
+                chunk_size = 2000
+                for i in range(0, len(all_emails_to_check), chunk_size):
+                    chunk = all_emails_to_check[i:i + chunk_size]
+                    format_strings = ','.join(['%s'] * len(chunk))
+                    cursor.execute(f"SELECT email, verification_status FROM million_verifier_cache WHERE email IN ({format_strings})", chunk)
+                    for row in cursor.fetchall():
+                        known_emails_cache[row["email"].lower()] = row["verification_status"].lower()
+        except Exception as e:
+            print(f"  [SMART CACHE WARNING] Failed to query cache: {e}")
+
+    unknown_rows = []
+    known_results = []
+    for _, row in df_clean.iterrows():
+        em = str(row.get("Email", "")).strip().lower()
+        if em and em in known_emails_cache:
+            known_results.append({"email": em, "result": known_emails_cache[em]})
+        else:
+            unknown_rows.append(row)
+
+    df_unknown = pd.DataFrame(unknown_rows, columns=original_headers)
+    print(f"  [SMART CACHE] Found {len(known_results):,d} emails already verified in database!")
+    print(f"  [SMART CACHE] Only {len(df_unknown):,d} net-new emails will be sent to API, saving credits.")
+
+    if len(df_unknown) > 0:
+        # Save prepared CSV of ONLY UNKNOWN emails to be verified
+        df_unknown.to_csv(prep_csv_path, index=False, encoding="utf-8-sig")
 
     # 5. Upload & Verify via MillionVerifier Bulk API
     print("\n" + "=" * 95)
     print("                     MILLIONVERIFIER BULK VERIFICATION")
     print("=" * 95)
-    print(f"  • Uploading {len(df_clean):,d} contacts to MillionVerifier...")
-    print(f"  • Bulk Endpoint: {settings.bulk_base_url}")
-    print("  • Starting verification job...")
 
     verifier = VerificationService()
+    downloaded_csv = None
+    job = None
+    actual_api_csv = None
 
-    def progress_callback(job: VerificationJob) -> None:
-        est = f"{job.estimated_time_sec}s remaining" if job.estimated_time_sec is not None else "calculating..."
-        pct = job.percent if job.percent is not None else 0
-        ver = job.verified if job.verified is not None else 0
-        tot = job.total_rows if job.total_rows is not None else len(df_clean)
-        print(
-            f"    -> [Job #{job.file_id}] Status: {job.status.upper():<10} | "
-            f"Progress: {pct:>3}% ({ver:,d}/{tot:,d} verified) | {est}",
-            flush=True,
-        )
+    if len(df_unknown) > 0:
+        print(f"  • Uploading {len(df_unknown):,d} contacts to MillionVerifier...")
+        print(f"  • Bulk Endpoint: {settings.bulk_base_url}")
+        print("  • Starting verification job...")
 
-    t_mv = time.perf_counter()
-    try:
-        job, downloaded_csv = verifier.verify_file(
-            clean_csv_path=prep_csv_path,
-            download_dir=results_dir,
-            on_progress=progress_callback,
-        )
-        print(f"\n  ✓ MillionVerifier Job #{job.file_id} completed successfully in {time.perf_counter() - t_mv:.2f}s!")
-    except Exception as exc:
-        print(f"\n[ERROR] MillionVerifier verification failed: {exc}")
-        return
+        def progress_callback(job_obj: VerificationJob) -> None:
+            est = f"{job_obj.estimated_time_sec}s remaining" if job_obj.estimated_time_sec is not None else "calculating..."
+            pct = job_obj.percent if job_obj.percent is not None else 0
+            ver = job_obj.verified if job_obj.verified is not None else 0
+            tot = job_obj.total_rows if job_obj.total_rows is not None else len(df_unknown)
+            print(
+                f"    -> [Job #{job_obj.file_id}] Status: {job_obj.status.upper():<10} | "
+                f"Progress: {pct:>3}% ({ver:,d}/{tot:,d} verified) | {est}",
+                flush=True,
+            )
+
+        t_mv = time.perf_counter()
+        try:
+            job, downloaded_csv = verifier.verify_file(
+                clean_csv_path=prep_csv_path,
+                download_dir=results_dir,
+                on_progress=progress_callback,
+            )
+            actual_api_csv = downloaded_csv
+            print(f"\n  ✓ MillionVerifier Job #{job.file_id} completed successfully in {time.perf_counter() - t_mv:.2f}s!")
+            
+            # --- PHASE B: SAVE NEW API RESULTS TO DATABASE CACHE ---
+            print("  [SMART CACHE] Saving new API results into database cache...")
+            try:
+                new_results = pd.read_csv(downloaded_csv)
+                with conn.cursor() as cursor:
+                    insert_data = []
+                    for _, row in new_results.iterrows():
+                        em = str(row.get("email", "")).strip().lower()
+                        res = str(row.get("result", "")).strip().lower()
+                        if em and res in ("good", "bad", "risky"):
+                            insert_data.append((em, res))
+                    
+                    if insert_data:
+                        insert_query = """
+                            INSERT INTO million_verifier_cache (email, verification_status, verified_at) 
+                            VALUES (%s, %s, NOW()) 
+                            ON DUPLICATE KEY UPDATE verification_status=VALUES(verification_status), verified_at=NOW()
+                        """
+                        cursor.executemany(insert_query, insert_data)
+                        conn.commit()
+                        print(f"  [SMART CACHE] Saved {len(insert_data):,d} new verified emails to database!")
+            except Exception as e:
+                print(f"  [SMART CACHE WARNING] Failed to update cache: {e}")
+
+        except Exception as exc:
+            print(f"\n[ERROR] MillionVerifier verification failed: {exc}")
+            return
+    else:
+        print("  • All emails were found in cache! Bypassing API upload entirely.")
+        job = VerificationJob(file_id=0, file_name=f"{base_stem}.csv", status="finished")
+
+    # --- PHASE C: MERGE KNOWN + UNKNOWN RESULTS FOR CATEGORIZER ---
+    print("\n  [SMART CACHE] Merging database cache with API results for final output...")
+    final_results = []
+    final_results.extend(known_results)
+    
+    if actual_api_csv and actual_api_csv.exists():
+        try:
+            api_df = pd.read_csv(actual_api_csv)
+            for _, row in api_df.iterrows():
+                em = str(row.get("email", "")).strip().lower()
+                res = str(row.get("result", "")).strip().lower()
+                if em:
+                    final_results.append({"email": em, "result": res})
+        except Exception as e:
+            print(f"  [ERROR] Failed to read downloaded CSV: {e}")
+            
+    unified_csv_path = cache_dir / f"{base_stem}_unified_results.csv"
+    pd.DataFrame(final_results).to_csv(unified_csv_path, index=False)
+    
+    # Point categorized results to our unified CSV
+    downloaded_csv = unified_csv_path
 
     # 6. Categorize Results (Good, Bad, Risky) with ALL 75 columns preserved
     temp_categorized_dir = cache_dir / f"{base_stem}_categorized"

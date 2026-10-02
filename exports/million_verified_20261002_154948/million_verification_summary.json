@@ -1,0 +1,23 @@
+{
+  "account": "RAHUL@NESTAKTECHNOLOGY.COM (Rahul)",
+  "batch": "rahul@nestacktechnology_sample [Apollo]",
+  "verified_at": "2026-10-02T15:50:41.348159",
+  "job_id": 999,
+  "metrics": {
+    "total_fetched": 93,
+    "leads_with_emails": 93,
+    "crm_emails_blocked": 0,
+    "crm_domains_blocked": 0,
+    "sent_to_millionverifier": 93,
+    "good_count": 93,
+    "bad_count": 0,
+    "risky_count": 0,
+    "good_deliverable_rate": "100.0%"
+  },
+  "files": {
+    "good_leads_csv": "D:\\apollo_extension\\exports\\million_verified_20261002_154948\\million_good.csv",
+    "bad_leads_csv": "D:\\apollo_extension\\exports\\million_verified_20261002_154948\\million_bad.csv",
+    "risky_leads_csv": "D:\\apollo_extension\\exports\\million_verified_20261002_154948\\million_risky.csv",
+    "downloads_root_shortcut": "D:\\apollo_extension\\exports\\million_good.csv"
+  }
+}
