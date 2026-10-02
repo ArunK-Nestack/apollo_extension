@@ -39,6 +39,8 @@ from scripts.apollo_search_direct import (
     resolve_company_domain_from_apollo,
     batch_resolve_company_domains,
     save_qualified_leads_to_db,
+    get_search_tab,
+    apply_search_tab,
 )
 from backend.api import ApolloContact, get_connection
 
@@ -527,6 +529,33 @@ class TestApolloSearchDirect(unittest.TestCase):
         # Verify domain fields in inserted tuples (index 7 is company_domain)
         self.assertEqual(inserted_rows[0][7], "")
         self.assertEqual(inserted_rows[1][7], "alphacorp.io")
+
+    def test_search_tab_switching(self):
+        """Verify tab detection and application between Net New, Saved, and Total."""
+        # 1. Detection
+        self.assertEqual(get_search_tab({"prospected_by_current_team": ["no"]}), "net_new")
+        self.assertEqual(get_search_tab({"prospected_by_current_team": "no"}), "net_new")
+        self.assertEqual(get_search_tab({"prospected_by_current_team": ["yes"]}), "saved")
+        self.assertEqual(get_search_tab({"prospected_by_current_team": "yes"}), "saved")
+        self.assertEqual(get_search_tab({}), "total")
+        self.assertEqual(get_search_tab({"person_titles": ["CEO"]}), "total")
+
+        # 2. Application
+        base = {"person_titles": ["CEO"], "prospected_by_current_team": ["yes"]}
+        
+        # Switch to net_new
+        net_new = apply_search_tab(base, "net_new")
+        self.assertEqual(net_new.get("prospected_by_current_team"), ["no"])
+        self.assertEqual(net_new.get("person_titles"), ["CEO"])
+
+        # Switch to total
+        total = apply_search_tab(base, "total")
+        self.assertNotIn("prospected_by_current_team", total)
+        self.assertEqual(total.get("person_titles"), ["CEO"])
+
+        # Switch to saved
+        saved = apply_search_tab({"person_titles": ["CEO"]}, "saved")
+        self.assertEqual(saved.get("prospected_by_current_team"), ["yes"])
 
 
 if __name__ == "__main__":

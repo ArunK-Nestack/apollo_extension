@@ -112,6 +112,7 @@ def format_apollo_lead_row(lead: Dict[str, Any], account_email: str = "") -> Lis
         raw_match = lead
 
     org = raw_match.get("organization") or lead.get("organization") or {}
+    account = raw_match.get("account") or lead.get("account") or {}
 
     # 1. Names
     first_name = raw_match.get("first_name") or lead.get("first_name") or ""
@@ -169,7 +170,34 @@ def format_apollo_lead_row(lead: Dict[str, Any], account_email: str = "") -> Lis
     batch_name = lead.get("batch") or ""
 
     # 6. Phone Numbers
+    work_direct_phone = ""
+    home_phone = ""
+    mobile_phone = ""
     corp_phone = org.get("sanitized_phone") or org.get("phone") or lead.get("company_phone") or ""
+    other_phone = ""
+
+    phones = lead.get("phone_numbers") or raw_match.get("phone_numbers") or []
+    if isinstance(phones, list):
+        for p in phones:
+            if isinstance(p, dict):
+                p_type = p.get("type", "").lower()
+                p_num = p.get("sanitized_number") or p.get("raw_number") or ""
+                if not p_num:
+                    continue
+                if p_type in ("work_direct", "direct_work", "work"):
+                    if not work_direct_phone:
+                        work_direct_phone = p_num
+                elif p_type in ("mobile", "cell"):
+                    if not mobile_phone:
+                        mobile_phone = p_num
+                elif p_type == "home":
+                    if not home_phone:
+                        home_phone = p_num
+                elif p_type in ("work_hq", "company", "hq"):
+                    if not corp_phone:
+                        corp_phone = p_num
+                elif not other_phone and p_num != corp_phone:
+                    other_phone = p_num
 
     # 7. Firmographics
     num_employees = org.get("estimated_num_employees") or lead.get("employee_count") or ""
@@ -205,10 +233,10 @@ def format_apollo_lead_row(lead: Dict[str, Any], account_email: str = "") -> Lis
     person_state = raw_match.get("state") or ""
     person_country = raw_match.get("country") or ""
 
-    comp_addr = org.get("raw_address") or lead.get("hq_address") or ""
-    comp_city = org.get("city") or ""
-    comp_state = org.get("state") or ""
-    comp_country = org.get("country") or ""
+    comp_addr = org.get("raw_address") or account.get("raw_address") or lead.get("hq_address") or ""
+    comp_city = org.get("city") or account.get("city") or ""
+    comp_state = org.get("state") or account.get("state") or ""
+    comp_country = org.get("country") or account.get("country") or ""
 
     # Tech Stack
     tech = org.get("current_technologies") or lead.get("tech_stack")
@@ -260,11 +288,11 @@ def format_apollo_lead_row(lead: Dict[str, Any], account_email: str = "") -> Lis
         sanitize_csv_cell(depts),
         sanitize_csv_cell(sub_depts),
         sanitize_csv_cell(owner),
-        "",  # Work Direct Phone
-        "",  # Home Phone
-        "",  # Mobile Phone
-        sanitize_csv_cell(corp_phone),
-        "",  # Other Phone
+        sanitize_csv_cell(work_direct_phone),  # Work Direct Phone
+        sanitize_csv_cell(home_phone),         # Home Phone
+        sanitize_csv_cell(mobile_phone),       # Mobile Phone
+        sanitize_csv_cell(corp_phone),         # Corporate Phone
+        sanitize_csv_cell(other_phone),        # Other Phone
         "false",  # Do Not Call
         "Cold",   # Stage
         sanitize_csv_cell(batch_name),  # Lists

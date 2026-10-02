@@ -62,6 +62,8 @@ from scripts.sync_batch_to_apollo_list import (
 from scripts.export_enrich_companies import main as export_enrich_companies_action
 from scripts.apollo_search_optimizer import run_apollo_search_optimizer
 from scripts.freshsales_bridge import freshsales_agent_menu_action
+from scripts.login_pipeline_audit import run_login_audit
+from scripts.clean_apollo_data import clean_apollo_file_action, select_file_via_dialog
 
 CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "domain_slugs_cache.txt")
 
@@ -228,13 +230,26 @@ def _find_column(columns, candidates):
 def add_file_to_emails_action(conn):
     """Prompt user for CSV or Excel file, extract required columns, and insert into emails table."""
     print("\n--- ADD / UPLOAD DATA TO MASTER CRM (`emails` TABLE) ---")
-    raw_path = input("Enter path to CSV or Excel file (or drag-and-drop file here): ").strip()
-    
-    # Strip surrounding quotes if dragged from Windows Explorer
+    print("Choose input method:")
+    print("  [1] Open Windows File Explorer (Browse & select file)  <-- [Default: press Enter]")
+    print("  [2] Drag-and-drop or paste file path")
+
+    raw_path = input("\nEnter choice or paste/drag file path [Press Enter for File Explorer]: ").strip()
     clean_path = raw_path.strip('\'"').strip()
-    if not clean_path:
-        print("Upload canceled.")
-        return
+
+    if not clean_path or clean_path.lower() in ["1", "b", "browse", "o", "open", "f"]:
+        print("\n[>>>] Opening Windows File Explorer... Select your file.")
+        clean_path = select_file_via_dialog(title="Select CSV / Excel File for CRM Upload")
+        if not clean_path:
+            print("Upload canceled.")
+            return
+        print(f"[✓] Selected file: {clean_path}")
+    elif clean_path == "2":
+        path_in = input("Drag and drop file here (or paste path): ").strip().strip('\'"').strip()
+        if not path_in:
+            print("Upload canceled.")
+            return
+        clean_path = path_in
 
     if not os.path.exists(clean_path):
         print(f"[ERROR] File not found: '{clean_path}'")
@@ -846,11 +861,46 @@ def pull_apollo_saved_batch_action(conn):
         s_idx_in = input(f"Select search [1-{len(all_s)}]: ").strip()
         try:
             chosen_s = all_s[int(s_idx_in) - 1]
-            filters = chosen_s.get("filters", {})
+            filters = dict(chosen_s.get("filters", {}))
             source_name = chosen_s["name"]
         except Exception:
             print("Invalid selection.")
             return
+
+        # Fetch account lists to allow excluding all company lists and contact lists
+        import requests
+        headers = {"Content-Type": "application/json", "X-Api-Key": active_key}
+        try:
+            r_lbl = requests.get("https://api.apollo.io/api/v1/labels", headers=headers, timeout=12)
+            if r_lbl.status_code == 200:
+                raw_labels = r_lbl.json()
+                con_list_ids = [l["id"] for l in raw_labels if l.get("modality") == "contacts"]
+                acc_list_ids = [l["id"] for l in raw_labels if l.get("modality") in ("companies", "accounts")]
+                print(f"\n   [Account Lists] {len(acc_list_ids)} Company Lists | {len(con_list_ids)} People Lists in {active_email}")
+                ex_in = input(f"[?] Exclude ALL {len(acc_list_ids)} Company Lists and {len(con_list_ids)} Contact Lists from this extraction? [Y/n]: ").strip().lower()
+                if ex_in not in ("n", "no"):
+                    filters["not_account_label_ids"] = acc_list_ids
+                    filters["not_contact_label_ids"] = con_list_ids
+                    print(f"   [+] Excluded all {len(acc_list_ids)} Company Lists and {len(con_list_ids)} Contact Lists!")
+                else:
+                    print("   [!] Retaining existing search list exclusions.")
+        except Exception as ex:
+            print(f"   [!] Could not fetch account labels: {ex}")
+
+        # Probe Apollo /contacts/search to compute the exact available count for this specific search
+        print("   Probing matching leads in this saved search...")
+        probe_payload = dict(filters)
+        probe_payload["per_page"] = 1
+        probe_payload["page"] = 1
+        probe_payload["prospected_by_current_team"] = [prospected_status]
+        try:
+            r_cnt = requests.post("https://api.apollo.io/api/v1/contacts/search", headers=headers, json=probe_payload, timeout=15)
+            if r_cnt.status_code == 200:
+                search_total = int(r_cnt.json().get("pagination", {}).get("total_entries", 0))
+                avail_count = search_total
+                print(f"   [*] Filtered Leads in Search: {avail_count:,d} contacts")
+        except Exception as ex:
+            print(f"   [!] Could not probe search count: {ex}")
 
     # Ingestion parameters
     lim_in = input(f"\nEnter maximum leads to extract (press Enter for ALL {avail_count:,d}): ").strip()
@@ -932,12 +982,15 @@ def main():
                 print("  [W] Daily WhatsApp Expiry Alert (0 Credits / Free CallMeBot)")
                 print("  [F] Freshsales CRM Agent — Sync Verified Good Leads (Auto-Merge Tags / Non-Overwrite)")
                 print("  [FA] Freshsales CRM & Net-New Domain Audit (By Login or Synced Batch)")
+                print("  [FC] Freshsales Created Leads Audit & Exporter (Dates / Spin # / Download Created Only)")
+                print("  [LA] Login Credit & Pipeline Audit (Apollo -> Enrich -> MV -> CRM full trace)")
                 print("  [S] Saved Search & Saved Account Leads Inspector (New / Total / Saved)")
                 print("  [P] Pull Already-Enriched Leads from Apollo Saved Vault into a Batch")
+                print("  [13] Clean & Deduplicate Apollo File (Hierarchy / Priority / Revenue / Downloads)")
                 print("  [11] Refresh batch statistics")
                 print("  [12] Exit")
                 
-                choice = input("\nSelect an option (1-12, T, C, O, A, W, S, P, F, or FA): ").strip()
+                choice = input("\nSelect an option (1-13, T, C, O, A, W, S, P, F, FA, FC, LA, or D): ").strip()
 
                 if choice.upper() == "T":
                     active_table = "enrich_saved_leads" if active_table == "apollo_saved_leads" else "apollo_saved_leads"
@@ -981,6 +1034,18 @@ def main():
                     importlib.reload(fb)
                     fb.freshsales_domain_audit_menu(conn)
                     input("\nPress Enter to continue...")
+                elif choice.upper() == "FC":
+                    import importlib
+                    import scripts.audit_login_created_leads as alc
+                    importlib.reload(alc)
+                    alc.run_interactive()
+                    input("\nPress Enter to continue...")
+                elif choice.upper() == "LA":
+                    import importlib
+                    import scripts.login_pipeline_audit as lpa
+                    importlib.reload(lpa)
+                    lpa.run_login_audit(conn)
+                    input("\nPress Enter to continue...")
                 elif choice.upper() == "F":
                     import importlib
                     import scripts.freshsales_bridge as fb
@@ -1013,6 +1078,9 @@ def main():
                     input("\nPress Enter to continue...")
                 elif choice == "9":
                     sync_batch_to_apollo_list_action(batches, conn, table_name=active_table)
+                    input("\nPress Enter to continue...")
+                elif choice.upper() in ["13", "D", "CL"]:
+                    clean_apollo_file_action()
                     input("\nPress Enter to continue...")
                 elif choice == "11":
                     print("\nRefreshing batch statistics...")

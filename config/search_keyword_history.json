@@ -2032,5 +2032,464 @@
         }
       }
     }
+  },
+  "vijay.raghavan@nestack.net": {
+    "Pharmaceuticals & Drug Development-new": {
+      "search_name": "Pharmaceuticals & Drug Development-new",
+      "account_email": "vijay.raghavan@nestack.net",
+      "created_at": "2026-09-25 11:55:33",
+      "keywords": {
+        "manager": {
+          "keyword": "Manager",
+          "category": "Job Title",
+          "total_leads": 25559,
+          "total_pages": 100,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "director": {
+          "keyword": "Director",
+          "category": "Job Title",
+          "total_leads": 14222,
+          "total_pages": 100,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "specialist": {
+          "keyword": "Specialist",
+          "category": "Job Title",
+          "total_leads": 7937,
+          "total_pages": 80,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "owner": {
+          "keyword": "Owner",
+          "category": "Job Title",
+          "total_leads": 6611,
+          "total_pages": 67,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "founder": {
+          "keyword": "Founder",
+          "category": "Job Title",
+          "total_leads": 5851,
+          "total_pages": 59,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "coordinator": {
+          "keyword": "Coordinator",
+          "category": "Job Title",
+          "total_leads": 5163,
+          "total_pages": 52,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "president": {
+          "keyword": "President",
+          "category": "Job Title",
+          "total_leads": 4837,
+          "total_pages": 49,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "executive": {
+          "keyword": "Executive",
+          "category": "Job Title",
+          "total_leads": 4730,
+          "total_pages": 48,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "officer": {
+          "keyword": "Officer",
+          "category": "Job Title",
+          "total_leads": 3800,
+          "total_pages": 38,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "chief": {
+          "keyword": "Chief",
+          "category": "Job Title",
+          "total_leads": 3760,
+          "total_pages": 38,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "associate": {
+          "keyword": "Associate",
+          "category": "Job Title",
+          "total_leads": 3560,
+          "total_pages": 36,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "lead": {
+          "keyword": "Lead",
+          "category": "Job Title",
+          "total_leads": 3001,
+          "total_pages": 31,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "supervisor": {
+          "keyword": "Supervisor",
+          "category": "Job Title",
+          "total_leads": 2637,
+          "total_pages": 27,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "vice president": {
+          "keyword": "Vice President",
+          "category": "Job Title",
+          "total_leads": 2462,
+          "total_pages": 25,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "senior manager": {
+          "keyword": "Senior Manager",
+          "category": "Job Title",
+          "total_leads": 2167,
+          "total_pages": 22,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "head": {
+          "keyword": "Head",
+          "category": "Job Title",
+          "total_leads": 2076,
+          "total_pages": 21,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "sales manager": {
+          "keyword": "Sales Manager",
+          "category": "Job Title",
+          "total_leads": 2061,
+          "total_pages": 21,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "operations manager": {
+          "keyword": "Operations Manager",
+          "category": "Job Title",
+          "total_leads": 2043,
+          "total_pages": 21,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "consultant": {
+          "keyword": "Consultant",
+          "category": "Job Title",
+          "total_leads": 1913,
+          "total_pages": 20,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "account manager": {
+          "keyword": "Account Manager",
+          "category": "Job Title",
+          "total_leads": 1425,
+          "total_pages": 15,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "chief executive officer": {
+          "keyword": "Chief Executive Officer",
+          "category": "Job Title",
+          "total_leads": 1422,
+          "total_pages": 15,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "operations director": {
+          "keyword": "Operations Director",
+          "category": "Job Title",
+          "total_leads": 1422,
+          "total_pages": 15,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "administrator": {
+          "keyword": "Administrator",
+          "category": "Job Title",
+          "total_leads": 1319,
+          "total_pages": 14,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "project manager": {
+          "keyword": "Project Manager",
+          "category": "Job Title",
+          "total_leads": 1208,
+          "total_pages": 13,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "general manager": {
+          "keyword": "General Manager",
+          "category": "Job Title",
+          "total_leads": 1205,
+          "total_pages": 13,
+          "first_recommended": "2026-09-25 11:55:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "sales": {
+          "keyword": "Sales",
+          "category": "Functional Role",
+          "total_leads": 6699,
+          "total_pages": 67,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "operations": {
+          "keyword": "Operations",
+          "category": "Functional Role",
+          "total_leads": 5415,
+          "total_pages": 55,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "ceo": {
+          "keyword": "CEO",
+          "category": "Decision-Maker",
+          "total_leads": 2645,
+          "total_pages": 27,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "co-founder": {
+          "keyword": "Co-Founder",
+          "category": "Decision-Maker",
+          "total_leads": 1982,
+          "total_pages": 20,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "head of": {
+          "keyword": "Head of",
+          "category": "Decision-Maker",
+          "total_leads": 1477,
+          "total_pages": 15,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "technology": {
+          "keyword": "Technology",
+          "category": "Functional Role",
+          "total_leads": 1430,
+          "total_pages": 15,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "principal": {
+          "keyword": "Principal",
+          "category": "Decision-Maker",
+          "total_leads": 1184,
+          "total_pages": 12,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "partner": {
+          "keyword": "Partner",
+          "category": "Decision-Maker",
+          "total_leads": 1105,
+          "total_pages": 12,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "executive director": {
+          "keyword": "Executive Director",
+          "category": "Decision-Maker",
+          "total_leads": 1104,
+          "total_pages": 12,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "senior director": {
+          "keyword": "Senior Director",
+          "category": "Decision-Maker",
+          "total_leads": 986,
+          "total_pages": 10,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "vp": {
+          "keyword": "VP",
+          "category": "Decision-Maker",
+          "total_leads": 863,
+          "total_pages": 9,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "sales director": {
+          "keyword": "Sales Director",
+          "category": "Decision-Maker",
+          "total_leads": 807,
+          "total_pages": 9,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "marketing director": {
+          "keyword": "Marketing Director",
+          "category": "Decision-Maker",
+          "total_leads": 655,
+          "total_pages": 7,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "corporate": {
+          "keyword": "Corporate",
+          "category": "Functional Role",
+          "total_leads": 611,
+          "total_pages": 7,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "regional director": {
+          "keyword": "Regional Director",
+          "category": "Decision-Maker",
+          "total_leads": 446,
+          "total_pages": 5,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "chief financial officer": {
+          "keyword": "Chief Financial Officer",
+          "category": "Decision-Maker",
+          "total_leads": 360,
+          "total_pages": 4,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "managing director": {
+          "keyword": "Managing Director",
+          "category": "Decision-Maker",
+          "total_leads": 318,
+          "total_pages": 4,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "finance director": {
+          "keyword": "Finance Director",
+          "category": "Decision-Maker",
+          "total_leads": 239,
+          "total_pages": 3,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "senior vice president": {
+          "keyword": "Senior Vice President",
+          "category": "Decision-Maker",
+          "total_leads": 235,
+          "total_pages": 3,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "director of business development": {
+          "keyword": "Director of Business Development",
+          "category": "Decision-Maker",
+          "total_leads": 211,
+          "total_pages": 3,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "global head": {
+          "keyword": "Global Head",
+          "category": "Decision-Maker",
+          "total_leads": 199,
+          "total_pages": 2,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "managing partner": {
+          "keyword": "Managing Partner",
+          "category": "Decision-Maker",
+          "total_leads": 189,
+          "total_pages": 2,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "cfo": {
+          "keyword": "CFO",
+          "category": "Decision-Maker",
+          "total_leads": 186,
+          "total_pages": 2,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "head of operations": {
+          "keyword": "Head of Operations",
+          "category": "Decision-Maker",
+          "total_leads": 161,
+          "total_pages": 2,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "chief technology officer": {
+          "keyword": "Chief Technology Officer",
+          "category": "Decision-Maker",
+          "total_leads": 159,
+          "total_pages": 2,
+          "first_recommended": "2026-09-25 12:52:33",
+          "times_recommended": 1,
+          "status": "recommended"
+        }
+      }
+    }
   }
 }

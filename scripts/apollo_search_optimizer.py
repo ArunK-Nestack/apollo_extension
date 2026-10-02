@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import sys
+import re
 import json
 import time
 import copy
@@ -101,29 +102,102 @@ STATIC_TOP_KEYWORDS = [
 ]
 
 # High-yield job title anchors that match all variations via Apollo substring search
-# e.g., "Director" matches Creative Director, Visual Director, Managing Director, etc.
-STATIC_JOB_TITLES = [
-    # Top Broad Seniority Anchors (catches ALL variations via substring/token search)
-    "Director", "Manager", "Vice President", "VP", "President", "Chief", "Officer",
-    "Head", "Partner", "Owner", "Founder", "Principal", "Executive", "Lead",
-    "Producer", "Strategist", "Consultant", "Supervisor", "Coordinator", "Specialist",
-    "Administrator", "Advisor", "Architect", "Associate",
+STATIC_DECISION_MAKER_TITLES = [
+    # Top Broad Seniority Anchors for High-Authority Decision-Makers
+    "Chief Executive Officer", "CEO", "Chief Technology Officer", "CTO",
+    "Chief Operating Officer", "COO", "Chief Financial Officer", "CFO",
+    "Chief Marketing Officer", "CMO", "Chief Commercial Officer", "Chief Information Officer", "CIO",
+    "Chief Revenue Officer", "CRO", "Chief Product Officer", "CPO", "Chief",
+    "President", "Vice President", "VP", "Senior Vice President", "SVP", "Executive Vice President", "EVP",
+    "Managing Director", "Executive Director", "Director", "Regional Director", "Senior Director",
+    "Founder", "Co-Founder", "Owner", "Partner", "Managing Partner", "Principal",
+    "Head of", "Head", "Global Head", "General Manager",
 
-    # High-Yield Seniority Compounds (ideal slices when broad title exceeds 2,500 leads)
-    "Managing Director", "Executive Director", "Operations Director", "Sales Director",
-    "Creative Director", "Visual Director", "Marketing Director", "Finance Director",
-    "Art Director", "Design Director", "Technical Director", "Regional Director",
-    "General Manager", "Operations Manager", "Sales Manager", "Account Manager",
-    "Project Manager", "Production Manager", "Marketing Manager", "Creative Manager",
-    "Senior Vice President", "Executive Vice President", "SVP", "EVP",
-    "Chief Executive Officer", "Chief Operating Officer", "Chief Technology Officer",
-    "Chief Creative Officer", "Chief Marketing Officer", "Chief Commercial Officer",
-    "Head of Creative", "Head of Operations", "Head of Sales", "Head of Marketing",
-    "Head of Design", "Head of Production", "Head of Digital", "Head of Strategy",
-    "Managing Partner", "Senior Partner", "Co-Founder", "Senior Director",
-    "Executive Producer", "Digital Producer", "Creative Lead", "Design Lead",
-    "Creative Strategist", "Brand Strategist"
+    # High-Yield Seniority Compounds
+    "Operations Director", "Sales Director", "Creative Director", "Marketing Director", "Finance Director",
+    "Technical Director", "Commercial Director",
+    "Head of Operations", "Head of Sales", "Head of Marketing", "Head of Digital", "Head of Strategy",
+    "Head of Growth", "Head of Product", "Head of Engineering",
+    "Managing Partner", "Senior Partner"
 ]
+
+STATIC_MANAGER_TITLES = [
+    "General Manager", "Operations Manager", "Sales Manager", "Marketing Manager",
+    "Commercial Manager", "Product Manager", "Engineering Manager", "Finance Manager"
+]
+
+STATIC_JOB_TITLES = STATIC_DECISION_MAKER_TITLES
+
+
+def is_decision_maker_title(title: str, mode: str = "decision_makers_only", allow_managers: bool = False) -> bool:
+    """
+    Check if a title qualifies as a high-authority decision-maker.
+    Strictly excludes junior/individual-contributor roles:
+    specialist, coordinator, associate, supervisor, assistant, intern, etc.
+
+    Supported modes:
+      - 'decision_makers_only' (default): C-Suite, VP, Director, Head of, Owner, Founder, Partner, President, GM.
+      - 'c_level_vp_only': Only C-Suite, VP, Founder, Owner, Partner, President (strictly no Directors/Managers).
+      - 'with_managers': Includes Department Managers, but strictly excludes specialist/coordinator/associate.
+      - 'all': Unfiltered.
+    """
+    if not title:
+        return False
+    if mode == "all":
+        return True
+
+    # Allow allow_managers flag for backwards compatibility
+    if allow_managers and mode == "decision_makers_only":
+        mode = "with_managers"
+
+    t_clean = str(title).strip().lower()
+
+    # Explicitly disqualified non-decision-maker keywords (our system guardrails)
+    disqualified_keywords = [
+        "specialist", "coordinator", "associate", "supervisor", "assistant",
+        "intern", "trainee", "apprentice", "consultant", "advisor", "adviser",
+        "administrator", "producer", "technician", "representative", "clerk",
+        "entry", "junior", "jr", "staff", "analyst", "recruiter", "contractor"
+    ]
+    for bad in disqualified_keywords:
+        if re.search(rf"\b{bad}\b", t_clean):
+            return False
+
+    if mode == "c_level_vp_only":
+        if re.search(r"\bdirector\b", t_clean) or re.search(r"\bmanager\b", t_clean):
+            return False
+        top_tier_patterns = [
+            r"\bchief\b", r"\bceo\b", r"\bcto\b", r"\bcfo\b", r"\bcoo\b", r"\bcmo\b", r"\bcio\b", r"\bciso\b", r"\bcro\b", r"\bcpo\b",
+            r"\bpresident\b", r"\bvice president\b", r"\bvp\b", r"\bsvp\b", r"\bevp\b", r"\bavp\b",
+            r"\bowner\b", r"\bfounder\b", r"\bco-founder\b", r"\bpartner\b", r"\bprincipal\b"
+        ]
+        return any(re.search(pat, t_clean) for pat in top_tier_patterns)
+
+    if mode == "decision_makers_only":
+        # Exclude bare "Manager" or mid/low-level managers, allow only "General Manager"
+        if t_clean == "manager" or (re.search(r"\bmanager\b", t_clean) and not re.search(r"\bgeneral manager\b", t_clean)):
+            return False
+
+        # Must match high authority (Chief, VP, Director, Head of, Owner, Founder, Partner, President, General Manager)
+        authority_patterns = [
+            r"\bchief\b", r"\bceo\b", r"\bcto\b", r"\bcfo\b", r"\bcoo\b", r"\bcmo\b", r"\bcio\b", r"\bciso\b", r"\bcro\b", r"\bcpo\b",
+            r"\bpresident\b", r"\bvice president\b", r"\bvp\b", r"\bsvp\b", r"\bevp\b", r"\bavp\b",
+            r"\bowner\b", r"\bfounder\b", r"\bco-founder\b", r"\bpartner\b", r"\bprincipal\b",
+            r"\bdirector\b", r"\bhead\b", r"\bhead of\b", r"\bglobal head\b", r"\bgeneral manager\b", r"\bgm\b"
+        ]
+        return any(re.search(pat, t_clean) for pat in authority_patterns)
+
+    if mode == "with_managers":
+        authority_or_manager = [
+            r"\bchief\b", r"\bceo\b", r"\bcto\b", r"\bcfo\b", r"\bcoo\b", r"\bcmo\b", r"\bcio\b", r"\bciso\b", r"\bcro\b", r"\bcpo\b",
+            r"\bpresident\b", r"\bvice president\b", r"\bvp\b", r"\bsvp\b", r"\bevp\b", r"\bavp\b",
+            r"\bowner\b", r"\bfounder\b", r"\bco-founder\b", r"\bpartner\b", r"\bprincipal\b",
+            r"\bdirector\b", r"\bhead\b", r"\bhead of\b", r"\bglobal head\b", r"\bgeneral manager\b", r"\bgm\b",
+            r"\bmanager\b"
+        ]
+        return any(re.search(pat, t_clean) for pat in authority_or_manager)
+
+    return True
 
 # High-Yield Functional & Departmental Leadership Roles
 STATIC_FUNCTIONAL_KEYWORDS = [
@@ -240,15 +314,14 @@ def record_search_recommendations(
 # =====================================================================
 
 def generate_title_and_functional_slicing_candidates(
-    filters: Dict[str, Any]
+    filters: Dict[str, Any],
+    title_mode: str = "decision_makers_only"
 ) -> Tuple[List[str], List[str], List[str]]:
     """
     Generate high-yield job title anchors, compound titles, functional leadership roles,
     and fallback first names tailored to the target criteria.
-    
-    Job titles act as substring/token matches in Apollo's search bar:
-      - 'Director' automatically matches 'Visual Director', 'Creative Director', 'Managing Director', etc.
-      - 'Manager' automatically matches 'Operations Manager', 'General Manager', etc.
+    Filters out unwanted junior/mid-level titles (specialist, coordinator, associate, etc.)
+    according to title_mode.
     """
     titles_in_filter = filters.get("person_titles") or []
     if isinstance(titles_in_filter, list):
@@ -264,21 +337,50 @@ def generate_title_and_functional_slicing_candidates(
 
     prompt_summary = f"Job Titles: {titles_str or 'Executives/Decision Makers'}. Location: {loc_str or 'United States'}. Industry/Keywords: {tags_str or 'Corporate/Tech'}."
 
+    base_pool = [t for t in STATIC_DECISION_MAKER_TITLES if is_decision_maker_title(t, mode=title_mode)]
+    if not base_pool:
+        base_pool = list(STATIC_DECISION_MAKER_TITLES)
+
     if not OPENAI_API_KEY:
-        return list(STATIC_JOB_TITLES), list(STATIC_FUNCTIONAL_KEYWORDS), list(STATIC_TOP_NAMES[:35])
+        return base_pool, list(STATIC_FUNCTIONAL_KEYWORDS), list(STATIC_TOP_NAMES[:35])
 
     try:
         from openai import OpenAI
         client = OpenAI(api_key=OPENAI_API_KEY, timeout=12.0)
+        
+        if title_mode == "c_level_vp_only":
+            role_focus = (
+                "CRITICAL REQUIREMENT: Focus EXCLUSIVELY on TOP-TIER C-SUITE & VICE PRESIDENT DECISION-MAKERS: "
+                "Chief Executive Officer (CEO), Chief Technology Officer (CTO), Chief Operating Officer (COO), "
+                "Chief Financial Officer (CFO), Chief Marketing Officer (CMO), Chief Revenue Officer (CRO), Chief Information Officer (CIO), "
+                "Presidents, Vice Presidents (VP, SVP, EVP), Founders, Owners, and Managing Partners. "
+                "STRICT EXCLUSIONS: Do NOT include Directors, Managers, Specialists, Coordinators, Associates, Assistants, or Interns."
+            )
+        elif title_mode == "with_managers":
+            role_focus = (
+                "Focus on DECISION-MAKERS AND SENIOR MANAGERS: C-Suite, VP, Director, Head of, Owner, Founder, Partner, "
+                "and Department/Operations Managers. STRICT EXCLUSIONS: Do NOT include Specialists, Coordinators, Associates, Assistants, Interns."
+            )
+        elif title_mode == "all":
+            role_focus = "Focus on broad job title keyword anchors and functional leadership roles."
+        else:
+            # decision_makers_only (default)
+            role_focus = (
+                "CRITICAL REQUIREMENT: Focus EXCLUSIVELY on HIGH-AUTHORITY DECISION-MAKERS with purchasing and signing power: "
+                "C-Suite (CEO, CTO, CFO, COO, CMO, CIO, CRO, CPO), Vice Presidents (VP, SVP, EVP), "
+                "Directors (Managing Director, Executive Director, Regional Director, Creative Director, Technical Director, Operations Director), "
+                "Founders, Owners, Partners, and Department Heads (Head of Sales, Head of Operations, Head of Marketing, Global Head, General Manager). "
+                "STRICT EXCLUSIONS: Do NOT include mid-level managers, specialists, coordinators, associates, supervisors, assistants, interns, or junior/staff roles. "
+                "Our system cleans out all non-decision-makers."
+            )
+
         sys_prompt = (
             "You are an Apollo.io search optimization specialist. The goal is to slice large Apollo searches into "
-            "high-yield lead batches right below Apollo's 2,500 lead / 100-page limit using search bar keyword substring matching. "
-            "CRITICAL REQUIREMENT: Focus primarily on BROAD JOB TITLES and FUNCTIONAL LEADERSHIP ROLES (not personal first names). "
-            "Job titles like 'Director' or 'Manager' yield 10x-50x more leads because Apollo search matches all substring variations "
-            "(e.g., 'Director' matches Creative Director, Visual Director, Managing Director, Director of Operations, etc.). "
+            "high-yield lead batches right below Apollo's 2,500 lead / 100-page limit using search bar keyword substring matching.\n"
+            f"{role_focus}\n"
             "Given the target criteria, return a JSON object with: "
-            "1) 'titles': list of 35 broad job title keyword anchors and high-yield title compounds (e.g., Director, Manager, Vice President, VP, Head, Partner, Owner, Chief, Officer, Creative Director, Visual Director, Operations Manager, etc.), "
-            "2) 'keywords': list of 30 functional, departmental, and sub-industry keywords (e.g., Creative, Visual, Operations, Commercial, Sales, Marketing, Strategy, Digital, Media, Design, etc.), "
+            "1) 'titles': list of 35 high-authority job title keyword anchors and title compounds tailored to this criteria, "
+            "2) 'keywords': list of 25 executive functional leadership keywords (e.g., Creative, Operations, Sales, Marketing, Strategy, Digital, Media, Technology, Engineering), "
             "3) 'names': list of 15 common executive first names (e.g., Michael, David, John, James, etc.) as fallback. "
             "JSON output only."
         )
@@ -298,11 +400,11 @@ def generate_title_and_functional_slicing_candidates(
         ai_keywords = parsed.get("keywords", [])
         ai_names = parsed.get("names", [])
 
-        # Merge titles with fallback
+        # Merge titles with fallback and strictly enforce decision-maker filter
         combined_titles: List[str] = []
-        for t in ai_titles + STATIC_JOB_TITLES:
+        for t in ai_titles + base_pool:
             clean_t = str(t).strip()
-            if clean_t and clean_t not in combined_titles:
+            if clean_t and is_decision_maker_title(clean_t, mode=title_mode) and clean_t not in combined_titles:
                 combined_titles.append(clean_t)
 
         # Merge functional keywords
@@ -322,8 +424,8 @@ def generate_title_and_functional_slicing_candidates(
         return combined_titles, combined_functional, combined_names
 
     except Exception as ex:
-        print(f"[Notice] AI generation fallback ({ex}); using pre-indexed job title & functional lexicon.")
-        return list(STATIC_JOB_TITLES), list(STATIC_FUNCTIONAL_KEYWORDS), list(STATIC_TOP_NAMES[:35])
+        print(f"[Notice] AI generation fallback ({ex}); using pre-indexed decision-maker title lexicon.")
+        return base_pool, list(STATIC_FUNCTIONAL_KEYWORDS), list(STATIC_TOP_NAMES[:35])
 
 
 def generate_slicing_candidates_ai(filters: Dict[str, Any]) -> Tuple[List[str], List[str]]:
@@ -593,16 +695,47 @@ def run_apollo_search_optimizer():
             print(f"  ... and {len(prev_keywords_dict) - 10} more previously recorded in history ledger.")
         print("-" * 100)
 
-    # 4. Generate AI Candidates focusing on Job Titles & Functional Leadership
+    # 4. Select Title & Seniority Filtering Scope
+    print("\n" + "=" * 105)
+    print("🎯 TITLE & SENIORITY FILTERING SCOPE:")
+    print("  [1] High-Authority Decision-Makers Only (Default)")
+    print("      Includes: C-Suite (CEO, CTO, CFO, COO, CMO), VP, Director, Head of, Owner, Founder, Partner, GM")
+    print("      Filters OUT: Specialist, Coordinator, Associate, Supervisor, Assistant, Intern, Manager")
+    print("  [2] C-Suite & VP / Founders Only (Top-Tier Authority - Excludes Directors & Managers)")
+    print("  [3] Include Department Managers (C-Suite, VP, Director, GM + Department Managers)")
+    print("  [4] All Slices (Unfiltered)")
+    print("=" * 105)
+    t_scope_input = input("Select title scope [1-4, default 1]: ").strip()
+    if t_scope_input == "2":
+        selected_title_mode = "c_level_vp_only"
+        mode_desc = "C-Suite & VP / Founders Only"
+        category_label = "C-Suite / VP"
+    elif t_scope_input == "3":
+        selected_title_mode = "with_managers"
+        mode_desc = "Decision-Makers + Dept Managers"
+        category_label = "Leadership / Manager"
+    elif t_scope_input == "4":
+        selected_title_mode = "all"
+        mode_desc = "All Slices (Unfiltered)"
+        category_label = "Job Title"
+    else:
+        selected_title_mode = "decision_makers_only"
+        mode_desc = "High-Authority Decision-Makers Only"
+        category_label = "Decision-Maker"
+
+    print(f"\n✓ Seniority Filter Active: [{mode_desc}]")
+
+    # 5. Generate AI Candidates focusing on Job Titles & Functional Leadership
     print("\n>>> Analyzing search criteria with AI (gpt-4o-mini at <$0.0001)...")
-    titles, functional, names = generate_title_and_functional_slicing_candidates(base_filters)
+    titles, functional, names = generate_title_and_functional_slicing_candidates(base_filters, title_mode=selected_title_mode)
     print(f"  ✓ Generated {len(titles)} tailored job titles and {len(functional)} functional leadership terms.")
 
-    # Prioritize Job Title Anchors first (highest yield via substring search), then Functional Roles
+    # Prioritize Job Title Anchors first (strictly filtered by authority), then Functional Roles
     fresh_candidates: List[Tuple[str, str]] = []
     for t in titles:
-        if t.lower() not in prev_keywords_set:
-            fresh_candidates.append((t, "Job Title"))
+        if is_decision_maker_title(t, mode=selected_title_mode):
+            if t.lower() not in prev_keywords_set:
+                fresh_candidates.append((t, category_label))
     for f in functional:
         if f.lower() not in prev_keywords_set:
             fresh_candidates.append((f, "Functional Role"))
@@ -620,9 +753,9 @@ def run_apollo_search_optimizer():
 
     if not fresh_candidates:
         print("\n[Notice] All primary candidates have been previously recommended. Re-testing base pool...")
-        fresh_candidates = [(t, "Job Title") for t in titles[:35]] + [(f, "Functional Role") for f in functional[:25]]
+        fresh_candidates = [(t, category_label) for t in titles if is_decision_maker_title(t, mode=selected_title_mode)][:35] + [(f, "Functional Role") for f in functional[:25]]
 
-    # 5. Fast Parallel Probing against Apollo
+    # 6. Fast Parallel Probing against Apollo
     t0 = time.perf_counter()
     probe_results = batch_probe_candidates(api_key, base_filters, fresh_candidates, max_workers=8)
     print(f"  ✓ Completed scan in {time.perf_counter() - t0:.2f}s! (0 Apollo Credits Deducted)")
@@ -631,14 +764,14 @@ def run_apollo_search_optimizer():
         print("\n[Notice] No matching slicing keywords yielded leads. Try broader filters.")
         return
 
-    # 6. Rank Results by Highest Lead & Page Count First
+    # 7. Rank Results by Highest Lead & Page Count First
     # Sort by total_pages descending, then total_leads descending
     ranked = sorted(probe_results, key=lambda x: (x["total_pages"], x["total_leads"]), reverse=True)
     top_picks = ranked[:25]
 
-    # 7. Display Top Recommendations
+    # 8. Display Top Recommendations
     print("\n" + "=" * 105)
-    print(f"   TOP {len(top_picks)} HIGH-YIELD SEARCH SLICES FOR: '{search_name.upper()}'")
+    print(f"   TOP {len(top_picks)} HIGH-YIELD SEARCH SLICES FOR: '{search_name.upper()}' [{mode_desc}]")
     print("=" * 105)
     print(f"{'#':<3} | {'Keyword / Title to use in Apollo Web':<38} | {'Category':<18} | {'Leads Found':<14} | {'Pages':<8} | {'Yield Quality'}")
     print("-" * 105)
@@ -664,8 +797,8 @@ def run_apollo_search_optimizer():
 
     print("=" * 105)
     print("  🟢 OPTIMAL / MAX YIELD: Delivers 50-100 full pages (1,000-2,500+ leads) under Apollo's page cap.")
-    print("  💡 Substring Matching: Searching 'Director' automatically matches Visual Director, Managing Director,")
-    print("     Creative Director, Art Director, etc. across the entire Apollo search!")
+    print("  🛡️ Guardrails Filter: Junior/unwanted titles (Specialist, Coordinator, Associate, Supervisor, Assistant,")
+    print("     Manager) are automatically filtered out. Only authorized decision-makers are retained.")
     print("  💡 Tip: Copy any of these titles/keywords directly into the Apollo Web Search Bar, or use below!")
     print("=" * 105)
 

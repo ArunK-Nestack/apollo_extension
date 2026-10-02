@@ -304,9 +304,51 @@ def parse_apollo_url(raw_url: str) -> Dict[str, Any]:
     return sanitize_payload(payload)
 
 
+def get_search_tab(filters: Dict[str, Any]) -> str:
+    """Return 'net_new', 'saved', or 'total' based on filters."""
+    if not isinstance(filters, dict):
+        return "total"
+    val = filters.get("prospected_by_current_team")
+    if isinstance(val, list):
+        if "yes" in val:
+            return "saved"
+        if "no" in val:
+            return "net_new"
+    elif isinstance(val, str):
+        if val.lower() == "yes":
+            return "saved"
+        if val.lower() == "no":
+            return "net_new"
+    return "total"
+
+
+def apply_search_tab(filters: Dict[str, Any], tab: str) -> Dict[str, Any]:
+    """
+    Apply prospected tab mode to filters:
+      - 'net_new': prospected_by_current_team = ['no'] (Unsaved leads)
+      - 'saved':   prospected_by_current_team = ['yes'] (Already saved in account)
+      - 'total':   prospected_by_current_team removed (All matching leads)
+    """
+    res = copy.deepcopy(filters) if isinstance(filters, dict) else {}
+    if tab == "net_new":
+        res["prospected_by_current_team"] = ["no"]
+    elif tab == "saved":
+        res["prospected_by_current_team"] = ["yes"]
+    elif tab == "total":
+        res.pop("prospected_by_current_team", None)
+    return res
+
+
 def format_filters_summary(filters: Dict[str, Any]) -> str:
     """Format filter payload into human-readable bullet points matching Apollo web filters."""
     lines = []
+    tab = get_search_tab(filters)
+    tab_labels = {
+        "net_new": "Net New (Unsaved leads: prospected_by_current_team = ['no'])",
+        "saved": "Saved (Already saved in account: prospected_by_current_team = ['yes'])",
+        "total": "Total (All matching leads in Apollo database)"
+    }
+    lines.append(f"  • Search Tab / Status : {tab_labels.get(tab, 'Total')}")
     if filters.get("person_locations"):
         locs = filters["person_locations"]
         loc_str = ", ".join(locs) if isinstance(locs, list) else str(locs)
@@ -358,8 +400,6 @@ def format_filters_summary(filters: Dict[str, Any]) -> str:
         lines.append(f"  • Included People Lists: {len(filters['contact_label_ids'])} List IDs")
     if filters.get("account_label_ids"):
         lines.append(f"  • Included Co. Lists  : {len(filters['account_label_ids'])} List IDs")
-    if filters.get("prospected_by_current_team"):
-        lines.append(f"  • Prospected by Team  : {filters['prospected_by_current_team']}")
     if filters.get("q_keywords"):
         lines.append(f"  • Base Keywords       : '{filters['q_keywords']}'")
     return "\n".join(lines) if lines else "  • No broad filters applied (Full Database Search)"
@@ -442,7 +482,7 @@ def probe_search_total_volume(api_key: str, base_payload: Dict[str, Any]) -> int
     return int(data.get("total_entries", 0))
 
 
-def probe_searches_volume(api_key: str, searches: List[Dict[str, Any]], max_workers: int = 5):
+def probe_searches_volume(api_key: str, searches: List[Dict[str, Any]], max_workers: int = 5, tab: Optional[str] = None):
     """Probe lead volume for multiple searches concurrently so the menu renders instantly."""
     to_probe = [s for s in searches if s.get("count") is None]
     if not to_probe:
@@ -450,7 +490,10 @@ def probe_searches_volume(api_key: str, searches: List[Dict[str, Any]], max_work
 
     def _task(s):
         try:
-            total = probe_search_total_volume(api_key, s.get("filters", {}))
+            filters = s.get("filters", {})
+            if tab:
+                filters = apply_search_tab(filters, tab)
+            total = probe_search_total_volume(api_key, filters)
             s["count"] = total
         except Exception:
             s["count"] = 0
@@ -1194,10 +1237,11 @@ def interactive_filter_menu(base_payload: Dict[str, Any], active_key: str, activ
         print("  [10] Company / Account Lists  (account_label_ids & not_account_label_ids)")
         print("  [11] Direct Search Keywords   (q_keywords)")
         print("  [12] Replace / Import from Apollo Web URL")
+        print("  [13] Search Tab / Prospected Status (Net New | Total | Saved)")
         print("  [ s] Save search configuration")
         print("  [ d] Done editing (proceed to review & preview)")
 
-        choice = input("\nSelect filter to modify [1-12, 's' to save, 'd' when done]: ").strip().lower()
+        choice = input("\nSelect filter to modify [1-13, 's' to save, 'd' when done]: ").strip().lower()
 
         if choice in ("d", "done", ""):
             break
@@ -1379,6 +1423,24 @@ def interactive_filter_menu(base_payload: Dict[str, Any], active_key: str, activ
                     base_payload.update(new_filters)
                     print("[+] Successfully parsed and applied new filters from URL!")
 
+        elif choice == "13":
+            cur_tab = get_search_tab(base_payload)
+            print(f"\nCurrent Search Tab: {cur_tab.upper()}")
+            print("Options:")
+            print("  [1] Net New (Unsaved leads — queries only contacts NOT yet saved in account)")
+            print("  [2] Total   (All leads — queries ALL contacts matching criteria in Apollo)")
+            print("  [3] Saved   (Saved leads — queries ONLY contacts already saved in account)")
+            opt = input("Select tab [1-3, default 1]: ").strip()
+            if opt == "2":
+                base_payload = apply_search_tab(base_payload, "total")
+                print("[+] Search tab set to TOTAL (All matching leads).")
+            elif opt == "3":
+                base_payload = apply_search_tab(base_payload, "saved")
+                print("[+] Search tab set to SAVED (Already saved in account).")
+            else:
+                base_payload = apply_search_tab(base_payload, "net_new")
+                print("[+] Search tab set to NET NEW (Unsaved leads).")
+
         # Re-probe and display updated status
         print("\n" + "-" * 100)
         print("UPDATED SEARCH STATUS:")
@@ -1458,15 +1520,23 @@ def main():
 
     account_creator_searches, all_creator_searches, other_creator_searches, selectable_searches = reload_catalog()
 
+    # Active Tab Mode: 'net_new', 'total', 'saved' (Default to net_new to surface pipeline leads)
+    active_tab_mode = "net_new"
+
     # Probe lead volume for active account searches so the menu immediately displays data counts
-    print(f">> Probing data volume for {active_email} searches...")
-    probe_searches_volume(active_key, account_creator_searches, max_workers=4)
+    print(f">> Probing data volume for {active_email} searches in [NET NEW] mode...")
+    probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode)
 
     base_payload: Dict[str, Any] = {}
     search_name = "Custom Search"
 
     while True:
-        print(f"\nAvailable Searches for {active_email}:")
+        tab_labels = {
+            "net_new": "NET NEW (Unsaved Leads)",
+            "total": "TOTAL (All Leads)",
+            "saved": "SAVED (In Account)"
+        }
+        print(f"\nAvailable Searches for {active_email} [Tab: {tab_labels[active_tab_mode]} | Switch: 't']:")
         if account_creator_searches:
             for idx, cs in enumerate(account_creator_searches, 1):
                 count_val = cs.get("count")
@@ -1491,6 +1561,7 @@ def main():
         print("\nOptions:")
         if total_catalog > 0:
             print(f"  [1-{total_catalog}] Select any Search by number")
+        print(f"  [t] Switch Tab: Net New -> Total -> Saved (Currently: {active_tab_mode.upper()})")
         print("  [r] Refresh live searches directly from Apollo")
         print("  [a] Add / Register a new Creator Search (paste Apollo People URL)")
         print("  [c] Custom filter search from scratch")
@@ -1507,9 +1578,22 @@ def main():
                 chosen = selectable_searches[val - 1]
                 search_name = chosen["display_name"]
                 base_payload = copy.deepcopy(chosen.get("filters", {}))
+                base_payload = apply_search_tab(base_payload, active_tab_mode)
                 break
             else:
                 print(f"[!] Invalid number. Please enter a number between 1 and {total_catalog}.")
+        elif cmd.lower() == "t":
+            tab_cycle = {"net_new": "total", "total": "saved", "saved": "net_new"}
+            active_tab_mode = tab_cycle.get(active_tab_mode, "net_new")
+            print(f"\n>> Switched Search Tab Mode to: {tab_labels[active_tab_mode]}")
+            # Reset probed counts to force re-probing under the new tab
+            for s in account_creator_searches:
+                s["count"] = None
+            for s in other_creator_searches:
+                s["count"] = None
+            print(f">> Probing data volume for {active_email} searches in [{active_tab_mode.upper()}] mode...")
+            probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode)
+            continue
         elif cmd.lower() == "r":
             print(f"\n>> Refreshing live saved searches from Apollo for {active_email}...")
             live = fetch_live_apollo_searches(active_key)
@@ -1518,7 +1602,7 @@ def main():
                     save_account_creator_search(active_email, ls["name"], ls["filters"], quiet=True, is_live=True)
                 print(f"[+] Refreshed {len(live)} live searches from Apollo!")
             account_creator_searches, all_creator_searches, other_creator_searches, selectable_searches = reload_catalog()
-            probe_searches_volume(active_key, account_creator_searches, max_workers=4)
+            probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode)
             continue
         elif cmd.lower() == "a":
             s_name = input("\nEnter name for this Creator Search: ").strip()
@@ -1563,10 +1647,23 @@ def main():
     print("=" * 100)
     print(format_filters_summary(base_payload))
     print("-" * 100)
-    print("Probing Apollo Search Index for total volume in this search...")
+    current_tab = get_search_tab(base_payload)
+    print(f"Probing Apollo Search Index for total volume in this search ({current_tab.upper()})...")
     current_total = probe_search_total_volume(active_key, base_payload)
-    print(f">> TOTAL CONTACTS IN THIS SEARCH: {current_total:,d} leads (~{max(1, (current_total + 99) // 100)} pages)")
+    print(f">> TOTAL CONTACTS AVAILABLE IN THIS SEARCH: {current_total:,d} leads (~{max(1, (current_total + 99) // 100)} pages)")
     print("-" * 100)
+
+    if current_total == 0 and current_tab == "saved":
+        print("\n[!] Notice: 0 leads found because this search is on the 'SAVED' tab (no contacts saved in account).")
+        switch_tab = input("[?] Switch to [1] Net New (unsaved leads) or [2] Total (all leads)? [1/2/N]: ").strip()
+        if switch_tab == "1":
+            base_payload = apply_search_tab(base_payload, "net_new")
+            current_total = probe_search_total_volume(active_key, base_payload)
+            print(f">> Switched to NET NEW. Contacts available: {current_total:,d} leads (~{max(1, (current_total + 99) // 100)} pages)")
+        elif switch_tab == "2":
+            base_payload = apply_search_tab(base_payload, "total")
+            current_total = probe_search_total_volume(active_key, base_payload)
+            print(f">> Switched to TOTAL. Contacts available: {current_total:,d} leads (~{max(1, (current_total + 99) // 100)} pages)")
 
     # Offer interactive web filter modification
     modify_resp = input("\n[?] Do you want to modify or edit any filters in this search? [y/N]: ").strip().lower()

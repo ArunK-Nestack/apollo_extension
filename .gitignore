@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 config/apollo_accounts.json
+config/apollo_live_account_report.json
 .secrets/
 
 # Python Cache & Virtual Environments
@@ -16,13 +17,15 @@ venv/
 env/
 .pytest_cache/
 
+node_modules/
+
 # Exports & Scratch Artifacts
-exports/*.csv
-exports/*.xlsx
-exports/*.tsv
+exports/
+outputs/
 dist/
 scratch/*
 !scratch/.gitkeep
+millionverifier_agent_step1/results/
 
 # Large Data Dumps & Databases
 *.sqlite

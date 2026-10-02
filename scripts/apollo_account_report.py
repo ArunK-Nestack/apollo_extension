@@ -92,13 +92,17 @@ def _probe_account(acc: Dict[str, Any]) -> Dict[str, Any]:
 
         t = r2.json().get("team", {})
         avail = t.get("effective_num_lead_credits", 0) or 0
-        used  = t.get("num_lead_credits_used", 0) or 0
+        if t.get("using_unified_credits", False):
+            used = t.get("total_unified_credits_used", 0) or 0
+        else:
+            used = t.get("num_lead_credits_used", 0) or 0
         return {
             **base,
             "status":            "active",
             "billing_end":       t.get("current_monthly_billing_cycle_end_date"),
             "credits_avail":     avail,
             "credits_remaining": max(0, avail - used),
+            "team_id":           team_id,
         }
     except Exception as ex:
         base["status"] = f"Error: {ex}"
