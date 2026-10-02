@@ -341,13 +341,17 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
                         em = str(row.get("email", "")).strip().lower()
                         res = str(row.get("result", "")).strip().lower()
                         if em and res in ("good", "bad", "risky"):
-                            insert_data.append((em, res))
+                            dom = em.split("@")[-1] if "@" in em else None
+                            insert_data.append((em, dom, res))
                     
                     if insert_data:
                         insert_query = """
-                            INSERT INTO million_verifier_cache (email, verification_status, verified_at) 
-                            VALUES (%s, %s, NOW()) 
-                            ON DUPLICATE KEY UPDATE verification_status=VALUES(verification_status), verified_at=NOW()
+                            INSERT INTO million_verifier_cache (email, domain, verification_status, verified_at) 
+                            VALUES (%s, %s, %s, NOW()) 
+                            ON DUPLICATE KEY UPDATE 
+                                domain = COALESCE(VALUES(domain), domain),
+                                verification_status = VALUES(verification_status), 
+                                verified_at = NOW()
                         """
                         cursor.executemany(insert_query, insert_data)
                         conn.commit()
