@@ -54,7 +54,7 @@
   }
 
   function renderLoginCycleOptions(currentBatch) {
-    let html = `<option value="" disabled ${!currentBatch ? "selected" : ""}>-- Select Login Cycle --</option>`;
+    let html = `<option value="" disabled ${!currentBatch ? "selected" : ""}>-- Select Login & Cycle (19 Accounts) --</option>`;
     for (const acc of APOLLO_19_LOGINS) {
       const cycle = computeAccountActiveCycle(acc.renewalDay);
       const val = `${acc.email}(${cycle})`;
@@ -62,10 +62,14 @@
       html += `<option value="${val}" ${isSel ? "selected" : ""}>${acc.name} (${cycle})</option>`;
     }
     const isKnown = APOLLO_19_LOGINS.some(a => `${a.email}(${computeAccountActiveCycle(a.renewalDay)})` === currentBatch);
-    const isCustom = currentBatch && !isKnown;
+    const isCustom = currentBatch && currentBatch !== "batch_1" && !isKnown;
     html += `<option value="__CUSTOM__" ${isCustom ? "selected" : ""}>➕ Custom Batch Tag...</option>`;
     return html;
   }
+
+  const _defaultAcc = APOLLO_19_LOGINS[0];
+  const _defaultCycle = computeAccountActiveCycle(_defaultAcc.renewalDay);
+  const _defaultBatch = `${_defaultAcc.email}(${_defaultCycle})`;
 
   // ============================================================
   // TOGGLE OFF
@@ -83,9 +87,9 @@
   const state = {
     active: true,
     batchNumber: 1,
-    batchName: "batch_1",
-    accountEmail: "",
-    cycleTag: "",
+    batchName: _defaultBatch,
+    accountEmail: _defaultAcc.email,
+    cycleTag: _defaultCycle,
     titleGuardrailEnabled: true,
     indianGuardrailEnabled: true,
     hasUnsavedRequiredContacts: false,
@@ -1610,15 +1614,25 @@
       [REQUIRED_CONTACTS_STORAGE_KEY, TITLE_GUARDRAIL_STORAGE_KEY, INDIAN_GUARDRAIL_STORAGE_KEY, BATCH_NUMBER_STORAGE_KEY, BATCH_NAME_STORAGE_KEY],
       result => {
         if (result?.[BATCH_NAME_STORAGE_KEY]) {
-          state.batchName = String(result[BATCH_NAME_STORAGE_KEY]).trim();
+          const stored = String(result[BATCH_NAME_STORAGE_KEY]).trim();
+          if (stored && stored !== "batch_1") {
+            state.batchName = stored;
+          } else {
+            state.batchName = _defaultBatch;
+          }
           const m = state.batchName.match(/^([^()]+)\(([^)]+)\)$/);
           if (m) {
             state.accountEmail = m[1].trim();
             state.cycleTag = m[2].trim();
           }
         } else if (result?.[BATCH_NUMBER_STORAGE_KEY]) {
-          state.batchNumber = Number(result[BATCH_NUMBER_STORAGE_KEY]) || 1;
-          state.batchName = `batch_${state.batchNumber}`;
+          state.batchName = _defaultBatch;
+          state.accountEmail = _defaultAcc.email;
+          state.cycleTag = _defaultCycle;
+        } else {
+          state.batchName = _defaultBatch;
+          state.accountEmail = _defaultAcc.email;
+          state.cycleTag = _defaultCycle;
         }
         if (result?.[TITLE_GUARDRAIL_STORAGE_KEY] !== undefined) {
           state.titleGuardrailEnabled =
@@ -2460,8 +2474,8 @@
       "contact-checker-controls"
     );
 
-    // If an older controls dock exists in DOM without the dedupe button, refresh it
-    if (controls && !controls.querySelector("#contact-checker-dedupe-btn")) {
+    // If an older controls dock exists in DOM without the batch select dropdown or dedupe button, refresh it
+    if (controls && (!controls.querySelector("#contact-checker-batch-select") || !controls.querySelector("#contact-checker-dedupe-btn"))) {
       controls.remove();
       controls = null;
     }
@@ -2625,18 +2639,20 @@
     const batchSelectExisting = controls.querySelector("#contact-checker-batch-select");
     const batchInputExisting = controls.querySelector("#contact-checker-batch-input");
     if (batchSelectExisting && document.activeElement !== batchSelectExisting && document.activeElement !== batchInputExisting) {
-      if (batchSelectExisting.value !== (state.batchName || "")) {
-        const matchingOpt = Array.from(batchSelectExisting.options).find(o => o.value === state.batchName);
-        if (matchingOpt) {
-          batchSelectExisting.value = state.batchName;
-          if (batchInputExisting) batchInputExisting.style.display = "none";
-        } else if (state.batchName) {
-          batchSelectExisting.value = "__CUSTOM__";
-          if (batchInputExisting) {
-            batchInputExisting.style.display = "inline-block";
-            batchInputExisting.value = state.batchName;
-          }
+      const currentVal = state.batchName || _defaultBatch;
+      const matchingOpt = Array.from(batchSelectExisting.options).find(o => o.value === currentVal);
+      if (matchingOpt) {
+        batchSelectExisting.value = currentVal;
+        if (batchInputExisting) batchInputExisting.style.display = "none";
+      } else if (currentVal && currentVal !== "batch_1") {
+        batchSelectExisting.value = "__CUSTOM__";
+        if (batchInputExisting) {
+          batchInputExisting.style.display = "inline-block";
+          batchInputExisting.value = currentVal;
         }
+      } else {
+        batchSelectExisting.value = _defaultBatch;
+        if (batchInputExisting) batchInputExisting.style.display = "none";
       }
     }
 
