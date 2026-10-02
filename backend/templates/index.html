@@ -2697,6 +2697,10 @@ def extract_and_verify_lead(domain, first, last):
 
         <div class="reports-filter-row">
           <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <select class="reports-select-box" id="apollo-saving-cycle-filter" onchange="fetchSavingSummary(true, this.value)" style="border-color:var(--primary); font-weight:600; color:var(--primary);">
+              <option value="october" selected>⏱ Active October Cycle (Timer Filtered)</option>
+              <option value="all">📅 All Past Cycles (Historical)</option>
+            </select>
             <input type="text" class="reports-search-input" id="apollo-saving-search-input" placeholder="Search account, login, or batch..." oninput="filterSavingLedgerTable(this.value, 'apollo')">
             <select class="reports-select-box" id="apollo-saving-source-filter" onchange="filterSavingLedgerBySource(this.value, 'apollo')">
               <option value="all">All Sources (Web + API)</option>
@@ -2706,7 +2710,7 @@ def extract_and_verify_lead(domain, first, last):
             </select>
           </div>
           <div style="font-size:11px; color:var(--text-dim);" id="apollo-saving-telemetry-text">
-            Live Database Sync: 19 Logins Tracked • 100% Leads Linked
+            Live Database Sync: Active October Billing Cycle
           </div>
         </div>
 
@@ -2715,8 +2719,10 @@ def extract_and_verify_lead(domain, first, last):
             <thead>
               <tr>
                 <th style="width:40px;">#</th>
-                <th>Login Account Name</th>
+                <th>Login Account &amp; Billing Timer</th>
                 <th>Save Source</th>
+                <th style="text-align:right;">Saved from Web</th>
+                <th style="text-align:right;">Enriched Here</th>
                 <th style="text-align:right;">Credits Used</th>
                 <th style="text-align:right;">Saved Emails</th>
                 <th style="text-align:right;">Total Contacts</th>
@@ -2725,7 +2731,7 @@ def extract_and_verify_lead(domain, first, last):
               </tr>
             </thead>
             <tbody id="tbody-apollo-saving-ledger">
-              <tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-dim);">Loading Apollo Saving Ledger...</td></tr>
+              <tr><td colspan="10" style="text-align:center; padding:20px; color:var(--text-dim);">Loading Apollo Saving Ledger...</td></tr>
             </tbody>
           </table>
         </div>
@@ -2941,6 +2947,10 @@ def extract_and_verify_lead(domain, first, last):
 
         <div class="reports-filter-row">
           <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <select class="reports-select-box" id="rep-s1-cycle-filter" onchange="fetchSavingSummary(true, this.value)" style="border-color:var(--primary); font-weight:600; color:var(--primary);">
+              <option value="october" selected>⏱ Active October Cycle (Timer Filtered)</option>
+              <option value="all">📅 All Past Cycles (Historical)</option>
+            </select>
             <input type="text" class="reports-search-input" id="rep-s1-search" placeholder="Search account, login, or batch..." oninput="filterSavingLedgerTable(this.value, 'reports')">
             <select class="reports-select-box" id="rep-s1-source-filter" onchange="filterSavingLedgerBySource(this.value, 'reports')">
               <option value="all">All Sources (Web + API)</option>
@@ -2950,7 +2960,7 @@ def extract_and_verify_lead(domain, first, last):
             </select>
           </div>
           <div style="font-size:11px; color:var(--text-dim);" id="rep-s1-telemetry">
-            Tracking 19 Fleet Logins • Auto-detected on save
+            Tracking Active October Cycle • Filtered by Expiration Timer
           </div>
         </div>
 
@@ -2959,8 +2969,10 @@ def extract_and_verify_lead(domain, first, last):
             <thead>
               <tr>
                 <th style="width:40px;">#</th>
-                <th>Login Account Name</th>
+                <th>Login Account &amp; Billing Timer</th>
                 <th>Save Source</th>
+                <th style="text-align:right;">Saved from Web</th>
+                <th style="text-align:right;">Enriched Here</th>
                 <th style="text-align:right;">Credits Used</th>
                 <th style="text-align:right;">Saved Emails</th>
                 <th style="text-align:right;">Total Contacts</th>
@@ -2969,7 +2981,7 @@ def extract_and_verify_lead(domain, first, last):
               </tr>
             </thead>
             <tbody id="tbody-rep-saving-ledger">
-              <tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-dim);">Loading Saving Ledger...</td></tr>
+              <tr><td colspan="10" style="text-align:center; padding:20px; color:var(--text-dim);">Loading Saving Ledger...</td></tr>
             </tbody>
           </table>
         </div>
@@ -4677,23 +4689,36 @@ def extract_and_verify_lead(domain, first, last):
       fetchCrmSyncSummary(force);
     }
 
-    async function fetchSavingSummary(force = false) {
+    async function fetchSavingSummary(force = false, cycleFilter = null) {
       try {
-        const res = await fetch('/api/reports/saving-summary');
+        const cycleSelect = document.getElementById('rep-s1-cycle-filter');
+        const activeCycle = cycleFilter || (cycleSelect ? cycleSelect.value : 'october');
+        const res = await fetch(`/api/reports/saving-summary?filter_cycle=${encodeURIComponent(activeCycle)}&active_only=true`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         savingSummaryData = data;
+
+        // Sync cycle filter selects across views
+        const apolloCycleSelect = document.getElementById('apollo-saving-cycle-filter');
+        if (apolloCycleSelect && apolloCycleSelect.value !== activeCycle) apolloCycleSelect.value = activeCycle;
+        if (cycleSelect && cycleSelect.value !== activeCycle) cycleSelect.value = activeCycle;
 
         // Update KPI card & badges
         const repSaved = document.getElementById('rep-kpi-saved');
         if (repSaved) repSaved.innerText = (data.total_saved_leads || 0).toLocaleString();
         const repLogins = document.getElementById('rep-kpi-logins');
-        if (repLogins) repLogins.innerText = `${data.total_accounts || 19} Logins`;
+        if (repLogins) repLogins.innerText = `${data.active_accounts || 0} / ${data.total_accounts || 19} Logins`;
 
         const s1Badge = document.getElementById('rep-s1-badge');
-        if (s1Badge) s1Badge.innerText = `${(data.total_saved_leads || 0).toLocaleString()} Leads Saved`;
+        if (s1Badge) s1Badge.innerText = `${(data.total_saved_leads || 0).toLocaleString()} Contacts (${data.cycle_label || 'Active Cycle'})`;
         const apolloBadge = document.getElementById('apollo-saving-total-badge');
-        if (apolloBadge) apolloBadge.innerText = `${(data.total_saved_leads || 0).toLocaleString()} Leads Saved`;
+        if (apolloBadge) apolloBadge.innerText = `${(data.total_saved_leads || 0).toLocaleString()} Contacts (${data.cycle_label || 'Active Cycle'})`;
+
+        const telemetryText = `Showing ${data.active_accounts} active logins in ${data.cycle_label || 'October Cycle'} (with ≥1 saved or enriched lead)`;
+        const repTelem = document.getElementById('rep-s1-telemetry');
+        if (repTelem) repTelem.innerText = telemetryText;
+        const apolloTelem = document.getElementById('apollo-saving-telemetry-text');
+        if (apolloTelem) apolloTelem.innerText = telemetryText;
 
         renderSavingLedgerTable(data.records, 'apollo');
         renderSavingLedgerTable(data.records, 'reports');
@@ -4708,7 +4733,7 @@ def extract_and_verify_lead(domain, first, last):
       if (!tbody) return;
 
       if (!records || records.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-dim);">No saving records found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:24px; color:var(--text-dim);"><div style="font-size:13px; font-weight:600; margin-bottom:4px;">No active logins found in this cycle</div><div style="font-size:11px;">Logins appear here once at least 1 contact is enriched or saved from web.</div></td></tr>';
         return;
       }
 
@@ -4722,12 +4747,22 @@ def extract_and_verify_lead(domain, first, last):
 
         const lastSaved = r.last_saved_str || '—';
         const batchCount = (r.batches && r.batches.length) || 0;
+        const timerBadge = r.time_left && r.time_left !== '—'
+          ? `<span class="status-tag ${r.urgency || 'safe'}" style="font-size:9.5px; padding:1px 6px;" title="Billing Expiry: ${r.expiry_ist || ''}">⏱ ${r.time_left}</span>`
+          : '';
+        const cyclePill = r.cycle && r.cycle !== 'all-time'
+          ? `<span style="display:inline-flex; align-items:center; gap:4px; font-size:10px; font-family:var(--font-mono); color:var(--primary); background:rgba(14,165,233,0.1); border:1px solid rgba(14,165,233,0.25); border-radius:4px; padding:1px 6px; margin-top:3px;">📅 ${r.cycle}</span>`
+          : '';
 
         tr.innerHTML = `
           <td style="font-family:var(--font-mono); color:var(--text-dim); font-weight:700;">${num}</td>
           <td>
-            <div style="font-weight:600; color:var(--text-main);">${r.name}</div>
+            <div style="font-weight:600; color:var(--text-main); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <span>${r.name}</span>
+              ${timerBadge}
+            </div>
             <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-muted);">${r.email}</div>
+            ${cyclePill}
           </td>
           <td>
             <span class="source-tag ${srcClass}">
@@ -4735,13 +4770,19 @@ def extract_and_verify_lead(domain, first, last):
               ${r.source}
             </span>
           </td>
+          <td style="text-align:right; font-family:var(--font-mono); font-weight:600; color:var(--accent-purple);">
+            ${(r.saved_from_web || 0).toLocaleString()}
+          </td>
+          <td style="text-align:right; font-family:var(--font-mono); font-weight:600; color:var(--accent-green);">
+            ${(r.enriched_here || 0).toLocaleString()}
+          </td>
           <td style="text-align:right; font-family:var(--font-mono); font-weight:700; color:var(--accent-amber);">
             ${(r.credits_used || 0).toLocaleString()}
           </td>
           <td style="text-align:right; font-family:var(--font-mono); font-weight:700; color:var(--accent-green);">
             ${(r.saved_emails || 0).toLocaleString()}
           </td>
-          <td style="text-align:right; font-family:var(--font-mono); font-weight:700; color:var(--primary);">
+          <td style="text-align:right; font-family:var(--font-mono); font-weight:800; color:var(--primary); font-size:13px;">
             ${(r.total_leads || 0).toLocaleString()}
           </td>
           <td style="font-family:var(--font-mono); font-size:11px; color:var(--text-muted);">

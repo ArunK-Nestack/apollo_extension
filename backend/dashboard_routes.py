@@ -1624,12 +1624,16 @@ def stream_task(task_id: str):
 # =====================================================================
 
 @dashboard_router.get("/api/reports/saving-summary")
-def get_saving_summary():
+def get_saving_summary(
+    filter_cycle: Optional[str] = "october",
+    active_only: bool = True
+):
     """
     Section 1: Apollo Saving CRUD / Full Saving Ledger Table.
-    Aggregates all records from apollo_saved_leads grouped by account
-    to report login name, email, credits used, emails saved, total contacts,
-    and exact last save timestamp.
+    Aggregates records from apollo_saved_leads and enrich_saved_leads.
+    When filter_cycle == 'october' (default), filters for logins that expire in
+    October, applies each login's exact billing cycle, and lists only logins
+    with at least 1 contact enriched or saved from web during that cycle.
     """
     accs_file = CONFIG_DIR / "apollo_accounts.json"
     accs = []
@@ -1640,6 +1644,158 @@ def get_saving_summary():
         except Exception:
             pass
 
+    live_report_file = CONFIG_DIR / "apollo_live_account_report.json"
+    live_map = {}
+    if live_report_file.exists():
+        try:
+            with open(live_report_file, "r", encoding="utf-8") as f:
+                live_data = json.load(f)
+                live_map = {a.get("email", "").strip().lower(): a for a in live_data.get("accounts", [])}
+        except Exception:
+            pass
+
+    # 1. Active October Cycle (Timer Filtered) — Default
+    if filter_cycle != "all":
+        records = []
+        total_saved_web = 0
+        total_enriched = 0
+        total_creds = 0
+        total_emails = 0
+        total_all_leads = 0
+
+        try:
+            from backend.api import get_connection
+            conn = get_connection()
+            with conn.cursor() as cur:
+                for a in accs:
+                    em = a["email"].strip().lower()
+                    nm = a["name"].strip()
+                    la = live_map.get(em, {})
+                    be = la.get("expiry_utc")
+
+                    # Resolve renewal day & cycle
+                    if be:
+                        try:
+                            exp_dt = datetime.fromisoformat(be.replace("Z", "+00:00"))
+                        except Exception:
+                            exp_dt = datetime(2026, 10, a.get("renewalDay", 20), tzinfo=timezone.utc)
+                    else:
+                        exp_dt = datetime(2026, 10, a.get("renewalDay", 20), tzinfo=timezone.utc)
+
+                    # Only process logins that expire in October
+                    if exp_dt.month != 10:
+                        continue
+
+                    rday = exp_dt.day
+                    cycle_tag = f"sep {rday:02d} - oct {rday:02d}"
+                    start_dt = datetime(2026, 9, rday, 0, 0, 0, tzinfo=timezone.utc)
+                    end_dt = exp_dt
+
+                    # Query apollo_saved_leads for this login & cycle
+                    cur.execute("""
+                        SELECT 
+                            batch,
+                            COUNT(*) as cnt,
+                            COUNT(email) as emails_cnt,
+                            SUM(credits_charged) as creds,
+                            SUM(CASE WHEN enriched_at IS NOT NULL OR credits_charged > 0 THEN 1 ELSE 0 END) as enriched_cnt,
+                            SUM(CASE WHEN (enriched_at IS NULL AND (credits_charged = 0 OR credits_charged IS NULL)) THEN 1 ELSE 0 END) as web_cnt,
+                            MAX(created_at) as last_saved
+                        FROM apollo_saved_leads
+                        WHERE (cycle = %s OR (created_at >= %s AND created_at <= %s))
+                          AND (LOWER(account_used) = %s OR LOWER(account_used) = %s OR LOWER(batch) LIKE %s)
+                        GROUP BY batch;
+                    """, (
+                        cycle_tag,
+                        start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        em,
+                        nm.lower(),
+                        f"%{em}%"
+                    ))
+                    batch_rows = cur.fetchall()
+
+                    # Query enrich_saved_leads for this login & cycle
+                    cur.execute("""
+                        SELECT COUNT(*), SUM(credits_charged)
+                        FROM enrich_saved_leads
+                        WHERE (cycle = %s OR (created_at >= %s AND created_at <= %s))
+                          AND (LOWER(account_used) = %s OR LOWER(account_used) = %s OR LOWER(batch) LIKE %s);
+                    """, (
+                        cycle_tag,
+                        start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        em,
+                        nm.lower(),
+                        f"%{em}%"
+                    ))
+                    enrich_db_row = cur.fetchone()
+                    extra_enrich = int(enrich_db_row[0] or 0) if enrich_db_row else 0
+
+                    tot_leads = sum(r[1] for r in batch_rows)
+                    tot_emails = sum(r[2] for r in batch_rows)
+                    tot_creds = sum(int(r[3] or 0) for r in batch_rows)
+                    tot_enriched = sum(int(r[4] or 0) for r in batch_rows) + extra_enrich
+                    tot_web = sum(int(r[5] or 0) for r in batch_rows)
+                    dts = [r[6] for r in batch_rows if r[6]]
+                    last_dt = max(dts) if dts else None
+
+                    # If at least one contact enriched or saved from web during that cycle's time period
+                    has_activity = (tot_leads > 0 or tot_enriched > 0 or tot_web > 0)
+                    if active_only and not has_activity:
+                        continue
+
+                    source = "Hybrid (Web+API)" if (tot_web > 0 and tot_enriched > 0) else ("Apollo API" if tot_enriched > 0 else "Web Extension")
+
+                    batch_list = [
+                        {"batch": r[0], "count": r[1], "web": int(r[5] or 0), "enriched": int(r[4] or 0), "credits": int(r[3] or 0)}
+                        for r in batch_rows
+                    ]
+
+                    records.append({
+                        "id": a["id"],
+                        "name": nm,
+                        "email": a["email"],
+                        "cycle": cycle_tag,
+                        "expiry_ist": la.get("expiry_ist", exp_dt.strftime("%d %b %Y IST")),
+                        "time_left": la.get("time_left", f"{rday} Oct"),
+                        "urgency": la.get("urgency", "safe"),
+                        "source": source,
+                        "saved_from_web": tot_web,
+                        "enriched_here": tot_enriched,
+                        "credits_used": tot_creds,
+                        "saved_emails": tot_emails,
+                        "total_leads": tot_leads,
+                        "last_saved_str": last_dt.strftime("%Y-%m-%d %H:%M:%S") if last_dt else "—",
+                        "batches": batch_list
+                    })
+
+                    total_saved_web += tot_web
+                    total_enriched += tot_enriched
+                    total_creds += tot_creds
+                    total_emails += tot_emails
+                    total_all_leads += tot_leads
+
+            records.sort(key=lambda x: x["total_leads"], reverse=True)
+
+            return {
+                "status": "ok",
+                "cycle_filter": "october",
+                "cycle_label": "Active October 2026 Cycle (Timer Filtered)",
+                "total_accounts": len(accs),
+                "active_accounts": len(records),
+                "total_saved_leads": total_all_leads,
+                "total_saved_web": total_saved_web,
+                "total_enriched": total_enriched,
+                "total_emails_saved": total_emails,
+                "total_credits_used": total_creds,
+                "records": records
+            }
+        except Exception as e:
+            print(f"[Reports] Error querying saving summary (October cycle): {e}", flush=True)
+            return {"status": "error", "message": str(e), "records": []}
+
+    # 2. Historical All-Time (Optional fallback)
     acc_map = {}
     for a in accs:
         key = a["email"].strip().lower()
@@ -1647,25 +1803,18 @@ def get_saving_summary():
             "id": a["id"],
             "name": a["name"],
             "email": a["email"],
+            "cycle": "all-time",
+            "time_left": "Historical",
+            "urgency": "safe",
             "source": "Web Extension",
+            "saved_from_web": 0,
+            "enriched_here": 0,
             "total_leads": 0,
             "saved_emails": 0,
             "credits_used": 0,
             "last_saved": None,
             "batches": []
         }
-
-    unassigned = {
-        "id": 0,
-        "name": "Legacy & Direct Saves",
-        "email": "fleet_vault@nestack.com",
-        "source": "Web Extension",
-        "total_leads": 0,
-        "saved_emails": 0,
-        "credits_used": 0,
-        "last_saved": None,
-        "batches": []
-    }
 
     try:
         from backend.api import get_connection
@@ -1719,22 +1868,25 @@ def get_saving_summary():
                             matched_key = k
                             break
 
-            target = acc_map[matched_key] if matched_key else unassigned
-            target["total_leads"] += cnt
-            target["saved_emails"] += emails_cnt
-            target["credits_used"] += int(creds or 0)
-            target["batches"].append({"batch": batch_str, "count": cnt})
-            if max_dt and (not target["last_saved"] or max_dt > target["last_saved"]):
-                target["last_saved"] = max_dt
-            if "api" in batch_str.lower() or int(creds or 0) > 0:
-                target["source"] = "Apollo API" if target["credits_used"] == target["total_leads"] else "Hybrid (Web+API)"
+            if matched_key:
+                target = acc_map[matched_key]
+                target["total_leads"] += cnt
+                target["saved_emails"] += emails_cnt
+                target["credits_used"] += int(creds or 0)
+                if int(creds or 0) > 0:
+                    target["enriched_here"] += cnt
+                else:
+                    target["saved_from_web"] += cnt
+                target["batches"].append({"batch": batch_str, "count": cnt})
+                if max_dt and (not target["last_saved"] or max_dt > target["last_saved"]):
+                    target["last_saved"] = max_dt
+                if "api" in batch_str.lower() or int(creds or 0) > 0:
+                    target["source"] = "Apollo API" if target["credits_used"] == target["total_leads"] else "Hybrid (Web+API)"
 
     except Exception as e:
         print(f"[Reports] Error querying saving summary: {e}", flush=True)
 
-    records = list(acc_map.values())
-    if unassigned["total_leads"] > 0:
-        records.append(unassigned)
+    records = [r for r in acc_map.values() if (not active_only or r["total_leads"] > 0)]
 
     for r in records:
         if r["last_saved"]:
@@ -1751,8 +1903,10 @@ def get_saving_summary():
 
     return {
         "status": "ok",
+        "cycle_filter": "all",
+        "cycle_label": "All Past Cycles (Lifetime)",
         "total_accounts": len(accs),
-        "active_accounts": sum(1 for r in records if r["total_leads"] > 0 and r["id"] > 0),
+        "active_accounts": len(records),
         "total_saved_leads": total_saved,
         "total_emails_saved": total_emails,
         "total_credits_used": total_credits,
