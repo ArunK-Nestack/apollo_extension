@@ -1,0 +1,7 @@
+{
+  "extraPaths": [
+    ".",
+    "freshsales_agent",
+    "millionverifier_agent_step1"
+  ]
+}
