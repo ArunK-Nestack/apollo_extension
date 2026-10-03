@@ -274,7 +274,10 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
                     format_strings = ','.join(['%s'] * len(chunk))
                     cursor.execute(f"SELECT email, verification_status FROM million_verifier_cache WHERE email IN ({format_strings})", chunk)
                     for row in cursor.fetchall():
-                        known_emails_cache[row["email"].lower()] = row["verification_status"].lower()
+                        em_val = row[0] if isinstance(row, (tuple, list)) else row.get("email")
+                        st_val = row[1] if isinstance(row, (tuple, list)) else row.get("verification_status")
+                        if em_val and st_val:
+                            known_emails_cache[str(em_val).strip().lower()] = str(st_val).strip().lower()
         except Exception as e:
             print(f"  [SMART CACHE WARNING] Failed to query cache: {e}")
 
@@ -335,14 +338,29 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
             print("  [SMART CACHE] Saving new API results into database cache...")
             try:
                 new_results = pd.read_csv(downloaded_csv)
+                email_col = next((c for c in new_results.columns if c.strip().lower() in ("email", "email address", "contact email")), None)
+                quality_col = next((c for c in new_results.columns if c.strip().lower() == "quality"), None)
+                result_col = next((c for c in new_results.columns if c.strip().lower() == "result"), None)
+
                 with conn.cursor() as cursor:
                     insert_data = []
                     for _, row in new_results.iterrows():
-                        em = str(row.get("email", "")).strip().lower()
-                        res = str(row.get("result", "")).strip().lower()
-                        if em and res in ("good", "bad", "risky"):
-                            dom = em.split("@")[-1] if "@" in em else None
-                            insert_data.append((em, dom, res))
+                        em = str(row.get(email_col, "")).strip().lower() if email_col else ""
+                        if not em or em == "nan" or "@" not in em:
+                            continue
+
+                        q_val = str(row.get(quality_col, "")).strip().lower() if quality_col else ""
+                        r_val = str(row.get(result_col, "")).strip().lower() if result_col else ""
+
+                        if q_val in ("good", "valid") or r_val in ("ok", "good", "valid"):
+                            res = "good"
+                        elif q_val in ("bad", "invalid") or r_val in ("invalid", "disposable", "bad", "spam_trap", "error"):
+                            res = "bad"
+                        else:
+                            res = "risky"
+
+                        dom = em.split("@")[-1]
+                        insert_data.append((em, dom, res))
                     
                     if insert_data:
                         insert_query = """
@@ -368,25 +386,32 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
 
     # --- PHASE C: MERGE KNOWN + UNKNOWN RESULTS FOR CATEGORIZER ---
     print("\n  [SMART CACHE] Merging database cache with API results for final output...")
-    final_results = []
-    final_results.extend(known_results)
     
-    if actual_api_csv and actual_api_csv.exists():
-        try:
-            api_df = pd.read_csv(actual_api_csv)
-            for _, row in api_df.iterrows():
-                em = str(row.get("email", "")).strip().lower()
-                res = str(row.get("result", "")).strip().lower()
-                if em:
-                    final_results.append({"email": em, "result": res})
-        except Exception as e:
-            print(f"  [ERROR] Failed to read downloaded CSV: {e}")
-            
-    unified_csv_path = cache_dir / f"{base_stem}_unified_results.csv"
-    pd.DataFrame(final_results).to_csv(unified_csv_path, index=False)
-    
-    # Point categorized results to our unified CSV
-    downloaded_csv = unified_csv_path
+    if len(known_results) == 0 and actual_api_csv and actual_api_csv.exists():
+        # All records verified directly by API, use downloaded CSV with all original and verified headers
+        downloaded_csv = actual_api_csv
+    else:
+        # Merge known cached results with API results preserving all original columns
+        combined_rows = []
+        if actual_api_csv and actual_api_csv.exists():
+            try:
+                api_df = pd.read_csv(actual_api_csv)
+                combined_rows.extend(api_df.to_dict(orient="records"))
+            except Exception as e:
+                print(f"  [ERROR] Failed to read API CSV: {e}")
+
+        for kr in known_results:
+            em = kr["email"]
+            st = kr["result"]
+            orig_row = dict(email_to_orig.get(em, {}))
+            orig_row["Email"] = em
+            orig_row["quality"] = st
+            orig_row["result"] = "ok" if st == "good" else ("invalid" if st == "bad" else "catch_all")
+            combined_rows.append(orig_row)
+
+        unified_csv_path = cache_dir / f"{base_stem}_unified_results.csv"
+        pd.DataFrame(combined_rows).to_csv(unified_csv_path, index=False, encoding="utf-8-sig")
+        downloaded_csv = unified_csv_path
 
     # 6. Categorize Results (Good, Bad, Risky) with ALL 75 columns preserved
     temp_categorized_dir = cache_dir / f"{base_stem}_categorized"

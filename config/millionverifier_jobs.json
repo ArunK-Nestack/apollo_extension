@@ -1,5 +1,18 @@
 [
   {
+    "file_id": "32219983",
+    "file_name": "RAHUL_CHANDRAN_NESTACK-TECH_COM_sep_03_-_oct_03.csv",
+    "login": "RAHUL.CHANDRAN@NESTACK-TECH.COM",
+    "account_name": "Rahul Chandran",
+    "batch": "rahul_chandran_tech_nestack_oct-1",
+    "status": "finished",
+    "total_rows": 3963,
+    "good_count": 3144,
+    "bad_count": 202,
+    "risky_count": 617,
+    "created_at": "2026-10-03 02:23:03"
+  },
+  {
     "file_id": 999,
     "file_name": "million.csv",
     "login": "RAHUL@NESTAKTECHNOLOGY.COM",
