@@ -1696,10 +1696,10 @@ def get_saving_summary(
                         SELECT 
                             batch,
                             COUNT(*) as cnt,
-                            COUNT(email) as emails_cnt,
+                            COUNT(CASE WHEN email IS NOT NULL AND TRIM(email) != '' THEN 1 END) as emails_cnt,
                             SUM(credits_charged) as creds,
-                            SUM(CASE WHEN enriched_at IS NOT NULL OR credits_charged > 0 THEN 1 ELSE 0 END) as enriched_cnt,
-                            SUM(CASE WHEN (enriched_at IS NULL AND (credits_charged = 0 OR credits_charged IS NULL)) THEN 1 ELSE 0 END) as web_cnt,
+                            SUM(CASE WHEN (email IS NOT NULL AND TRIM(email) != '') OR (credits_charged > 0) THEN 1 ELSE 0 END) as enriched_cnt,
+                            SUM(CASE WHEN (email IS NULL OR TRIM(email) = '') AND (credits_charged = 0 OR credits_charged IS NULL) THEN 1 ELSE 0 END) as web_cnt,
                             MAX(created_at) as last_saved
                         FROM apollo_saved_leads
                         WHERE created_at >= '2026-10-01 00:00:00'
@@ -1714,7 +1714,10 @@ def get_saving_summary(
 
                     # Query enrich_saved_leads for this login in active October cycle
                     cur.execute("""
-                        SELECT COUNT(*), SUM(credits_charged)
+                        SELECT 
+                            COUNT(*), 
+                            COUNT(CASE WHEN email IS NOT NULL AND TRIM(email) != '' THEN 1 END),
+                            SUM(credits_charged)
                         FROM enrich_saved_leads
                         WHERE created_at >= '2026-10-01 00:00:00'
                           AND (LOWER(account_used) = %s OR LOWER(account_used) = %s OR LOWER(batch) LIKE %s);
@@ -1724,12 +1727,14 @@ def get_saving_summary(
                         f"%{em}%"
                     ))
                     enrich_db_row = cur.fetchone()
-                    extra_enrich = int(enrich_db_row[0] or 0) if enrich_db_row else 0
+                    extra_leads = int(enrich_db_row[0] or 0) if enrich_db_row else 0
+                    extra_emails = int(enrich_db_row[1] or 0) if enrich_db_row else 0
+                    extra_creds = int(enrich_db_row[2] or 0) if enrich_db_row else 0
 
-                    tot_leads = sum(r[1] for r in batch_rows)
-                    tot_emails = sum(r[2] for r in batch_rows)
-                    tot_creds = sum(int(r[3] or 0) for r in batch_rows)
-                    tot_enriched = sum(int(r[4] or 0) for r in batch_rows) + extra_enrich
+                    tot_leads = sum(r[1] for r in batch_rows) + extra_leads
+                    tot_emails = sum(r[2] for r in batch_rows) + extra_emails
+                    tot_creds = sum(int(r[3] or 0) for r in batch_rows) + extra_creds
+                    tot_enriched = sum(int(r[4] or 0) for r in batch_rows) + extra_leads
                     tot_web = sum(int(r[5] or 0) for r in batch_rows)
                     dts = [r[6] for r in batch_rows if r[6]]
                     last_dt = max(dts) if dts else None
@@ -1742,7 +1747,7 @@ def get_saving_summary(
                     source = "Hybrid (Web+API)" if (tot_web > 0 and tot_enriched > 0) else ("Apollo API" if tot_enriched > 0 else "Web Extension")
 
                     batch_list = [
-                        {"batch": r[0], "count": r[1], "web": int(r[5] or 0), "enriched": int(r[4] or 0), "credits": int(r[3] or 0)}
+                        {"batch": r[0], "count": r[1], "emails": int(r[2] or 0), "credits": int(r[3] or 0), "enriched": int(r[4] or 0), "web": int(r[5] or 0)}
                         for r in batch_rows
                     ]
 
@@ -1819,8 +1824,10 @@ def get_saving_summary(
                     COALESCE(account_used, '') as acc,
                     batch,
                     COUNT(*) as cnt,
-                    COUNT(email) as emails_cnt,
+                    COUNT(CASE WHEN email IS NOT NULL AND TRIM(email) != '' THEN 1 END) as emails_cnt,
                     SUM(credits_charged) as creds,
+                    SUM(CASE WHEN (email IS NOT NULL AND TRIM(email) != '') OR (credits_charged > 0) THEN 1 ELSE 0 END) as enriched_cnt,
+                    SUM(CASE WHEN (email IS NULL OR TRIM(email) = '') AND (credits_charged = 0 OR credits_charged IS NULL) THEN 1 ELSE 0 END) as web_cnt,
                     MIN(created_at) as min_dt,
                     MAX(created_at) as max_dt
                 FROM apollo_saved_leads
@@ -1829,7 +1836,7 @@ def get_saving_summary(
             rows = cur.fetchall()
 
         for r in rows:
-            acc, batch, cnt, emails_cnt, creds, min_dt, max_dt = r
+            acc, batch, cnt, emails_cnt, creds, enriched_cnt, web_cnt, min_dt, max_dt = r
             acc_str = (acc or "").strip()
             batch_str = (batch or "").strip()
 
@@ -1867,10 +1874,8 @@ def get_saving_summary(
                 target["total_leads"] += cnt
                 target["saved_emails"] += emails_cnt
                 target["credits_used"] += int(creds or 0)
-                if int(creds or 0) > 0:
-                    target["enriched_here"] += cnt
-                else:
-                    target["saved_from_web"] += cnt
+                target["enriched_here"] += int(enriched_cnt or 0)
+                target["saved_from_web"] += int(web_cnt or 0)
                 target["batches"].append({"batch": batch_str, "count": cnt})
                 if max_dt and (not target["last_saved"] or max_dt > target["last_saved"]):
                     target["last_saved"] = max_dt
