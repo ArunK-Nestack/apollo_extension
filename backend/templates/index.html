@@ -2732,7 +2732,7 @@ def extract_and_verify_lead(domain, first, last):
                 <th>Save Source</th>
                 <th style="text-align:right;">Saved from Web</th>
                 <th style="text-align:right;">Enriched Here</th>
-                <th style="text-align:right;">Credits Used</th>
+                <th style="text-align:right;" title="Total Apollo credits used on the web during this billing cycle">Credits Used (Web)</th>
                 <th style="text-align:right;">Saved Emails</th>
                 <th style="text-align:right;">Total Contacts</th>
                 <th>Last Saved Date</th>
@@ -2987,7 +2987,7 @@ def extract_and_verify_lead(domain, first, last):
                 <th>Save Source</th>
                 <th style="text-align:right;">Saved from Web</th>
                 <th style="text-align:right;">Enriched Here</th>
-                <th style="text-align:right;">Credits Used</th>
+                <th style="text-align:right;" title="Total Apollo credits used on the web during this billing cycle">Credits Used (Web)</th>
                 <th style="text-align:right;">Saved Emails</th>
                 <th style="text-align:right;">Total Contacts</th>
                 <th>Last Saved Date</th>
@@ -4825,7 +4825,8 @@ def extract_and_verify_lead(domain, first, last):
             ${(r.enriched_here || 0).toLocaleString()}
           </td>
           <td style="text-align:right; font-family:var(--font-mono); font-weight:700; color:var(--accent-amber);">
-            ${(r.credits_used || 0).toLocaleString()}
+            <div>${(r.credits_used || 0).toLocaleString()}</div>
+            ${r.enrichment_credits && r.enrichment_credits !== r.credits_used ? `<div style="font-size:10px; font-weight:normal; color:var(--text-dim);" title="Credits charged specifically for database email enrichment">(${r.enrichment_credits.toLocaleString()} enriched)</div>` : ''}
           </td>
           <td style="text-align:right; font-family:var(--font-mono); font-weight:700; color:var(--accent-green);">
             ${(r.saved_emails || 0).toLocaleString()}
@@ -5127,7 +5128,8 @@ def extract_and_verify_lead(domain, first, last):
       }
 
       badge.innerText = `${batches.length} Batches`;
-      footerInfo.innerText = `Total Contacts in Vault: ${totalContacts.toLocaleString()} leads`;
+      const enrNote = (found && found.enrichment_credits && found.enrichment_credits !== found.credits_used) ? ` (${found.enrichment_credits.toLocaleString()} enriched)` : '';
+      footerInfo.innerText = `Total Contacts: ${totalContacts.toLocaleString()} leads • Web Credits: ${(found && found.credits_used || 0).toLocaleString()}${enrNote}`;
 
       if (batches.length === 0) {
         tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--text-dim);">No individual batches linked to this account yet.</td></tr>';
@@ -5196,9 +5198,9 @@ def extract_and_verify_lead(domain, first, last):
         alert("Saving ledger data not loaded yet.");
         return;
       }
-      let csv = "Account_ID,Account_Name,Email,Source,Credits_Used,Saved_Emails,Total_Contacts,Last_Saved_Date\n";
+      let csv = "Account_ID,Account_Name,Email,Source,Credits_Used_Web,Enrichment_Credits,Saved_Emails,Total_Contacts,Last_Saved_Date\n";
       savingSummaryData.records.forEach(r => {
-        csv += `"${r.id}","${(r.name||'').replace(/"/g, '""')}","${r.email}","${r.source}","${r.credits_used}","${r.saved_emails}","${r.total_leads}","${r.last_saved_str}"\n`;
+        csv += `"${r.id}","${(r.name||'').replace(/"/g, '""')}","${r.email}","${r.source}","${r.credits_used}","${r.enrichment_credits || r.credits_used}","${r.saved_emails}","${r.total_leads}","${r.last_saved_str}"\n`;
       });
       _downloadCsvBlob(csv, `apollo_saving_ledger_${Date.now()}.csv`);
     }
@@ -5231,9 +5233,9 @@ def extract_and_verify_lead(domain, first, last):
       if (!currentDrilldownAccount || !savingSummaryData || !savingSummaryData.records) return;
       const acc = savingSummaryData.records.find(r => String(r.id) === String(currentDrilldownAccount.id));
       if (!acc || !acc.batches) return;
-      let csv = "Batch_Tag_Name,Saved_Contacts,Status\n";
+      let csv = "Batch_Tag_Name,Saved_From_Web,Enriched_Here,Credits_Enriched,Saved_Emails,Total_Contacts,Status\n";
       acc.batches.forEach(b => {
-        csv += `"${(b.batch||'').replace(/"/g, '""')}","${b.count}","Vault Active"\n`;
+        csv += `"${(b.batch||'').replace(/"/g, '""')}","${b.web||0}","${b.enriched||0}","${b.credits||0}","${b.emails||0}","${b.count||0}","Vault Active"\n`;
       });
       _downloadCsvBlob(csv, `${currentDrilldownAccount.email}_batches_${Date.now()}.csv`);
     }

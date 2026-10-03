@@ -1739,6 +1739,11 @@ def get_saving_summary(
                     dts = [r[6] for r in batch_rows if r[6]]
                     last_dt = max(dts) if dts else None
 
+                    avail = int(la.get("credits_avail", 0) or 0)
+                    rem = int(la.get("credits_remaining", 0) or 0)
+                    web_credits_used = max(0, avail - rem) if (avail > 0 or rem > 0) else tot_creds
+                    display_credits = web_credits_used if web_credits_used > 0 else tot_creds
+
                     # If at least one contact enriched or saved from web during that cycle's time period
                     has_activity = (tot_leads > 0 or tot_enriched > 0 or tot_web > 0)
                     if active_only and not has_activity:
@@ -1762,7 +1767,10 @@ def get_saving_summary(
                         "source": source,
                         "saved_from_web": tot_web,
                         "enriched_here": tot_enriched,
-                        "credits_used": tot_creds,
+                        "credits_used": display_credits,
+                        "enrichment_credits": tot_creds,
+                        "credits_avail": avail,
+                        "credits_remaining": rem,
                         "saved_emails": tot_emails,
                         "total_leads": tot_leads,
                         "last_saved_str": last_dt.strftime("%Y-%m-%d %H:%M:%S") if last_dt else "—",
@@ -1771,7 +1779,7 @@ def get_saving_summary(
 
                     total_saved_web += tot_web
                     total_enriched += tot_enriched
-                    total_creds += tot_creds
+                    total_creds += display_credits
                     total_emails += tot_emails
                     total_all_leads += tot_leads
 
@@ -1893,6 +1901,19 @@ def get_saving_summary(
         else:
             r["last_saved_str"] = "—"
         del r["last_saved"]
+
+        em = r["email"].strip().lower()
+        la = live_map.get(em, {})
+        avail = int(la.get("credits_avail", 0) or 0)
+        rem = int(la.get("credits_remaining", 0) or 0)
+        web_credits_used = max(0, avail - rem) if (avail > 0 or rem > 0) else 0
+
+        tot_creds = r["credits_used"]
+        r["enrichment_credits"] = tot_creds
+        if web_credits_used > tot_creds:
+            r["credits_used"] = web_credits_used
+        r["credits_avail"] = avail
+        r["credits_remaining"] = rem
 
     records.sort(key=lambda x: x["total_leads"], reverse=True)
 

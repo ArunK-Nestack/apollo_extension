@@ -43,7 +43,7 @@ def build_report_data() -> Dict[str, Any]:
     """Fetches the official saving summary data from backend.dashboard_routes."""
     try:
         from backend.dashboard_routes import get_saving_summary
-        data = get_saving_summary(filter_cycle="october", active_only=False)
+        data = get_saving_summary(filter_cycle="october", active_only=True)
         return data
     except Exception as e:
         print(f"[Dispatcher] Error loading saving summary: {e}", flush=True)
@@ -87,6 +87,7 @@ def format_whatsapp_message(report_data: Dict[str, Any], timestamp_str: str) -> 
             web = r.get("saved_from_web", 0)
             enr = r.get("enriched_here", 0)
             creds = r.get("credits_used", 0)
+            enr_creds = r.get("enrichment_credits", 0)
             emails = r.get("saved_emails", 0)
             tot = r.get("total_leads", 0)
 
@@ -94,7 +95,8 @@ def format_whatsapp_message(report_data: Dict[str, Any], timestamp_str: str) -> 
             if time_left:
                 lines.append(f"   • ⏱ Expiry Timer: *{time_left}*")
             lines.append(f"   • 📥 Web: *{web:,d}* | ⚡ Enriched: *{enr:,d}*")
-            lines.append(f"   • 💳 Credits: *{creds:,d}* | ✉️ Emails: *{emails:,d}*")
+            creds_str = f"*{creds:,d}*" + (f" ({enr_creds:,d} enriched)" if enr_creds and enr_creds != creds else "")
+            lines.append(f"   • 💳 Credits: {creds_str} | ✉️ Emails: *{emails:,d}*")
             lines.append(f"   • 📦 Total Contacts: *{tot:,d}*")
             lines.append("")
     else:
@@ -189,7 +191,10 @@ def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
             </td>
             <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #c084fc; font-weight: 600;">{r.get('saved_from_web', 0):,d}</td>
             <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #4ade80; font-weight: 600;">{r.get('enriched_here', 0):,d}</td>
-            <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #fbbf24; font-weight: bold;">{r.get('credits_used', 0):,d}</td>
+            <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #fbbf24; font-weight: bold;">
+                <div>{r.get('credits_used', 0):,d}</div>
+                {f"<div style='font-size:10px; color:#94a3b8; font-weight:normal;'>({r.get('enrichment_credits', 0):,d} enriched)</div>" if r.get('enrichment_credits') and r.get('enrichment_credits') != r.get('credits_used') else ""}
+            </td>
             <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #34d399; font-weight: bold;">{r.get('saved_emails', 0):,d}</td>
             <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #38bdf8; font-weight: 800; font-size: 13px;">{r.get('total_leads', 0):,d}</td>
         </tr>
