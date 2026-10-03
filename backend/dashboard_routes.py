@@ -1913,6 +1913,22 @@ def get_saving_summary(
     }
 
 
+@dashboard_router.post("/api/reports/send-saving-report")
+def api_send_saving_report(channels: Optional[str] = "email,whatsapp,teams"):
+    """
+    Manually triggers multi-channel dispatch of Apollo Saving Ledger report.
+    Channels can be comma-separated: 'email,whatsapp,teams'.
+    """
+    try:
+        from scripts.send_saving_report import run_saving_report_pipeline
+        ch_list = [c.strip().lower() for c in (channels or "").split(",") if c.strip()]
+        result = run_saving_report_pipeline(channels=ch_list if ch_list else None)
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        print(f"[Reports] Error in send-saving-report: {e}", flush=True)
+        return {"status": "error", "message": str(e)}
+
+
 @dashboard_router.get("/api/reports/verification-summary")
 def get_verification_summary(filter_cycle: Optional[str] = "october"):
     """

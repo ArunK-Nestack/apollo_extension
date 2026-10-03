@@ -2689,6 +2689,11 @@ def extract_and_verify_lead(domain, first, last):
             <span class="status-tag verified" id="apollo-saving-total-badge">4,126 Contacts (sep 03 - oct 03)</span>
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
+            <button class="pill-btn success" id="btn-send-report-tab1" onclick="triggerSendSavingReport(this)" title="Send live report via Email, WhatsApp & Teams" style="display:flex; align-items:center; gap:6px;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+              <span>Send Live Report</span>
+            </button>
+            <span class="status-tag info" style="font-size:10px; padding:3px 8px;" title="Scheduled automatically every day at 5:00 PM IST via Windows Task Scheduler">⏱ Daily 5:00 PM Active</span>
             <button class="pill-btn" onclick="fetchSavingSummary(true)">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
               Refresh
@@ -2939,6 +2944,11 @@ def extract_and_verify_lead(domain, first, last):
             <span class="status-tag verified" id="rep-s1-badge">4,126 Contacts (sep 03 - oct 03)</span>
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
+            <button class="pill-btn success" id="btn-send-report-tab3" onclick="triggerSendSavingReport(this)" title="Send live report via Email, WhatsApp & Teams" style="display:flex; align-items:center; gap:6px;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+              <span>Send Live Report</span>
+            </button>
+            <span class="status-tag info" style="font-size:10px; padding:3px 8px;" title="Scheduled automatically every day at 5:00 PM IST via Windows Task Scheduler">⏱ Daily 5:00 PM Active</span>
             <button class="pill-btn" onclick="fetchSavingSummary(true)">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
               Refresh
@@ -5238,6 +5248,54 @@ def extract_and_verify_lead(domain, first, last):
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+    }
+
+    // ══════════════════════════════════════════
+    // MULTI-CHANNEL SAVING REPORT DISPATCH
+    // ══════════════════════════════════════════
+    async function triggerSendSavingReport(btnElement) {
+      const btn = btnElement || document.getElementById('btn-send-report-tab1') || document.getElementById('btn-send-report-tab3');
+      const origHtml = btn ? btn.innerHTML : '';
+      if (btn) {
+        btn.disabled = true;
+        btn.style.opacity = '0.7';
+        btn.innerHTML = `<span>⏳ Dispatching...</span>`;
+      }
+
+      try {
+        const resp = await fetch('/api/reports/send-saving-report', { method: 'POST' });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+          const ch = (data.result && data.result.channels) || {};
+          let msg = "Apollo Saving Report Dispatched:\n\n";
+          if (ch.email) {
+            msg += ch.email.status === 'success' 
+              ? `• Email: Delivered to ${ch.email.recipients.join(', ')} ✓\n` 
+              : `• Email: ${ch.email.error || ch.email.message}\n`;
+          }
+          if (ch.whatsapp) {
+            msg += ch.whatsapp.status === 'success'
+              ? `• WhatsApp: Delivered to ${ch.whatsapp.phone} ✓\n`
+              : `• WhatsApp: ${ch.whatsapp.message || ch.whatsapp.error}\n`;
+          }
+          if (ch.teams) {
+            msg += ch.teams.status === 'success'
+              ? `• MS Teams: Delivered to Channel ✓\n`
+              : `• MS Teams: ${ch.teams.message || ch.teams.error}\n`;
+          }
+          alert(msg);
+        } else {
+          alert("Error sending report: " + (data.message || "Unknown error"));
+        }
+      } catch (err) {
+        alert("Failed to trigger report dispatch: " + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.style.opacity = '1';
+          btn.innerHTML = origHtml;
+        }
+      }
     }
 
     // ══════════════════════════════════════════
