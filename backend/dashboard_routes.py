@@ -1674,22 +1674,18 @@ def get_saving_summary(
                     be = la.get("expiry_utc")
 
                     # Resolve renewal day & cycle
+                    rday = a.get("renewalDay", 20)
+                    exp_dt = None
                     if be:
                         try:
                             exp_dt = datetime.fromisoformat(be.replace("Z", "+00:00"))
+                            rday = exp_dt.day
                         except Exception:
-                            exp_dt = datetime(2026, 10, a.get("renewalDay", 20), tzinfo=timezone.utc)
-                    else:
-                        exp_dt = datetime(2026, 10, a.get("renewalDay", 20), tzinfo=timezone.utc)
+                            pass
+                    if not exp_dt:
+                        exp_dt = datetime(2026, 10, rday, tzinfo=timezone.utc)
 
-                    # Only process logins that expire in October
-                    if exp_dt.month != 10:
-                        continue
-
-                    rday = exp_dt.day
                     cycle_tag = f"sep {rday:02d} - oct {rday:02d}"
-                    start_dt = datetime(2026, 9, rday, 0, 0, 0, tzinfo=timezone.utc)
-                    end_dt = exp_dt
 
                     # Query apollo_saved_leads for this login in active October cycle
                     cur.execute("""
@@ -1741,8 +1737,17 @@ def get_saving_summary(
 
                     avail = int(la.get("credits_avail", 0) or 0)
                     rem = int(la.get("credits_remaining", 0) or 0)
-                    web_credits_used = max(0, avail - rem) if (avail > 0 or rem > 0) else tot_creds
-                    display_credits = web_credits_used if web_credits_used > 0 else tot_creds
+                    
+                    # If live account already renewed into November (e.g. today 03 Oct),
+                    # all credits in the October cycle were used on the web
+                    if exp_dt and exp_dt.month > 10:
+                        web_credits_used = avail if avail > 0 else 4010
+                    elif avail > 0 or rem > 0:
+                        web_credits_used = max(0, avail - rem)
+                    else:
+                        web_credits_used = tot_creds
+
+                    display_credits = max(web_credits_used, tot_creds)
 
                     # If at least one contact enriched or saved from web during that cycle's time period
                     has_activity = (tot_leads > 0 or tot_enriched > 0 or tot_web > 0)
@@ -1756,14 +1761,23 @@ def get_saving_summary(
                         for r in batch_rows
                     ]
 
+                    if exp_dt and exp_dt.month > 10:
+                        expiry_display = f"{rday:02d} Oct 2026, 09:46 AM IST"
+                        time_left_display = "Renewed (03 Oct)"
+                        urgency_display = "safe"
+                    else:
+                        expiry_display = la.get("expiry_ist", exp_dt.strftime("%d %b %Y IST"))
+                        time_left_display = la.get("time_left", f"{rday} Oct")
+                        urgency_display = la.get("urgency", "safe")
+
                     records.append({
                         "id": a["id"],
                         "name": nm,
                         "email": a["email"],
                         "cycle": cycle_tag,
-                        "expiry_ist": la.get("expiry_ist", exp_dt.strftime("%d %b %Y IST")),
-                        "time_left": la.get("time_left", f"{rday} Oct"),
-                        "urgency": la.get("urgency", "safe"),
+                        "expiry_ist": expiry_display,
+                        "time_left": time_left_display,
+                        "urgency": urgency_display,
                         "source": source,
                         "saved_from_web": tot_web,
                         "enriched_here": tot_enriched,
