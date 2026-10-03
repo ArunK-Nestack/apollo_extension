@@ -1698,8 +1698,8 @@ def get_saving_summary(
                             COUNT(*) as cnt,
                             COUNT(CASE WHEN email IS NOT NULL AND TRIM(email) != '' THEN 1 END) as emails_cnt,
                             SUM(credits_charged) as creds,
-                            SUM(CASE WHEN (email IS NOT NULL AND TRIM(email) != '') OR (credits_charged > 0) THEN 1 ELSE 0 END) as enriched_cnt,
-                            SUM(CASE WHEN (email IS NULL OR TRIM(email) = '') AND (credits_charged = 0 OR credits_charged IS NULL) THEN 1 ELSE 0 END) as web_cnt,
+                            SUM(CASE WHEN credits_charged > 0 THEN 1 ELSE 0 END) as enriched_cnt,
+                            SUM(CASE WHEN credits_charged = 0 OR credits_charged IS NULL THEN 1 ELSE 0 END) as web_cnt,
                             MAX(created_at) as last_saved
                         FROM apollo_saved_leads
                         WHERE created_at >= '2026-10-01 00:00:00'
@@ -1826,8 +1826,8 @@ def get_saving_summary(
                     COUNT(*) as cnt,
                     COUNT(CASE WHEN email IS NOT NULL AND TRIM(email) != '' THEN 1 END) as emails_cnt,
                     SUM(credits_charged) as creds,
-                    SUM(CASE WHEN (email IS NOT NULL AND TRIM(email) != '') OR (credits_charged > 0) THEN 1 ELSE 0 END) as enriched_cnt,
-                    SUM(CASE WHEN (email IS NULL OR TRIM(email) = '') AND (credits_charged = 0 OR credits_charged IS NULL) THEN 1 ELSE 0 END) as web_cnt,
+                    SUM(CASE WHEN credits_charged > 0 THEN 1 ELSE 0 END) as enriched_cnt,
+                    SUM(CASE WHEN credits_charged = 0 OR credits_charged IS NULL THEN 1 ELSE 0 END) as web_cnt,
                     MIN(created_at) as min_dt,
                     MAX(created_at) as max_dt
                 FROM apollo_saved_leads
