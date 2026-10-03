@@ -332,8 +332,31 @@ def dispatch_email(
     if not recipients:
         return {"status": "skipped", "message": "No recipient email configured in REPORT_EMAIL_TO"}
 
+    # 1. Prefer Google Apps Script Web App (0 passwords, 0 2FA required)
+    apps_script_url = os.getenv("APPS_SCRIPT_EMAIL_WEBHOOK_URL", "").strip()
+    if apps_script_url:
+        try:
+            payload = {
+                "to": ", ".join(recipients),
+                "subject": subject,
+                "htmlBody": html_content
+            }
+            res = requests.post(apps_script_url, json=payload, timeout=30)
+            if res.status_code == 200:
+                print(f"[Dispatcher ✓] Email successfully delivered via Google Apps Script to: {', '.join(recipients)}")
+                return {
+                    "status": "success",
+                    "provider": "Google Apps Script (Native Workspace)",
+                    "recipients": recipients
+                }
+            else:
+                print(f"[Dispatcher !] Google Apps Script returned {res.status_code}: {res.text[:200]}")
+        except Exception as e:
+            print(f"[Dispatcher !] Google Apps Script dispatch error: {e}")
+
+    # 2. Fallback to standard SMTP if configured
     if not user or not pwd:
-        return {"status": "error", "message": "SMTP_USER or SMTP_PASSWORD is not configured in .env"}
+        return {"status": "error", "message": "Neither APPS_SCRIPT_EMAIL_WEBHOOK_URL nor valid SMTP credentials configured in .env"}
 
     try:
         msg = MIMEMultipart()
