@@ -60,9 +60,30 @@ async function callBackendApi(endpoint, body) {
   throw lastError || new Error("Unable to connect to Contact Checker Backend on port 8000.");
 }
 
+async function fetchAccountRenewals() {
+  let lastError = null;
+  for (const host of ["http://127.0.0.1:8000", "http://localhost:8000"]) {
+    try {
+      const response = await fetch(`${host}/api/v1/account-renewals`);
+      if (!response.ok) throw new Error(`API error: ${response.status}`);
+      return await response.json();
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("Unable to reach backend on port 8000.");
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   let endpoint;
   let body;
+
+  if (message.type === "GET_ACCOUNT_RENEWALS") {
+    fetchAccountRenewals()
+      .then((data) => sendResponse({ success: data.status === "ok", renewals: data.renewals || {} }))
+      .catch((error) => sendResponse({ success: false, error: error?.message || String(error) }));
+    return true;
+  }
 
   if (message.type === "CHECK_EMAILS") {
     endpoint = "/check";
@@ -91,6 +112,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       titles: message.titles || [],
       names: message.names || []
     };
+  } else if (message.type === "LOG_EXTENSION_ACTIVITY") {
+    endpoint = "/log-extension-activity";
+    body = message.entry || {};
   } else if (message.type === "FLUSH_QUEUES") {
     endpoint = "/flush-pending-queues";
     body = {};

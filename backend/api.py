@@ -3282,6 +3282,66 @@ def _filter_sync_contacts_one_per_domain(contacts: list, batch_tag: str, cur) ->
     return accepted + no_domain
 
 
+class ExtensionActivityRequest(BaseModel):
+    event_type: str
+    account_email: str | None = ""
+    cycle_tag: str | None = ""
+    batch: str | None = ""
+    page_number: int | None = None
+    required_on_page: int | None = None
+    collected_total: int | None = None
+    page_url: str | None = ""
+
+
+def ensure_extension_activity_log_table(conn):
+    """Ensure the extension_activity_log table exists."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS `extension_activity_log` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `event_type` VARCHAR(32) NOT NULL,
+                `account_email` VARCHAR(255) NOT NULL DEFAULT '',
+                `cycle_tag` VARCHAR(64) NOT NULL DEFAULT '',
+                `batch` VARCHAR(128) NOT NULL DEFAULT '',
+                `page_number` INT NULL,
+                `required_on_page` INT NULL,
+                `collected_total` INT NULL,
+                `page_url` VARCHAR(512) NOT NULL DEFAULT '',
+                `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX `idx_account_cycle` (`account_email`, `cycle_tag`),
+                INDEX `idx_event_created` (`event_type`, `created_at`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """)
+
+
+@app.post("/log-extension-activity")
+def log_extension_activity(request: ExtensionActivityRequest):
+    """Record an extension event (start, login selected, page loaded/advanced) with login, cycle and lead counts."""
+    with get_connection() as conn:
+        ensure_extension_activity_log_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO `extension_activity_log`
+                    (`event_type`, `account_email`, `cycle_tag`, `batch`, `page_number`,
+                     `required_on_page`, `collected_total`, `page_url`)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    (request.event_type or "")[:32],
+                    (request.account_email or "").strip()[:255],
+                    (request.cycle_tag or "").strip()[:64],
+                    (request.batch or "").strip()[:128],
+                    request.page_number,
+                    request.required_on_page,
+                    request.collected_total,
+                    (request.page_url or "")[:512],
+                ),
+            )
+        conn.commit()
+    return {"status": "ok"}
+
+
 @app.post("/sync-saved-leads")
 def sync_saved_leads(request: SyncSavedLeadsRequest):
     """Direct sync endpoint: immediately persists all collected required leads into MySQL apollo_saved_leads with batch name and website_link."""

@@ -1017,6 +1017,51 @@
     );
   }
 
+  // ---- MySQL extension_activity_log reporting ----
+  function getApolloPageNumber() {
+    const m = /[?&]page=(\d+)/.exec(location.href);
+    return m ? parseInt(m[1], 10) : 1;
+  }
+
+  function logExtensionActivity(eventType, extra = {}) {
+    if (!chrome?.runtime?.sendMessage) return;
+    const entry = {
+      event_type: eventType,
+      account_email: state.accountEmail || "",
+      cycle_tag: state.cycleTag || "",
+      batch: state.batchName || "",
+      page_number: getApolloPageNumber(),
+      collected_total: state.requiredContactsAll.size,
+      page_url: location.href.slice(0, 500),
+      ...extra
+    };
+    try {
+      chrome.runtime.sendMessage({ type: "LOG_EXTENSION_ACTIVITY", entry }, () => {
+        void chrome.runtime?.lastError; // backend offline: ignore silently
+      });
+    } catch (_) { /* extension context invalidated */ }
+  }
+
+  // Tracks the Apollo results page; when it changes, records the leads the previous page yielded
+  const pageWatch = { page: null, requiredOnPage: 0, timer: null };
+
+  function startPageWatch() {
+    if (pageWatch.timer) return;
+    pageWatch.page = getApolloPageNumber();
+    logExtensionActivity("PAGE_LOADED", { page_number: pageWatch.page, required_on_page: 0 });
+    pageWatch.timer = setInterval(() => {
+      const current = getApolloPageNumber();
+      if (current === pageWatch.page) return;
+      logExtensionActivity("PAGE_ADVANCED", {
+        page_number: pageWatch.page,
+        required_on_page: pageWatch.requiredOnPage
+      });
+      pageWatch.page = current;
+      pageWatch.requiredOnPage = 0;
+      logExtensionActivity("PAGE_LOADED", { page_number: current, required_on_page: 0 });
+    }, 1000);
+  }
+
   function addActivity(
     event,
     message,
@@ -3097,6 +3142,7 @@
 
         state.syncedLeadKeys.clear();
         saveRequiredContactsNow();
+        logExtensionActivity("LOGIN_SELECTED");
         showStatus(`✓ Login Cycle: '${val}' — syncing to MySQL`, 3500);
         addActivity("CYCLE_SELECTED", `Login cycle set to '${val}'. Leads will be tagged exclusively with this cycle in database.`, "info", { batch: val, cycle: details.cycleTag });
 
@@ -3109,6 +3155,8 @@
         if (!pickerList) return;
         pickerList.innerHTML = "";
         const q = (filterText || "").toLowerCase().trim();
+        // Punctuation-insensitive form so "@", "." and "_" in a query still match emails/tags
+        const qNorm = q.replace(/[^a-z0-9]/g, "");
         const currentBatch = state.batchName || _defaultBatch;
 
         let visibleCount = 0;
@@ -3119,11 +3167,10 @@
           const isSelected = currentBatch.includes(acc.email);
 
           if (q) {
-            const match = acc.name.toLowerCase().includes(q) ||
-                          acc.email.toLowerCase().includes(q) ||
-                          details.cycleTag.toLowerCase().includes(q) ||
-                          details.currentDayLabel.toLowerCase().includes(q) ||
-                          String(acc.renewalDay).includes(q);
+            const hay = [acc.name, acc.email, details.cycleTag, details.currentDayLabel, String(acc.renewalDay)]
+              .map(s => s.toLowerCase());
+            const match = hay.some(s => s.includes(q)) ||
+                          (qNorm && hay.some(s => s.replace(/[^a-z0-9]/g, "").includes(qNorm)));
             if (!match) continue;
           }
 
@@ -3158,7 +3205,14 @@
       }
 
       function selectCustomBatch(rawVal) {
-        const val = cleanText(rawVal).replace(/[^a-zA-Z0-9_(). -]/g, "_") || "batch_1";
+        // A bare known login email (e.g. "vijay@nestacktech.com") gets its proper cycle tag
+        const bareEmail = cleanText(rawVal).toLowerCase();
+        const known = APOLLO_19_LOGINS.find(a => a.email.toLowerCase() === bareEmail);
+        if (known) {
+          selectAccount(known);
+          return;
+        }
+        const val = cleanText(rawVal).replace(/[^a-zA-Z0-9_@(). -]/g, "_") || "batch_1";
         state.batchName = val;
         if (batchSelect) batchSelect.value = "__CUSTOM__";
         if (batchInput) batchInput.value = val;
@@ -3178,6 +3232,7 @@
         }
         state.syncedLeadKeys.clear();
         saveRequiredContactsNow();
+        logExtensionActivity("LOGIN_SELECTED");
         showStatus(`✓ Batch set to '${val}' — syncing leads to MySQL`, 3500);
         addActivity("BATCH_RENAMED", `Batch name updated to '${val}'.`, "info", { batch: val });
 
@@ -3227,6 +3282,26 @@
 
       updateTriggerDisplay();
       renderCards("");
+
+      // Replace the hardcoded renewal days with the live-fetched report's expiry day per login
+      try {
+        chrome.runtime.sendMessage({ type: "GET_ACCOUNT_RENEWALS" }, (res) => {
+          if (chrome.runtime.lastError || !res?.success) return;
+          let changed = false;
+          for (const acc of APOLLO_19_LOGINS) {
+            const exp = res.renewals[acc.email.toLowerCase()];
+            const day = exp ? new Date(exp).getUTCDate() : NaN;
+            if (day >= 1 && day <= 31 && day !== acc.renewalDay) {
+              acc.renewalDay = day;
+              changed = true;
+            }
+          }
+          if (changed) {
+            updateTriggerDisplay();
+            renderCards(searchInput?.value || "");
+          }
+        });
+      } catch (_) { /* fall back to hardcoded renewal days */ }
 
       if (batchSelect && batchInput) {
         batchSelect.addEventListener("change", (e) => {
@@ -3347,6 +3422,7 @@
 
     const visibleRequiredCount =
       getRequiredContacts().length;
+    pageWatch.requiredOnPage = Math.max(pageWatch.requiredOnPage, visibleRequiredCount);
 
     const totalCollected =
       state.requiredContactsAll.size;
@@ -3777,6 +3853,10 @@
 
   state.cleanup = function (persist = true) {
     state.active = false;
+    if (pageWatch.timer) {
+      clearInterval(pageWatch.timer);
+      pageWatch.timer = null;
+    }
     if (persist && chrome?.storage?.local) {
       chrome.storage.local.set({ [EXTENSION_ENABLED_STORAGE_KEY]: false });
     }
@@ -3841,6 +3921,8 @@
     startObserver();
     loadStoredRequiredContacts();
     scanApollo();
+    logExtensionActivity("EXTENSION_STARTED");
+    startPageWatch();
   }
 
   chrome.runtime.onMessage?.addListener((message, sender, sendResponse) => {

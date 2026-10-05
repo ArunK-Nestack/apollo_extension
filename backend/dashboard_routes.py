@@ -225,6 +225,22 @@ def get_logins():
 # 2b. REST API: LIVE ACCOUNT CREDIT & EXPIRY REPORT (Real API probe)
 # =====================================================================
 
+@dashboard_router.get("/api/v1/account-renewals")
+def get_account_renewals():
+    """Lightweight lookup of login -> billing expiry from the last live report (no Apollo probing)."""
+    try:
+        with open(CONFIG_DIR / "apollo_live_account_report.json", "r", encoding="utf-8") as f:
+            report = json.load(f)
+    except Exception as e:
+        return {"status": "error", "message": str(e), "renewals": {}}
+    renewals = {
+        str(a["email"]).strip().lower(): a["expiry_utc"]
+        for a in report.get("accounts", [])
+        if a.get("email") and a.get("expiry_utc")
+    }
+    return {"status": "ok", "generated_at": report.get("generated_at"), "renewals": renewals}
+
+
 @dashboard_router.get("/api/v1/account-report")
 def get_account_report():
     """
