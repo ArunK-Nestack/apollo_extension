@@ -1440,7 +1440,7 @@ def check_company_names_in_crm_batch(company_names: list[str], connection=None) 
 def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain: dict[str, str], connection=None, active_batch: str | None = None, active_table: str = "apollo_saved_leads") -> dict[str, dict]:
     """
     4-Layer Deduplication Engine:
-      Layer 1 – Exact domain match in emails + apollo_saved_leads + enrich_saved_leads (excluding active batch).
+      Layer 1 – Exact domain match in emails, saved leads, and successful enrichment ledger rows.
       Layer 2 – Person-name anchor: looks up full_name in DB and computes LCS ratio
                 between the DB email domain and the Apollo-displayed domain.
       Layer 3 – Database-driven prefix trie: checks if the incoming domain slug is
@@ -1480,7 +1480,7 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
             mx_prefetch_thread.start()
 
     # ----------------------------------------------------------
-    # LAYER 1: Exact domain batch query (emails + apollo_saved_leads + enrich_saved_leads)
+    # LAYER 1: Exact domain batch query (CRM, saved leads, enrichment ledger)
     # ----------------------------------------------------------
     def do_query(conn):
         schema = get_target_table_schema(conn)
@@ -1552,6 +1552,22 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                                     matched_records[(norm_nm, dom)] = raw_nm
                     except Exception as ex3:
                         pass
+
+                    # Ledger rows can outlive or differ from their saved-lead rows.
+                    # Include the active batch: an already enriched domain is not net-new.
+                    try:
+                        cur.execute(
+                            f"SELECT DISTINCT `company_domain` FROM `batch_enrichment_ledger` "
+                            f"WHERE `company_domain` IN ({format_strings}) "
+                            "AND `outcome` = 'email_found' AND `email` != '';",
+                            tuple(chunk),
+                        )
+                        for (raw_dom,) in cur.fetchall():
+                            dom = str(raw_dom or "").strip().lower()
+                            if dom:
+                                matched_domains.add(dom)
+                    except Exception as ex4:
+                        print(f"[ContactChecker] Notice: enrichment ledger lookup error: {ex4}", flush=True)
 
         except Exception as e:
             print(f"[ContactChecker] Notice: CRM lookup error: {e}", flush=True)
@@ -3049,6 +3065,7 @@ def ensure_batch_enrichment_ledger_table(conn) -> None:
                 UNIQUE KEY `uq_batch_lead` (`batch`, `saved_lead_id`),
                 INDEX `idx_batch_login` (`batch`, `login_email`),
                 INDEX `idx_batch_outcome` (`batch`, `outcome`),
+                INDEX `idx_company_domain_outcome` (`company_domain`, `outcome`),
                 INDEX `idx_session` (`session_id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """

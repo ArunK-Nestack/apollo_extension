@@ -8,7 +8,8 @@
     "created": 2787,
     "updated": 513,
     "tld_blocked": 103,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vraghavan_nestack_com_aug_20_-_sep_20 - good - 7875 good - 9229 total_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vraghavan_nestack_com_aug_20_-_sep_20 - good - 7875 good - 9229 total_crm_audit.csv",
+    "accounts_created": 5309
   },
   "vraghavan_nestack_com_aug_20_-_sep_20_-_good_-_7875_good_-_9229_total_unsynced_retry_4472": {
     "file_stem": "vraghavan_nestack_com_aug_20_-_sep_20_-_good_-_7875_good_-_9229_total_unsynced_retry_4472",
@@ -19,7 +20,8 @@
     "created": 3700,
     "updated": 772,
     "tld_blocked": 0,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vraghavan_nestack_com_aug_20_-_sep_20_-_good_-_7875_good_-_9229_total_unsynced_retry_4472_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vraghavan_nestack_com_aug_20_-_sep_20_-_good_-_7875_good_-_9229_total_unsynced_retry_4472_crm_audit.csv",
+    "accounts_created": 3229
   },
   "madhava_reddy_nestack-tech_com_aug_20_-_sep_20 - good - 3121 good - 4237 total": {
     "file_stem": "madhava_reddy_nestack-tech_com_aug_20_-_sep_20 - good - 3121 good - 4237 total",
@@ -30,7 +32,8 @@
     "created": 2475,
     "updated": 588,
     "tld_blocked": 58,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\madhava_reddy_nestack-tech_com_aug_20_-_sep_20 - good - 3121 good - 4237 total_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\madhava_reddy_nestack-tech_com_aug_20_-_sep_20 - good - 3121 good - 4237 total_crm_audit.csv",
+    "accounts_created": 2466
   },
   "vraghav_nestacktechnology_com_aug_27_-_sep_27 - good - 3190 good - 4005 total": {
     "file_stem": "VRAGHAV_NESTACKTECHNOLOGY_COM_aug_27_-_sep_27 - good - 3190 good - 4005 total",
@@ -41,7 +44,8 @@
     "created": 2316,
     "updated": 821,
     "tld_blocked": 53,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\VRAGHAV_NESTACKTECHNOLOGY_COM_aug_27_-_sep_27 - good - 3190 good - 4005 total_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\VRAGHAV_NESTACKTECHNOLOGY_COM_aug_27_-_sep_27 - good - 3190 good - 4005 total_crm_audit.csv",
+    "accounts_created": 2316
   },
   "vijay_raghavan_nestacktech_com_aug_24_-_sep_24 - good - 1712 good - 3574 total": {
     "file_stem": "vijay_raghavan_nestacktech_com_aug_24_-_sep_24 - good - 1712 good - 3574 total",
@@ -52,7 +56,8 @@
     "created": 1572,
     "updated": 84,
     "tld_blocked": 56,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vijay_raghavan_nestacktech_com_aug_24_-_sep_24 - good - 1712 good - 3574 total_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vijay_raghavan_nestacktech_com_aug_24_-_sep_24 - good - 1712 good - 3574 total_crm_audit.csv",
+    "accounts_created": 1572
   },
   "vijay_raghavan_nestack_net_aug_26_-_sep_26 - good - 2990 good - 3579 total": {
     "file_stem": "vijay_raghavan_nestack_net_aug_26_-_sep_26 - good - 2990 good - 3579 total",
@@ -63,7 +68,8 @@
     "created": 2464,
     "updated": 497,
     "tld_blocked": 29,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vijay_raghavan_nestack_net_aug_26_-_sep_26 - good - 2990 good - 3579 total_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vijay_raghavan_nestack_net_aug_26_-_sep_26 - good - 2990 good - 3579 total_crm_audit.csv",
+    "accounts_created": 2446
   },
   "madhava_reddy_nestacktech_com_aug_21-sep_21 - good - 1861 good - 2160 total": {
     "file_stem": "MADHAVA_REDDY_NESTACKTECH_COM_aug_21-sep_21 - good - 1861 good - 2160 total",
@@ -74,7 +80,8 @@
     "created": 1672,
     "updated": 175,
     "tld_blocked": 14,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\MADHAVA_REDDY_NESTACKTECH_COM_aug_21-sep_21 - good - 1861 good - 2160 total_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\MADHAVA_REDDY_NESTACKTECH_COM_aug_21-sep_21 - good - 1861 good - 2160 total_crm_audit.csv",
+    "accounts_created": 1569
   },
   "rchandran_nestack_info_aug_21-_sep_21 - good - 7719 good - 9638 total": {
     "file_stem": "rchandran_nestack_info_aug_21-_sep_21 - good - 7719 good - 9638 total",
@@ -85,7 +92,8 @@
     "created": 5891,
     "updated": 1717,
     "tld_blocked": 111,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\rchandran_nestack_info_aug_21-_sep_21 - good - 7719 good - 9638 total_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\rchandran_nestack_info_aug_21-_sep_21 - good - 7719 good - 9638 total_crm_audit.csv",
+    "accounts_created": 5326
   },
   "rahul_nestacktech_com_aug_30_to_sep_30 - good - 3208 good - 3929 total": {
     "file_stem": "rahul_nestacktech_com_aug_30_to_sep_30 - good - 3208 good - 3929 total",
@@ -96,7 +104,8 @@
     "created": 2683,
     "updated": 469,
     "tld_blocked": 56,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\rahul_nestacktech_com_aug_30_to_sep_30 - good - 3208 good - 3929 total_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\rahul_nestacktech_com_aug_30_to_sep_30 - good - 3208 good - 3929 total_crm_audit.csv",
+    "accounts_created": 2660
   },
   "vraghavan_nestacktech_com_aug_20_-_sep_20 - good - 2778 good - 3448 total": {
     "file_stem": "vraghavan_nestacktech_com_aug_20_-_sep_20 - good - 2778 good - 3448 total",
@@ -107,7 +116,8 @@
     "created": 2465,
     "updated": 289,
     "tld_blocked": 24,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vraghavan_nestacktech_com_aug_20_-_sep_20 - good - 2778 good - 3448 total_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\vraghavan_nestacktech_com_aug_20_-_sep_20 - good - 2778 good - 3448 total_crm_audit.csv",
+    "accounts_created": 2302
   },
   "rahul_nestack_co_in_aug_13_-_sep_13 - good - 2184 good - 3993 total": {
     "file_stem": "rahul_nestack_co_in_aug_13_-_sep_13 - good - 2184 good - 3993 total",
@@ -118,6 +128,19 @@
     "created": 69,
     "updated": 2045,
     "tld_blocked": 70,
-    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\rahul_nestack_co_in_aug_13_-_sep_13 - good - 2184 good - 3993 total_crm_audit.csv"
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\rahul_nestack_co_in_aug_13_-_sep_13 - good - 2184 good - 3993 total_crm_audit.csv",
+    "accounts_created": 69
+  },
+  "rahul_chandran_nestack-tech_com_sep_03_-_oct_03 - good - 3144 good - 3963 total": {
+    "file_stem": "RAHUL_CHANDRAN_NESTACK_TECH_COM_sep_03___oct_03 - good - 3144 good - 3963 total",
+    "file_path": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\scratch\\millionverifier_cache\\RAHUL_CHANDRAN_NESTACK-TECH_COM_sep_03_-_oct_03_categorized\\good\\RAHUL_CHANDRAN_NESTACK_TECH_COM_sep_03___oct_03 - good - 3144 good - 3963 total.csv",
+    "tag": "RAHUL.CHANDRAN@NESTACK-TECH.COM(sep 03 - oct 03)",
+    "synced_at": "2026-10-03 14:15:53",
+    "total_leads": 3144,
+    "created": 2638,
+    "updated": 502,
+    "tld_blocked": 4,
+    "accounts_created": 2548,
+    "audit_file": "C:\\Users\\test\\Desktop\\projects\\apollo_extension\\exports\\freshsales_reports\\rahul.chandran@nestack-tech.com_created_contacts_only_all_dates.csv"
   }
 }

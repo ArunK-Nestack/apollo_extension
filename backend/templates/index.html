@@ -3047,7 +3047,7 @@ def extract_and_verify_lead(domain, first, last):
                 <th style="text-align:right; color:var(--accent-red);">Bad (Bounces)</th>
                 <th style="text-align:right; color:var(--accent-amber);">Risky (Catch-all)</th>
                 <th style="width:160px;">Deliverability Health</th>
-                <th style="text-align:right; color:var(--primary);">Credits Avoided</th>
+                <th style="text-align:right; color:var(--accent-red);">Suppressed Leads</th>
                 <th style="width:110px; text-align:center;">Shield Status</th>
               </tr>
             </thead>
@@ -3099,12 +3099,13 @@ def extract_and_verify_lead(domain, first, last):
                 <th style="text-align:right; color:var(--accent-amber);">Cleaned (GDPR/TLD)</th>
                 <th style="text-align:right; color:var(--accent-green);">Contacts Created</th>
                 <th style="text-align:right; color:var(--primary);">Contacts Updated</th>
+                <th style="text-align:right; color:#a78bfa;">Accounts Created</th>
                 <th>Sync Timestamp</th>
                 <th style="width:100px; text-align:center;">Audit Status</th>
               </tr>
             </thead>
             <tbody id="tbody-rep-crm-ledger">
-              <tr><td colspan="9" style="text-align:center; padding:20px; color:var(--text-dim);">Loading Freshsales Ledger...</td></tr>
+              <tr><td colspan="10" style="text-align:center; padding:20px; color:var(--text-dim);">Loading Freshsales Ledger...</td></tr>
             </tbody>
           </table>
         </div>
@@ -4700,6 +4701,7 @@ def extract_and_verify_lead(domain, first, last):
     function handleCycleFilterChange(activeCycle) {
       fetchSavingSummary(true, activeCycle);
       fetchVerificationSummary(true, activeCycle);
+      fetchCrmSyncSummary(true, activeCycle);
     }
 
     async function loadAllReports(force = false) {
@@ -4879,34 +4881,26 @@ def extract_and_verify_lead(domain, first, last):
         verificationSummaryData = data;
 
         const delivKpi = document.getElementById('rep-kpi-deliv');
-        if (delivKpi) delivKpi.innerText = `${data.overall_deliverability || (activeCycle === 'all' ? 84.6 : 99.4)}%`;
+        if (delivKpi) delivKpi.innerText = `${data.overall_deliverability || 0}%`;
 
         const delivSub = document.getElementById('rep-kpi-deliv-sub');
         if (delivSub) {
-          if (activeCycle === 'all') {
-            delivSub.innerHTML = `<span style="color:var(--accent-green);">Inbox-Ready Leads</span> &nbsp;•&nbsp; Zero Bounces`;
-          } else {
-            delivSub.innerHTML = `<span style="color:var(--accent-green);">${(data.total_good || 3965).toLocaleString()} Inbox-Ready Leads</span> &nbsp;•&nbsp; Active Cycle`;
-          }
+          delivSub.innerHTML = `<span style="color:var(--accent-green);">${(data.total_good || 0).toLocaleString()} Inbox-Ready Leads</span> &nbsp;•&nbsp; ${activeCycle === 'all' ? 'Lifetime History' : 'Active Cycle'}`;
         }
 
         const suppKpi = document.getElementById('rep-kpi-suppressed');
-        if (suppKpi) suppKpi.innerText = (data.total_suppressed || (activeCycle === 'all' ? 37936 : 23)).toLocaleString();
+        if (suppKpi) suppKpi.innerText = (data.total_suppressed || 0).toLocaleString();
 
         const suppSub = document.getElementById('rep-kpi-suppressed-sub');
         if (suppSub) {
-          if (activeCycle === 'all') {
-            suppSub.innerHTML = `<span style="color:var(--accent-amber);">100% Blocklist</span> &nbsp;•&nbsp; Zero Good Leads`;
-          } else {
-            suppSub.innerHTML = `<span style="color:var(--accent-amber);">100% Blocklist</span> &nbsp;•&nbsp; Active Cycle`;
-          }
+          suppSub.innerHTML = `<span style="color:var(--accent-amber);">100% Blocklist</span> &nbsp;•&nbsp; ${activeCycle === 'all' ? 'Lifetime Suppression' : 'Active Cycle Suppression'}`;
         }
 
         const s2Badge = document.getElementById('rep-s2-badge');
         if (s2Badge) {
           s2Badge.innerText = activeCycle === 'all'
-            ? `${(data.total_suppressed || 37936).toLocaleString()} Negative Blocklist (Lifetime)`
-            : `${(data.total_suppressed || 23).toLocaleString()} Negative Blocklist (Active Cycle)`;
+            ? `${(data.total_suppressed || 0).toLocaleString()} Negative Blocklist (Lifetime)`
+            : `${(data.total_suppressed || 0).toLocaleString()} Negative Blocklist (Active Cycle)`;
         }
 
         renderVerificationLedgerTable(data.records);
@@ -4964,12 +4958,12 @@ def extract_and_verify_lead(domain, first, last):
               </div>
             </div>
           </td>
-          <td style="text-align:right; font-family:var(--font-mono); font-weight:700; color:var(--primary);">
-            +${(r.credits_avoided || 0).toLocaleString()}
+          <td style="text-align:right; font-family:var(--font-mono); font-weight:700; color:var(--accent-red);">
+            ${(r.suppressed_leads || r.credits_avoided || 0).toLocaleString()}
           </td>
           <td style="text-align:center;">
-            <span class="status-tag ${r.bad + r.risky > 0 ? 'verified' : 'info'}" style="font-size:10px;">
-              ${r.bad + r.risky > 0 ? '● Secured' : '○ Standby'}
+            <span class="status-tag ${r.bad + r.risky > 0 ? 'verified' : (r.total_checked > 0 ? 'verified' : 'info')}" style="font-size:10px;">
+              ${r.total_checked > 0 ? '● Secured' : '○ Standby'}
             </span>
           </td>
         `;
@@ -4993,22 +4987,28 @@ def extract_and_verify_lead(domain, first, last):
         return;
       }
       const filtered = verificationSummaryData.records.filter(r => {
-        if (status === 'secured') return (r.bad + r.risky) > 0;
-        if (status === 'pending') return (r.bad + r.risky) === 0;
+        if (status === 'secured') return (r.bad + r.risky) > 0 || r.total_checked > 0;
+        if (status === 'pending') return r.total_checked === 0;
         return true;
       });
       renderVerificationLedgerTable(filtered);
     }
 
-    async function fetchCrmSyncSummary(force = false) {
+    async function fetchCrmSyncSummary(force = false, cycleFilter = null) {
       try {
-        const res = await fetch('/api/reports/crm-sync-summary');
+        const cycleSelect = document.getElementById('rep-s1-cycle-filter');
+        const activeCycle = cycleFilter || (cycleSelect ? cycleSelect.value : 'all');
+        const res = await fetch(`/api/reports/crm-sync-summary?filter_cycle=${encodeURIComponent(activeCycle)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         crmSyncSummaryData = data;
 
         const s3Badge = document.getElementById('rep-s3-badge');
-        if (s3Badge) s3Badge.innerText = `${data.total_batches_synced || 0} Batches Synced • Labels 5407–5454`;
+        if (s3Badge) {
+          s3Badge.innerText = activeCycle === 'october'
+            ? `${data.total_batches_synced || 0} Batches Synced (Active Cycle)`
+            : `${data.total_batches_synced || 0} Batches Synced • ${(data.total_accounts_created || 0).toLocaleString()} Accounts Created`;
+        }
 
         renderCrmSyncTable(data.records);
       } catch (err) {
@@ -5021,7 +5021,7 @@ def extract_and_verify_lead(domain, first, last):
       if (!tbody) return;
 
       if (!records || records.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px; color:var(--text-dim);">No CRM sync batches found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:20px; color:var(--text-dim);">No CRM sync batches found for this cycle</td></tr>';
         return;
       }
 
@@ -5052,6 +5052,9 @@ def extract_and_verify_lead(domain, first, last):
           </td>
           <td style="text-align:right; font-family:var(--font-mono); font-weight:700; color:var(--primary);">
             ↺ ${(r.contacts_updated || 0).toLocaleString()}
+          </td>
+          <td style="text-align:right; font-family:var(--font-mono); font-weight:700; color:#a78bfa;">
+            +${(r.accounts_created || 0).toLocaleString()}
           </td>
           <td style="font-family:var(--font-mono); font-size:11px; color:var(--text-muted);">
             ${r.sync_timestamp}
@@ -5210,9 +5213,9 @@ def extract_and_verify_lead(domain, first, last):
         alert("Verification summary data not loaded yet.");
         return;
       }
-      let csv = "Account_ID,Account_Name,Email,Total_Checked,Good_Inbox,Bad_Bounces,Risky_Catchall,Deliverability_Rate,Credits_Avoided,Status\n";
+      let csv = "Account_ID,Account_Name,Email,Total_Checked,Good_Inbox,Bad_Bounces,Risky_Catchall,Deliverability_Rate,Suppressed_Leads,Status\n";
       verificationSummaryData.records.forEach(r => {
-        csv += `"${r.id}","${(r.name||'').replace(/"/g, '""')}","${r.email}","${r.total_checked}","${r.good}","${r.bad}","${r.risky}","${r.deliverability_rate}%","${r.credits_avoided}","${r.status}"\n`;
+        csv += `"${r.id}","${(r.name||'').replace(/"/g, '""')}","${r.email}","${r.total_checked}","${r.good}","${r.bad}","${r.risky}","${r.deliverability_rate}%","${r.suppressed_leads || r.credits_avoided || 0}","${r.status}"\n`;
       });
       _downloadCsvBlob(csv, `mail_verifier_suppression_ledger_${Date.now()}.csv`);
     }
@@ -5222,9 +5225,9 @@ def extract_and_verify_lead(domain, first, last):
         alert("Freshsales sync ledger data not loaded yet.");
         return;
       }
-      let csv = "Import_Label,Login_Owner,Initial_Leads,Cleaned_Out_GDPR_TLD,Contacts_Created,Contacts_Updated,Sync_Timestamp\n";
+      let csv = "Import_Label,Login_Owner,Initial_Leads,Cleaned_Out_GDPR_TLD,Contacts_Created,Contacts_Updated,Accounts_Created,Sync_Timestamp\n";
       crmSyncSummaryData.records.forEach(r => {
-        csv += `"${r.import_label}","${r.login_owner}","${r.initial_leads}","${r.cleaned_out}","${r.contacts_created}","${r.contacts_updated}","${r.sync_timestamp}"\n`;
+        csv += `"${r.import_label}","${r.login_owner}","${r.initial_leads}","${r.cleaned_out}","${r.contacts_created}","${r.contacts_updated}","${r.accounts_created || 0}","${r.sync_timestamp}"\n`;
       });
       _downloadCsvBlob(csv, `freshsales_sync_ledger_${Date.now()}.csv`);
     }

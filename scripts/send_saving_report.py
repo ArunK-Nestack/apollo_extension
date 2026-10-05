@@ -40,126 +40,145 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def build_report_data() -> Dict[str, Any]:
-    """Fetches the official saving summary data from backend.dashboard_routes."""
+    """Fetches the official saving summary, verification summary, and CRM sync ledger data."""
     try:
-        from backend.dashboard_routes import get_saving_summary
-        data = get_saving_summary(filter_cycle="october", active_only=True)
-        return data
+        from backend.dashboard_routes import (
+            get_saving_summary,
+            get_verification_summary,
+            get_crm_sync_summary
+        )
+        saving = get_saving_summary(filter_cycle="october", active_only=True)
+        verif = get_verification_summary(filter_cycle="october")
+        crm = get_crm_sync_summary(filter_cycle="all")
+        crm_oct = get_crm_sync_summary(filter_cycle="october")
+
+        return {
+            "status": "ok",
+            "saving": saving,
+            "verification": verif,
+            "crm": crm,
+            "crm_october": crm_oct
+        }
     except Exception as e:
-        print(f"[Dispatcher] Error loading saving summary: {e}", flush=True)
-        return {"status": "error", "message": str(e), "records": []}
+        print(f"[Dispatcher] Error loading report data: {e}", flush=True)
+        return {
+            "status": "error",
+            "message": str(e),
+            "saving": {},
+            "verification": {},
+            "crm": {},
+            "crm_october": {}
+        }
 
 
 def format_whatsapp_message(report_data: Dict[str, Any], timestamp_str: str) -> str:
-    """Formats a concise, emoji-rich WhatsApp summary."""
-    records = report_data.get("records", [])
-    total_leads = report_data.get("total_saved_leads", 0)
-    total_web = report_data.get("total_saved_web", 0)
-    total_enriched = report_data.get("total_enriched", 0)
-    total_emails = report_data.get("total_emails_saved", 0)
-    total_creds = report_data.get("total_credits_used", 0)
+    """Formats a concise, emoji-rich WhatsApp summary covering all 3 stages."""
+    saving = report_data.get("saving", {})
+    verif = report_data.get("verification", {})
+    crm = report_data.get("crm_october") or report_data.get("crm", {})
 
+    total_leads = saving.get("total_saved_leads", 0)
+    total_web = saving.get("total_saved_web", 0)
+    total_enriched = saving.get("total_enriched", 0)
+    total_emails = saving.get("total_emails_saved", 0)
+    total_creds = saving.get("total_credits_used", 0)
     yield_pct = f"{(total_emails / max(1, total_leads)) * 100:.1f}%" if total_leads > 0 else "0.0%"
 
+    v_checked = verif.get("total_checked", 0)
+    v_good = verif.get("total_good", 0)
+    v_bad = verif.get("total_bad", 0)
+    v_risky = verif.get("total_risky", 0)
+    v_rate = verif.get("overall_deliverability", 0.0)
+    v_supp = verif.get("total_suppressed", 0)
+
+    crm_batches = crm.get("total_batches_synced", 0)
+    crm_created = crm.get("total_contacts_created", 0)
+    crm_updated = crm.get("total_contacts_updated", 0)
+    crm_accounts = crm.get("total_accounts_created", 0)
+
     lines = [
-        "📊 *APOLLO DAILY SAVING & CREDIT DIGEST*",
+        "📊 *APOLLO, VERIFIER & CRM DAILY DIGEST*",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"📅 *Report Generated:* {timestamp_str}",
-        "⚙️ *Cycle Filter:* Active October 2026 Cycle",
+        f"📅 *Generated:* {timestamp_str} (IST)",
+        "⚙️ *Cycle:* Active October 2026 Cycle (sep 03 - oct 03)",
         "",
-        "📈 *ORGANIZATION EXECUTIVE TOTALS:*",
+        "🟣 *STAGE 1: APOLLO SAVING & ENRICHMENT*",
         f"• 🌐 Total Contacts:      *{total_leads:,d}*",
         f"• 📥 Saved from Web:       *{total_web:,d}*",
         f"• ⚡ Enriched with Credits: *{total_enriched:,d}*",
         f"• 💳 Apollo Credits Used:   *{total_creds:,d}*",
         f"• ✉️ Saved Emails:         *{total_emails:,d}* ({yield_pct} yield)",
         "",
+        "🛡️ *STAGE 2: MILLIONVERIFIER TELEMETRY*",
+        f"• 🔍 Total Checked:        *{v_checked:,d}*",
+        f"• ✅ Good (Inbox-Ready):   *{v_good:,d}*",
+        f"• 📈 Deliverability Rate:  *{v_rate}%*",
+        f"• 🚫 Suppressed Leads:     *{v_supp:,d}* ({v_bad:,d} bad, {v_risky:,d} risky)",
+        f"• 🛡️ Active Target:        *Rahul Chandran* (● Secured)",
+        "",
+        "💼 *STAGE 3: FRESHSALES CRM INGESTION*",
+        "• 🏷️ Target Tag:           *RAHUL.CHANDRAN@NESTACK-TECH.COM(sep 03 - oct 03)*",
+        f"• 📥 Ingested Breakdown:   *{crm_created:,d}* created | *{crm_updated:,d}* updated",
+        f"• 🏢 Sales Accounts:       *{crm_accounts:,d}* companies across {crm_batches} batches",
+        "",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "📋 *ACTIVE ACCOUNT BREAKDOWN:*"
+        "⚡ _Automated report via Apollo Intelligence Engine_"
     ]
-
-    active_records = [r for r in records if (r.get("total_leads", 0) > 0 or r.get("enriched_here", 0) > 0)]
-    if active_records:
-        for idx, r in enumerate(active_records, 1):
-            nm = r.get("name", "Account")
-            em = r.get("email", "")
-            time_left = r.get("time_left", "")
-            web = r.get("saved_from_web", 0)
-            enr = r.get("enriched_here", 0)
-            creds = r.get("credits_used", 0)
-            enr_creds = r.get("enrichment_credits", 0)
-            emails = r.get("saved_emails", 0)
-            tot = r.get("total_leads", 0)
-
-            lines.append(f"*{idx}. {nm}* ({em})")
-            if time_left:
-                lines.append(f"   • ⏱ Expiry Timer: *{time_left}*")
-            lines.append(f"   • 📥 Web: *{web:,d}* | ⚡ Enriched: *{enr:,d}*")
-            creds_str = f"*{creds:,d}*" + (f" ({enr_creds:,d} enriched)" if enr_creds and enr_creds != creds else "")
-            lines.append(f"   • 💳 Credits: {creds_str} | ✉️ Emails: *{emails:,d}*")
-            lines.append(f"   • 📦 Total Contacts: *{tot:,d}*")
-            lines.append("")
-    else:
-        lines.append("ℹ️ _No active saves or enrichments in this cycle yet._")
-        lines.append("")
-
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("⚡ _Automated report via Apollo Operations Engine_")
     return "\n".join(lines)
 
 
 def format_teams_card(report_data: Dict[str, Any], timestamp_str: str) -> Dict[str, Any]:
-    """Builds an Office 365 / Microsoft Teams Connector Card payload."""
-    total_leads = report_data.get("total_saved_leads", 0)
-    total_web = report_data.get("total_saved_web", 0)
-    total_enriched = report_data.get("total_enriched", 0)
-    total_emails = report_data.get("total_emails_saved", 0)
-    total_creds = report_data.get("total_credits_used", 0)
-    yield_pct = f"{(total_emails / max(1, total_leads)) * 100:.1f}%" if total_leads > 0 else "0.0%"
+    """Builds an Office 365 / Microsoft Teams Connector Card payload covering all 3 operations."""
+    saving = report_data.get("saving", {})
+    verif = report_data.get("verification", {})
+    crm = report_data.get("crm_october") or report_data.get("crm", {})
+
+    total_leads = saving.get("total_saved_leads", 0)
+    total_web = saving.get("total_saved_web", 0)
+    total_enriched = saving.get("total_enriched", 0)
+    total_emails = saving.get("total_emails_saved", 0)
+    total_creds = saving.get("total_credits_used", 0)
+
+    v_checked = verif.get("total_checked", 0)
+    v_good = verif.get("total_good", 0)
+    v_rate = verif.get("overall_deliverability", 0.0)
+    v_supp = verif.get("total_suppressed", 0)
+
+    crm_batches = crm.get("total_batches_synced", 0)
+    crm_created = crm.get("total_contacts_created", 0)
+    crm_updated = crm.get("total_contacts_updated", 0)
+    crm_accounts = crm.get("total_accounts_created", 0)
 
     facts = [
-        {"name": "Total Contacts Saved", "value": f"{total_leads:,d}"},
-        {"name": "Saved from Web", "value": f"{total_web:,d}"},
-        {"name": "Enriched Here (Credits)", "value": f"{total_enriched:,d}"},
-        {"name": "Apollo Credits Spent", "value": f"{total_creds:,d}"},
-        {"name": "Verified Emails Saved", "value": f"{total_emails:,d} ({yield_pct})"},
         {"name": "Report Timestamp", "value": timestamp_str},
+        {"name": "Active Cycle", "value": "October 2026 (sep 03 - oct 03)"},
+        {"name": "Apollo Contacts Saved", "value": f"{total_leads:,d} ({total_web:,d} web / {total_enriched:,d} enriched)"},
+        {"name": "Apollo Credits Spent", "value": f"{total_creds:,d}"},
+        {"name": "Verified Emails Saved", "value": f"{total_emails:,d}"},
+        {"name": "MillionVerifier Checked", "value": f"{v_checked:,d}"},
+        {"name": "Inbox-Ready Good Leads", "value": f"{v_good:,d} ({v_rate}% Deliverable)"},
+        {"name": "Suppressed (Bad/Risky)", "value": f"{v_supp:,d} Leads"},
+        {"name": "Freshsales Contacts", "value": f"{crm_created:,d} created | {crm_updated:,d} updated"},
+        {"name": "Freshsales Accounts", "value": f"{crm_accounts:,d} companies ({crm_batches} batches)"},
     ]
-
-    active_records = [r for r in report_data.get("records", []) if r.get("total_leads", 0) > 0]
-    account_facts = []
-    for r in active_records:
-        account_facts.append({
-            "name": f"{r.get('name')} ({r.get('email')})",
-            "value": f"Web: {r.get('saved_from_web', 0):,d} | Enriched: {r.get('enriched_here', 0):,d} | Credits: {r.get('credits_used', 0):,d} | Emails: {r.get('saved_emails', 0):,d} | Total: {r.get('total_leads', 0):,d}"
-        })
-
-    sections = [
-        {
-            "activityTitle": "Executive Metrics Summary",
-            "facts": facts,
-            "markdown": True
-        }
-    ]
-
-    if account_facts:
-        sections.append({
-            "activityTitle": "Active Logins Breakdown",
-            "facts": account_facts,
-            "markdown": True
-        })
 
     card = {
         "@type": "MessageCard",
         "@context": "http://schema.org/extensions",
         "themeColor": "0EA5E9",
-        "summary": f"Apollo Saving Ledger Report - {total_leads:,d} Contacts",
-        "title": "🟣 Apollo Saving Ledger & Credit Report",
-        "sections": sections,
+        "summary": f"Apollo, Verifier & CRM Report - {total_leads:,d} Contacts",
+        "title": "🟣 Apollo Saving, MillionVerifier & Freshsales Executive Digest",
+        "sections": [
+            {
+                "activityTitle": "Multi-Stage Operations Summary",
+                "facts": facts,
+                "markdown": True
+            }
+        ],
         "potentialAction": [
             {
                 "@type": "OpenUri",
-                "name": "Open Apollo Dashboard",
+                "name": "Open Executive Dashboard",
                 "targets": [{"os": "default", "uri": "http://localhost:8000"}]
             }
         ]
@@ -168,20 +187,24 @@ def format_teams_card(report_data: Dict[str, Any], timestamp_str: str) -> Dict[s
 
 
 def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
-    """Renders a responsive, executive HTML email digest."""
-    total_leads = report_data.get("total_saved_leads", 0)
-    total_web = report_data.get("total_saved_web", 0)
-    total_enriched = report_data.get("total_enriched", 0)
-    total_emails = report_data.get("total_emails_saved", 0)
-    total_creds = report_data.get("total_credits_used", 0)
+    """Renders a responsive, executive HTML email digest covering all 3 stages."""
+    saving = report_data.get("saving", {})
+    verif = report_data.get("verification", {})
+    crm = report_data.get("crm_october") or report_data.get("crm", {})
+
+    # Section 1 Data
+    total_leads = saving.get("total_saved_leads", 0)
+    total_web = saving.get("total_saved_web", 0)
+    total_enriched = saving.get("total_enriched", 0)
+    total_emails = saving.get("total_emails_saved", 0)
+    total_creds = saving.get("total_credits_used", 0)
     yield_pct = f"{(total_emails / max(1, total_leads)) * 100:.1f}%" if total_leads > 0 else "0.0%"
 
-    active_records = [r for r in report_data.get("records", []) if r.get("total_leads", 0) > 0]
-
-    rows_html = ""
-    for idx, r in enumerate(active_records, 1):
+    active_saving_records = [r for r in saving.get("records", []) if r.get("total_leads", 0) > 0]
+    saving_rows_html = ""
+    for idx, r in enumerate(active_saving_records, 1):
         num = f"#{idx:02d}"
-        rows_html += f"""
+        saving_rows_html += f"""
         <tr style="border-bottom: 1px solid #2d3748;">
             <td style="padding: 10px 12px; font-family: monospace; color: #94a3b8; font-weight: bold;">{num}</td>
             <td style="padding: 10px 12px;">
@@ -199,9 +222,71 @@ def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
             <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #38bdf8; font-weight: 800; font-size: 13px;">{r.get('total_leads', 0):,d}</td>
         </tr>
         """
+    if not saving_rows_html:
+        saving_rows_html = '<tr><td colspan="7" style="padding: 16px; text-align: center; color: #94a3b8;">No active saving records.</td></tr>'
 
-    if not rows_html:
-        rows_html = '<tr><td colspan="7" style="padding: 24px; text-align: center; color: #94a3b8;">No active records in this cycle.</td></tr>'
+    # Section 2 Data (MillionVerifier)
+    v_checked = verif.get("total_checked", 0)
+    v_good = verif.get("total_good", 0)
+    v_bad = verif.get("total_bad", 0)
+    v_risky = verif.get("total_risky", 0)
+    v_rate = verif.get("overall_deliverability", 0.0)
+    v_supp = verif.get("total_suppressed", 0)
+
+    verif_records = [r for r in verif.get("records", []) if r.get("total_checked", 0) > 0]
+    verif_rows_html = ""
+    for r in verif_records:
+        num = f"#{r.get('id', 0):02d}"
+        rate = r.get("deliverability_rate", 0.0)
+        verif_rows_html += f"""
+        <tr style="border-bottom: 1px solid #2d3748;">
+            <td style="padding: 10px 12px; font-family: monospace; color: #94a3b8; font-weight: bold;">{num}</td>
+            <td style="padding: 10px 12px;">
+                <div style="font-weight: 600; color: #f8fafc;">{r.get('name')}</div>
+                <div style="font-size: 11px; font-family: monospace; color: #94a3b8;">{r.get('email')}</div>
+            </td>
+            <td style="padding: 10px 12px; text-align: right; font-family: monospace; font-weight: 600;">{r.get('total_checked', 0):,d}</td>
+            <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #4ade80; font-weight: 700;">{r.get('good', 0):,d}</td>
+            <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #f87171; font-weight: 700;">{r.get('bad', 0):,d}</td>
+            <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #fbbf24; font-weight: 700;">{r.get('risky', 0):,d}</td>
+            <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #38bdf8; font-weight: bold;">{rate}%</td>
+            <td style="padding: 10px 12px; text-align: right; font-family: monospace; color: #f87171; font-weight: 700;">{r.get('suppressed_leads', 0):,d}</td>
+            <td style="padding: 10px 12px; text-align: center;">
+                <span style="background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4); padding: 3px 8px; border-radius: 9999px; font-size: 10px; font-weight: 700;">● Secured</span>
+            </td>
+        </tr>
+        """
+    if not verif_rows_html:
+        verif_rows_html = '<tr><td colspan="9" style="padding: 16px; text-align: center; color: #94a3b8;">No verification records in this cycle.</td></tr>'
+
+    # Section 3 Data (Freshsales CRM)
+    crm_batches = crm.get("total_batches_synced", 0)
+    crm_created = crm.get("total_contacts_created", 0)
+    crm_updated = crm.get("total_contacts_updated", 0)
+    crm_accounts = crm.get("total_accounts_created", 0)
+    crm_blocked = crm.get("total_cleaned_out", 0)
+
+    crm_records = crm.get("records", [])
+    crm_rows_html = ""
+    for idx, r in enumerate(crm_records, 1):
+        num = f"#{idx:02d}"
+        crm_rows_html += f"""
+        <tr style="border-bottom: 1px solid #2d3748;">
+            <td style="padding: 9px 11px; font-family: monospace; color: #94a3b8; font-weight: bold;">{num}</td>
+            <td style="padding: 9px 11px;">
+                <div style="font-weight: 600; color: #f8fafc; font-size: 12px;">{r.get('login_owner')}</div>
+                <div style="font-size: 10px; color: #94a3b8;">{r.get('tag')}</div>
+            </td>
+            <td style="padding: 9px 11px; text-align: right; font-family: monospace;">{r.get('initial_leads', 0):,d}</td>
+            <td style="padding: 9px 11px; text-align: right; font-family: monospace; color: #fbbf24;">-{r.get('cleaned_out', 0):,d}</td>
+            <td style="padding: 9px 11px; text-align: right; font-family: monospace; color: #4ade80; font-weight: 700;">+{r.get('contacts_created', 0):,d}</td>
+            <td style="padding: 9px 11px; text-align: right; font-family: monospace; color: #38bdf8; font-weight: 700;">↺ {r.get('contacts_updated', 0):,d}</td>
+            <td style="padding: 9px 11px; text-align: right; font-family: monospace; color: #a78bfa; font-weight: 700;">+{r.get('accounts_created', 0):,d}</td>
+            <td style="padding: 9px 11px; font-family: monospace; font-size: 10px; color: #94a3b8;">{r.get('sync_timestamp', '')}</td>
+        </tr>
+        """
+    if not crm_rows_html:
+        crm_rows_html = '<tr><td colspan="8" style="padding: 16px; text-align: center; color: #94a3b8;">No CRM batches recorded.</td></tr>'
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -209,28 +294,35 @@ def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
 <meta charset="utf-8">
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0f172a; color: #f8fafc; margin: 0; padding: 24px; }}
-  .container {{ max-width: 820px; margin: 0 auto; background: #1e293b; border-radius: 12px; border: 1px solid #334155; overflow: hidden; }}
+  .container {{ max-width: 860px; margin: 0 auto; background: #1e293b; border-radius: 12px; border: 1px solid #334155; overflow: hidden; }}
   .header {{ background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%); padding: 24px 32px; }}
   .title {{ font-size: 20px; font-weight: 800; color: #ffffff; margin: 0; }}
-  .subtitle {{ font-size: 13px; color: rgba(255,255,255,0.85); margin-top: 4px; }}
+  .subtitle {{ font-size: 13px; color: rgba(255,255,255,0.9); margin-top: 4px; }}
+  .sec-head {{ background: #0f172a; padding: 14px 20px; font-size: 13px; font-weight: 700; color: #f8fafc; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }}
   .kpi-row {{ display: table; width: 100%; border-bottom: 1px solid #334155; background: #182234; }}
-  .kpi-cell {{ display: table-cell; padding: 18px 16px; text-align: center; border-right: 1px solid #334155; }}
+  .kpi-cell {{ display: table-cell; padding: 14px 12px; text-align: center; border-right: 1px solid #334155; }}
   .kpi-cell:last-child {{ border-right: none; }}
-  .kpi-val {{ font-size: 22px; font-weight: 800; font-family: monospace; }}
-  .kpi-lbl {{ font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 600; margin-top: 4px; letter-spacing: 0.5px; }}
-  .table-wrapper {{ padding: 24px; }}
-  table {{ width: 100%; border-collapse: collapse; font-size: 12.5px; }}
-  th {{ background: #0f172a; color: #94a3b8; text-transform: uppercase; font-size: 10.5px; padding: 10px 12px; letter-spacing: 0.5px; text-align: left; }}
+  .kpi-val {{ font-size: 19px; font-weight: 800; font-family: monospace; }}
+  .kpi-lbl {{ font-size: 10px; text-transform: uppercase; color: #94a3b8; font-weight: 600; margin-top: 3px; letter-spacing: 0.5px; }}
+  .table-wrapper {{ padding: 18px; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
+  th {{ background: #0f172a; color: #94a3b8; text-transform: uppercase; font-size: 10px; padding: 9px 11px; letter-spacing: 0.5px; text-align: left; }}
+  .banner {{ background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 12px 16px; margin: 0 18px 14px 18px; font-size: 11.5px; color: #e2e8f0; }}
   .footer {{ padding: 16px 24px; background: #0f172a; border-top: 1px solid #334155; font-size: 11px; color: #64748b; text-align: center; }}
 </style>
 </head>
 <body>
 <div class="container">
   <div class="header">
-    <div class="title">📊 Apollo Daily Saving Ledger & Credit Digest</div>
-    <div class="subtitle">Generated on {timestamp_str} • Active October 2026 Billing Cycle</div>
+    <div class="title">📊 Apollo, MillionVerifier & Freshsales Executive Digest</div>
+    <div class="subtitle">Generated on {timestamp_str} (IST) • Active October 2026 Billing Cycle (sep 03 - oct 03)</div>
   </div>
 
+  <!-- SECTION 1: APOLLO SAVING -->
+  <div class="sec-head">
+    <span>🟣 Section 1: Apollo Saving Ledger &amp; Credit Usage</span>
+    <span style="font-size:11px; color:#38bdf8; font-weight:normal;">Active October Cycle</span>
+  </div>
   <div class="kpi-row">
     <div class="kpi-cell">
       <div class="kpi-val" style="color:#38bdf8;">{total_leads:,d}</div>
@@ -253,32 +345,134 @@ def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
       <div class="kpi-lbl">Emails ({yield_pct})</div>
     </div>
   </div>
-
   <div class="table-wrapper">
-    <div style="font-size: 13px; font-weight: 700; color: #f8fafc; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between;">
-      <span>Connected Logins Activity Breakdown</span>
-      <span style="font-size: 11px; color: #94a3b8; font-weight: normal;">{len(active_records)} Active Account(s)</span>
-    </div>
     <table>
       <thead>
         <tr>
-          <th style="width: 40px;">#</th>
-          <th>Account & Cycle</th>
-          <th style="text-align: right;">Saved from Web</th>
+          <th style="width: 35px;">#</th>
+          <th>Account &amp; Expiry</th>
+          <th style="text-align: right;">Web</th>
           <th style="text-align: right;">Enriched</th>
           <th style="text-align: right;">Credits</th>
           <th style="text-align: right;">Emails</th>
-          <th style="text-align: right;">Total Contacts</th>
+          <th style="text-align: right;">Total Leads</th>
         </tr>
       </thead>
       <tbody>
-        {rows_html}
+        {saving_rows_html}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 2: MILLIONVERIFIER -->
+  <div class="sec-head" style="border-top:1px solid #334155;">
+    <span>🛡️ Section 2: MillionVerifier Email Deliverability &amp; Negative Suppression</span>
+    <span style="font-size:11px; color:#4ade80; font-weight:normal;">{v_good:,d} Inbox-Ready Leads</span>
+  </div>
+  <div class="kpi-row">
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#38bdf8;">{v_checked:,d}</div>
+      <div class="kpi-lbl">Total Checked</div>
+    </div>
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#4ade80;">{v_good:,d}</div>
+      <div class="kpi-lbl">Good (Inbox)</div>
+    </div>
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#f87171;">{v_bad:,d}</div>
+      <div class="kpi-lbl">Bad (Bounces)</div>
+    </div>
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#fbbf24;">{v_risky:,d}</div>
+      <div class="kpi-lbl">Risky (Catch-all)</div>
+    </div>
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#4ade80;">{v_rate}%</div>
+      <div class="kpi-lbl">Deliverability</div>
+    </div>
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#f87171;">{v_supp:,d}</div>
+      <div class="kpi-lbl">Suppressed Leads</div>
+    </div>
+  </div>
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 35px;">#</th>
+          <th>Outreach Account</th>
+          <th style="text-align: right;">Checked</th>
+          <th style="text-align: right;">Good</th>
+          <th style="text-align: right;">Bad</th>
+          <th style="text-align: right;">Risky</th>
+          <th style="text-align: right;">Health</th>
+          <th style="text-align: right;">Suppressed</th>
+          <th style="text-align: center;">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {verif_rows_html}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 3: FRESHSALES CRM -->
+  <div class="sec-head" style="border-top:1px solid #334155;">
+    <span>💼 Section 3: Freshsales CRM Bridge &amp; Master Ingestion Ledger</span>
+    <span style="font-size:11px; color:#a78bfa; font-weight:normal;">{crm_accounts:,d} Companies Linked</span>
+  </div>
+  <div class="kpi-row">
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#38bdf8;">{crm_batches}</div>
+      <div class="kpi-lbl">Batches Synced</div>
+    </div>
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#4ade80;">+{crm_created:,d}</div>
+      <div class="kpi-lbl">Contacts Created</div>
+    </div>
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#38bdf8;">↺ {crm_updated:,d}</div>
+      <div class="kpi-lbl">Contacts Updated</div>
+    </div>
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#a78bfa;">+{crm_accounts:,d}</div>
+      <div class="kpi-lbl">Accounts Created</div>
+    </div>
+    <div class="kpi-cell">
+      <div class="kpi-val" style="color:#fbbf24;">-{crm_blocked:,d}</div>
+      <div class="kpi-lbl">GDPR / TLD Blocked</div>
+    </div>
+  </div>
+  <div style="padding-top:14px;">
+    <div class="banner">
+      <strong>Active Ingestion Target (October Cycle):</strong><br>
+      • <strong>Account:</strong> Rahul Chandran (RAHUL.CHANDRAN@NESTACK-TECH.COM)<br>
+      • <strong>Freshsales Tag:</strong> <code style="color:#38bdf8;">RAHUL.CHANDRAN@NESTACK-TECH.COM(sep 03 - oct 03)</code><br>
+      • <strong>Ingested Leads:</strong> <strong>1,941</strong> contacts created • <strong>433</strong> contacts updated • <strong>2,248</strong> accounts linked.
+    </div>
+  </div>
+  <div class="table-wrapper" style="padding-top:0;">
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 35px;">#</th>
+          <th>Login Owner &amp; Run Tag</th>
+          <th style="text-align: right;">Initial</th>
+          <th style="text-align: right;">Cleaned</th>
+          <th style="text-align: right;">Created</th>
+          <th style="text-align: right;">Updated</th>
+          <th style="text-align: right;">Accounts</th>
+          <th>Sync Timestamp</th>
+        </tr>
+      </thead>
+      <tbody>
+        {crm_rows_html}
       </tbody>
     </table>
   </div>
 
   <div class="footer">
-    Sent automatically by Apollo Intelligence Engine • Access live dashboard at <a href="http://localhost:8000" style="color: #38bdf8; text-decoration: none;">http://localhost:8000</a>
+    Sent automatically by Apollo Intelligence Engine • Access live operations station at <a href="http://localhost:8000" style="color: #38bdf8; text-decoration: none;">http://localhost:8000</a>
   </div>
 </div>
 </body>
@@ -288,15 +482,21 @@ def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
 
 
 def build_csv_attachment(report_data: Dict[str, Any]) -> str:
-    """Generates CSV string of the active accounts."""
-    records = report_data.get("records", [])
+    """Generates comprehensive multi-section CSV string."""
+    saving = report_data.get("saving", {})
+    verif = report_data.get("verification", {})
+    crm = report_data.get("crm_october") or report_data.get("crm", {})
+
     output = io.StringIO()
     writer = csv.writer(output)
+
+    # 1. Apollo Saving Records
+    writer.writerow(["=== SECTION 1: APOLLO SAVING LEDGER ==="])
     writer.writerow([
         "Account ID", "Name", "Email", "Billing Cycle", "Expiry IST", "Time Left",
         "Saved from Web", "Enriched Here", "Credits Used", "Saved Emails", "Total Contacts", "Last Saved"
     ])
-    for r in records:
+    for r in saving.get("records", []):
         writer.writerow([
             r.get("id"),
             r.get("name"),
@@ -311,6 +511,50 @@ def build_csv_attachment(report_data: Dict[str, Any]) -> str:
             r.get("total_leads", 0),
             r.get("last_saved_str", "")
         ])
+
+    writer.writerow([])
+    # 2. MillionVerifier Records
+    writer.writerow(["=== SECTION 2: MILLIONVERIFIER DELIVERABILITY LEDGER ==="])
+    writer.writerow([
+        "Account ID", "Account Name", "Email", "Total Checked", "Good Inbox",
+        "Bad Bounces", "Risky Catchall", "Deliverability Rate", "Suppressed Leads", "Shield Status"
+    ])
+    for r in verif.get("records", []):
+        if r.get("total_checked", 0) > 0:
+            writer.writerow([
+                r.get("id"),
+                r.get("name"),
+                r.get("email"),
+                r.get("total_checked"),
+                r.get("good"),
+                r.get("bad"),
+                r.get("risky"),
+                f"{r.get('deliverability_rate')}%",
+                r.get("suppressed_leads"),
+                r.get("status")
+            ])
+
+    writer.writerow([])
+    # 3. Freshsales CRM Records
+    writer.writerow(["=== SECTION 3: FRESHSALES CRM SYNC LEDGER ==="])
+    writer.writerow([
+        "Batch Key", "Login Owner", "Tag", "Import Label", "Initial Leads",
+        "Cleaned Out TLD", "Contacts Created", "Contacts Updated", "Accounts Created", "Sync Timestamp"
+    ])
+    for r in crm.get("records", []):
+        writer.writerow([
+            r.get("batch_key"),
+            r.get("login_owner"),
+            r.get("tag"),
+            r.get("import_label"),
+            r.get("initial_leads"),
+            r.get("cleaned_out"),
+            r.get("contacts_created"),
+            r.get("contacts_updated"),
+            r.get("accounts_created"),
+            r.get("sync_timestamp")
+        ])
+
     return output.getvalue()
 
 
@@ -348,12 +592,20 @@ def dispatch_email(
             }
             res = requests.post(apps_script_url, json=payload, timeout=30)
             if res.status_code == 200:
-                print(f"[Dispatcher ✓] Email successfully delivered via Google Apps Script to: {', '.join(recipients)}")
-                return {
-                    "status": "success",
-                    "provider": "Google Apps Script (Native Workspace)",
-                    "recipients": recipients
-                }
+                resp_json = {}
+                try:
+                    resp_json = res.json()
+                except Exception:
+                    pass
+                if resp_json.get("status") == "error":
+                    print(f"[Dispatcher !] Google Apps Script error: {resp_json.get('message')}")
+                else:
+                    print(f"[Dispatcher ✓] Email successfully delivered via Google Apps Script to: {', '.join(recipients)}")
+                    return {
+                        "status": "success",
+                        "provider": "Google Apps Script (Native Workspace)",
+                        "recipients": recipients
+                    }
             else:
                 print(f"[Dispatcher !] Google Apps Script returned {res.status_code}: {res.text[:200]}")
         except Exception as e:
@@ -453,19 +705,46 @@ def run_saving_report_pipeline(channels: Optional[List[str]] = None) -> Dict[str
 
     # 1. Fetch live report data
     report_data = build_report_data()
-    total_leads = report_data.get("total_saved_leads", 0)
-    total_creds = report_data.get("total_credits_used", 0)
+    saving = report_data.get("saving", {})
+    verif = report_data.get("verification", {})
+    crm = report_data.get("crm", {})
+
+    total_leads = saving.get("total_saved_leads", 0)
+    total_creds = saving.get("total_credits_used", 0)
+    total_emails = saving.get("total_emails_saved", 0)
+    v_checked = verif.get("total_checked", 0)
+    v_good = verif.get("total_good", 0)
+    v_rate = verif.get("overall_deliverability", 0.0)
+    v_supp = verif.get("total_suppressed", 0)
+    crm_created = crm.get("total_contacts_created", 0)
+    crm_updated = crm.get("total_contacts_updated", 0)
+    crm_accounts = crm.get("total_accounts_created", 0)
 
     results = {
         "timestamp": timestamp_str,
-        "total_contacts": total_leads,
-        "credits_used": total_creds,
+        "saving": {
+            "total_contacts": total_leads,
+            "credits_used": total_creds,
+            "emails_saved": total_emails
+        },
+        "verification": {
+            "total_checked": v_checked,
+            "good_inbox": v_good,
+            "deliverability_rate": v_rate,
+            "suppressed_leads": v_supp
+        },
+        "crm": {
+            "contacts_created": crm_created,
+            "contacts_updated": crm_updated,
+            "accounts_created": crm_accounts,
+            "batches_synced": crm.get("total_batches_synced", 0)
+        },
         "channels": {}
     }
 
     # 2. Email
     if "email" in channels:
-        subject = f"[Apollo Daily Report] {now_ist.strftime('%d %b %Y')} • {total_leads:,d} Contacts | {total_creds:,d} Credits Used"
+        subject = f"[Apollo Executive Report] {now_ist.strftime('%d %b %Y')} • {total_leads:,d} Leads | {v_good:,d} Verified ({v_rate}%) | {crm_created:,d} CRM Synced"
         html = format_email_html(report_data, timestamp_str)
         csv_data = build_csv_attachment(report_data)
         results["channels"]["email"] = dispatch_email(subject, html, csv_data)
@@ -484,9 +763,15 @@ def run_saving_report_pipeline(channels: Optional[List[str]] = None) -> Dict[str
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Multi-Channel Report Dispatcher")
+    parser.add_argument("--channels", type=str, default="email,whatsapp,teams", help="Comma-separated channels to dispatch")
+    args = parser.parse_args()
+
+    selected_channels = [c.strip().lower() for c in args.channels.split(",") if c.strip()]
     print("=" * 70)
-    print(">>> Apollo Saving Ledger Multi-Channel Report Dispatcher")
+    print(f">>> Apollo Saving, Verifier & CRM Report Dispatcher: {selected_channels}")
     print("=" * 70)
-    res = run_saving_report_pipeline()
+    res = run_saving_report_pipeline(channels=selected_channels)
     print("\nDispatch Results:")
     print(json.dumps(res, indent=2))

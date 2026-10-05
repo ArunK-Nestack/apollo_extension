@@ -1968,8 +1968,9 @@ def api_send_saving_report(channels: Optional[str] = "email,whatsapp,teams"):
 def get_verification_summary(filter_cycle: Optional[str] = "october"):
     """
     Section 2: Mail Verifier & Negative Suppression Ledger.
-    When filter_cycle == 'october' (default), returns verification telemetry
-    strictly scoped to this active cycle (99.4% deliverability, 23 suppressed).
+    Dynamically reconciles verification telemetry from config/millionverifier_jobs.json
+    and MySQL million_verifier_cache.
+    When filter_cycle == 'october' (default), aggregates jobs created in the active October cycle.
     When filter_cycle == 'all', aggregates historical lifetime data.
     """
     accs_file = CONFIG_DIR / "apollo_accounts.json"
@@ -1980,53 +1981,6 @@ def get_verification_summary(filter_cycle: Optional[str] = "october"):
                 accs = json.load(f)
         except Exception:
             pass
-
-    if filter_cycle != "all":
-        # Active October Cycle (Timer Filtered)
-        # Only Rahul Chandran was entered/enriched in this cycle (3,988 leads verified)
-        acc_verif = []
-        for a in accs:
-            em = a["email"].strip().lower()
-            nm = a["name"].strip()
-            if a["id"] == 3 or "rahul.chandran" in em:
-                acc_verif.append({
-                    "id": a["id"],
-                    "name": nm,
-                    "email": a["email"],
-                    "total_checked": 3988,
-                    "good": 3965,
-                    "bad": 5,
-                    "risky": 18,
-                    "deliverability_rate": 99.4,
-                    "credits_avoided": 23,
-                    "status": "Secured"
-                })
-            else:
-                acc_verif.append({
-                    "id": a["id"],
-                    "name": nm,
-                    "email": a["email"],
-                    "total_checked": 0,
-                    "good": 0,
-                    "bad": 0,
-                    "risky": 0,
-                    "deliverability_rate": 0.0,
-                    "credits_avoided": 0,
-                    "status": "Standby"
-                })
-
-        return {
-            "status": "ok",
-            "cycle_filter": "october",
-            "total_checked": 3988,
-            "total_good": 3965,
-            "total_bad": 5,
-            "total_risky": 18,
-            "overall_deliverability": 99.4,
-            "total_suppressed": 23,
-            "credits_avoided_total": 23,
-            "records": acc_verif
-        }
 
     mv_jobs_file = CONFIG_DIR / "millionverifier_jobs.json"
     mv_jobs_data = []
@@ -2067,24 +2021,49 @@ def get_verification_summary(filter_cycle: Optional[str] = "october"):
         if "rahul" in o_low: return 10
         return 0
 
-    acc_suppression = {a["id"]: {"bad": 0, "risky": 0} for a in accs}
-    acc_suppression[0] = {"bad": 0, "risky": 0}
+    # Filter jobs according to selected cycle
+    if filter_cycle != "all":
+        # In the active October cycle (Sep 03 - Oct 03), only Rahul Chandran (Account #3) is active
+        cycle_jobs = []
+        for j in mv_jobs_data:
+            dt = j.get("created_at") or ""
+            fn = (j.get("filename") or j.get("file_name") or "").lower()
+            bt = (j.get("batch") or "").lower()
+            login_key = (j.get("login") or j.get("account_name") or j.get("batch") or "").strip().lower()
+            aid = _resolve_owner_to_acc(login_key)
+            is_oct = "_oct" in fn or "_oct" in bt or "-oct" in bt or "sep_03_-_oct_03" in fn
+            if aid == 3 and (is_oct or dt >= "2026-10-01"):
+                cycle_jobs.append(j)
+    else:
+        cycle_jobs = mv_jobs_data
 
-    try:
-        from backend.api import get_connection
-        conn = get_connection()
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT login_owner, verification_status, COUNT(*) 
-                FROM million_verifier_cache 
-                GROUP BY login_owner, verification_status;
-            """)
-            for login_owner, status, cnt in cur.fetchall():
-                aid = _resolve_owner_to_acc((login_owner or "").strip().lower())
-                if status in ("bad", "risky"):
-                    acc_suppression[aid][status] += cnt
-    except Exception as e:
-        print(f"[Reports] Error querying verification cache: {e}", flush=True)
+    # Group jobs by account ID
+    from collections import defaultdict
+    jobs_by_acc = defaultdict(list)
+    for job in cycle_jobs:
+        login_key = (job.get("login") or job.get("account_name") or job.get("batch") or "").strip().lower()
+        aid = _resolve_owner_to_acc(login_key)
+        if aid > 0:
+            jobs_by_acc[aid].append(job)
+
+    # For lifetime view, query MySQL suppression cache as fallback
+    acc_suppression = {a["id"]: {"bad": 0, "risky": 0} for a in accs}
+    if filter_cycle == "all":
+        try:
+            from backend.api import get_connection
+            conn = get_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT login_owner, verification_status, COUNT(*) 
+                    FROM million_verifier_cache 
+                    GROUP BY login_owner, verification_status;
+                """)
+                for login_owner, status, cnt in cur.fetchall():
+                    aid = _resolve_owner_to_acc((login_owner or "").strip().lower())
+                    if aid in acc_suppression and status in ("bad", "risky"):
+                        acc_suppression[aid][status] += cnt
+        except Exception as e:
+            print(f"[Reports] Error querying verification cache: {e}", flush=True)
 
     acc_verif = []
     total_good = 0
@@ -2093,68 +2072,81 @@ def get_verification_summary(filter_cycle: Optional[str] = "october"):
     total_checked = 0
 
     for a in accs:
-        em = a["email"].strip().lower()
+        aid = a["id"]
         nm = a["name"].strip()
-        prefix = em.split("@")[0].replace(".", "_").replace("-", "_")
+        em = a["email"].strip()
+        matched = jobs_by_acc.get(aid, [])
 
-        supp = acc_suppression.get(a["id"], {"bad": 0, "risky": 0})
-        bad_cnt = supp["bad"]
-        risky_cnt = supp["risky"]
+        job_checked = sum(int(j.get("total_rows", 0) or 0) for j in matched)
+        job_good = sum(int(j.get("good_count", 0) or 0) for j in matched)
+        job_bad = sum(int(j.get("bad_count", 0) or 0) for j in matched)
+        job_risky = sum(int(j.get("risky_count", 0) or 0) for j in matched)
 
-        good_cnt = 0
-        checked_cnt = 0
-        for job in mv_jobs_data:
-            job_login = (job.get("login") or "").strip().lower()
-            clean_jl = job_login.replace(".", "_").replace("-", "_")
-            if em == job_login or prefix in clean_jl:
-                good_cnt += int(job.get("good_count", 0) or 0)
-                checked_cnt += int(job.get("total_rows", 0) or 0)
+        if filter_cycle == "all":
+            supp = acc_suppression.get(aid, {"bad": 0, "risky": 0})
+            bad_cnt = max(job_bad, supp["bad"])
+            risky_cnt = max(job_risky, supp["risky"])
+        else:
+            bad_cnt = job_bad
+            risky_cnt = job_risky
 
+        good_cnt = job_good
+        checked_cnt = job_checked
         if checked_cnt < (good_cnt + bad_cnt + risky_cnt):
             checked_cnt = good_cnt + bad_cnt + risky_cnt
 
         rate = round((good_cnt / checked_cnt * 100), 1) if checked_cnt > 0 else 0.0
-        avoided_credits = bad_cnt + risky_cnt
+        suppressed_cnt = bad_cnt + risky_cnt
 
         total_good += good_cnt
         total_bad += bad_cnt
         total_risky += risky_cnt
         total_checked += checked_cnt
 
+        status_text = "Secured" if (bad_cnt + risky_cnt > 0 or good_cnt > 0) else "Standby"
+
         acc_verif.append({
-            "id": a["id"],
+            "id": aid,
             "name": nm,
-            "email": a["email"],
+            "email": em,
             "total_checked": checked_cnt,
             "good": good_cnt,
             "bad": bad_cnt,
             "risky": risky_cnt,
             "deliverability_rate": rate,
-            "credits_avoided": avoided_credits,
-            "status": "Secured" if bad_cnt + risky_cnt > 0 else "Pending Inspection"
+            "suppressed_leads": suppressed_cnt,
+            "credits_avoided": suppressed_cnt,  # maintained for backward compatibility
+            "status": status_text
         })
 
+    # Sort so accounts with verified leads appear at top, then by id
+    acc_verif.sort(key=lambda x: (x["total_checked"] == 0, -x["total_checked"], x["id"]))
+
     total_suppressed = total_bad + total_risky
+    overall_deliv = round((total_good / total_checked * 100), 1) if total_checked > 0 else 0.0
 
     return {
         "status": "ok",
+        "cycle_filter": filter_cycle,
         "total_checked": total_checked,
         "total_good": total_good,
         "total_bad": total_bad,
         "total_risky": total_risky,
-        "overall_deliverability": round((total_good / total_checked * 100), 1) if total_checked > 0 else 0.0,
+        "overall_deliverability": overall_deliv,
         "total_suppressed": total_suppressed,
+        "suppressed_leads_total": total_suppressed,
         "credits_avoided_total": total_suppressed,
         "records": acc_verif
     }
 
 
 @dashboard_router.get("/api/reports/crm-sync-summary")
-def get_crm_sync_summary():
+def get_crm_sync_summary(filter_cycle: Optional[str] = "all"):
     """
     Section 3: Freshsales CRM Sync & Master Ingestion Ledger.
-    Reconciles all batches synced to Freshsales, tracking contacts created,
-    contacts updated, TLD/GDPR cleaned out, and CRM import labels.
+    Reconciles all batches synced to Freshsales, tracking login owner,
+    tag created on Freshsales, contacts created, contacts updated,
+    accounts created (sales accounts), and TLD/GDPR cleaned out.
     """
     fs_ledger_file = CONFIG_DIR / "freshsales_synced_batches.json"
     fs_ledger = {}
@@ -2177,6 +2169,7 @@ def get_crm_sync_summary():
         "rahul@nestack-tech.com": "5445–5448",
         "vraghavan@nestacktech.com": "5449–5452",
         "rahul@nestack.co.in": "5453–5454",
+        "rahul.chandran@nestack-tech.com": "5455–5460",
     }
 
     records = []
@@ -2184,6 +2177,7 @@ def get_crm_sync_summary():
     total_created = 0
     total_updated = 0
     total_blocked = 0
+    total_accounts = 0
 
     for key, v in fs_ledger.items():
         tag = v.get("tag", "") or ""
@@ -2191,13 +2185,21 @@ def get_crm_sync_summary():
         created = int(v.get("created", 0) or 0)
         updated = int(v.get("updated", 0) or 0)
         blocked = int(v.get("tld_blocked", 0) or 0)
+        accounts = int(v.get("accounts_created", 0) or 0)
         ts = v.get("synced_at") or v.get("timestamp") or "2026-09-30 18:30:00"
+
+        # Apply cycle filter if specified
+        if filter_cycle == "october" and ts < "2026-10-01":
+            continue
 
         owner = "Freshsales Sync"
         matched_label = "5400-Series"
-        for em, lbl in label_map.items():
-            prefix = em.split("@")[0].replace(".", "_").replace("-", "_")
-            if prefix in tag.lower().replace(".", "_").replace("-", "_") or em in tag.lower():
+        sorted_labels = sorted(label_map.items(), key=lambda x: len(x[0]), reverse=True)
+        for em, lbl in sorted_labels:
+            clean_em = em.lower()
+            clean_tag = tag.lower().replace(".", "_").replace("-", "_")
+            prefix = clean_em.split("@")[0].replace(".", "_").replace("-", "_")
+            if clean_em in tag.lower() or prefix in clean_tag:
                 owner = em
                 matched_label = lbl
                 break
@@ -2206,6 +2208,7 @@ def get_crm_sync_summary():
         total_created += created
         total_updated += updated
         total_blocked += blocked
+        total_accounts += accounts
 
         records.append({
             "batch_key": key,
@@ -2216,6 +2219,7 @@ def get_crm_sync_summary():
             "cleaned_out": blocked,
             "contacts_created": created,
             "contacts_updated": updated,
+            "accounts_created": accounts,
             "sync_timestamp": ts,
             "status": "Synced & Audited",
             "has_audit_file": bool(v.get("audit_file"))
@@ -2225,11 +2229,69 @@ def get_crm_sync_summary():
 
     return {
         "status": "ok",
+        "cycle_filter": filter_cycle,
         "total_batches_synced": len(records),
         "total_initial_leads": total_leads,
         "total_contacts_created": total_created,
         "total_contacts_updated": total_updated,
+        "total_accounts_created": total_accounts,
         "total_cleaned_out": total_blocked,
         "records": records
     }
+
+
+@dashboard_router.get("/api/reports/crm-batch-audit")
+def get_crm_batch_audit(batch_key: str):
+    """
+    Retrieves row-level audit trail, created/updated breakdown, and failed error details
+    for any synced Freshsales batch via API.
+    """
+    fs_ledger_file = CONFIG_DIR / "freshsales_synced_batches.json"
+    if not fs_ledger_file.exists():
+        raise HTTPException(status_code=404, detail="Sync ledger not found")
+
+    with open(fs_ledger_file, "r", encoding="utf-8") as f:
+        ledger = json.load(f)
+
+    batch = ledger.get(batch_key.lower()) or ledger.get(batch_key)
+    if not batch:
+        for k, v in ledger.items():
+            if batch_key.lower() in k.lower() or batch_key.lower() in (v.get("tag") or "").lower():
+                batch = v
+                batch_key = k
+                break
+
+    if not batch:
+        raise HTTPException(status_code=404, detail=f"Batch '{batch_key}' not found in CRM sync ledger")
+
+    audit_file_p = Path(batch.get("audit_file", ""))
+    if not audit_file_p.exists():
+        raise HTTPException(status_code=404, detail="Audit CSV file not found on disk")
+
+    import csv
+    rows = []
+    failed_rows = []
+    with open(audit_file_p, "r", encoding="utf-8", errors="replace") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            act = (r.get("action") or "").lower()
+            err = r.get("error_reason") or ""
+            if act in ("failed", "error") or (err and "delete_tlds" not in err.lower()):
+                failed_rows.append(r)
+            rows.append(r)
+
+    return {
+        "status": "ok",
+        "batch_key": batch_key,
+        "tag": batch.get("tag"),
+        "total_records": len(rows),
+        "contacts_created": batch.get("created", 0),
+        "contacts_updated": batch.get("updated", 0),
+        "accounts_created": batch.get("accounts_created", 0),
+        "tld_cleaned_out": batch.get("tld_blocked", 0),
+        "failed_errors_count": len(failed_rows),
+        "failed_samples": failed_rows[:25],
+        "audit_file_path": str(audit_file_p)
+    }
+
 
