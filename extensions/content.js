@@ -1056,39 +1056,15 @@
   function startPageWatch() {
     if (pageWatch.timer) return;
     pageWatch.page = getApolloPageNumber();
-    logExtensionActivity("PAGE_LOADED", {
-      page_number: pageWatch.page,
-      total_on_page: 0,
-      required_on_page: 0,
-      not_required_on_page: 0,
-      existing_on_page: 0,
-      guardrail_rejected_on_page: 0
-    });
     pageWatch.timer = setInterval(() => {
       const current = getApolloPageNumber();
       if (current === pageWatch.page) return;
-      logExtensionActivity("PAGE_ADVANCED", {
-        page_number: pageWatch.page,
-        total_on_page: pageWatch.totalOnPage,
-        required_on_page: pageWatch.requiredOnPage,
-        not_required_on_page: pageWatch.notRequiredOnPage,
-        existing_on_page: pageWatch.existingOnPage,
-        guardrail_rejected_on_page: pageWatch.rejectedOnPage
-      });
       pageWatch.page = current;
       pageWatch.totalOnPage = 0;
       pageWatch.requiredOnPage = 0;
       pageWatch.notRequiredOnPage = 0;
       pageWatch.existingOnPage = 0;
       pageWatch.rejectedOnPage = 0;
-      logExtensionActivity("PAGE_LOADED", {
-        page_number: current,
-        total_on_page: 0,
-        required_on_page: 0,
-        not_required_on_page: 0,
-        existing_on_page: 0,
-        guardrail_rejected_on_page: 0
-      });
     }, 1000);
   }
 

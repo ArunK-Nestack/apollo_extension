@@ -2491,5 +2491,239 @@
         }
       }
     }
+  },
+  "vijay@nestacktech.com": {
+    "Manufacturing \u2014 Consumer & Specialty Products-new": {
+      "search_name": "Manufacturing \u2014 Consumer & Specialty Products-new",
+      "account_email": "vijay@nestacktech.com",
+      "created_at": "2026-10-07 14:41:14",
+      "keywords": {
+        "director": {
+          "keyword": "Director",
+          "category": "Job Title",
+          "total_leads": 2440,
+          "total_pages": 25,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "president": {
+          "keyword": "President",
+          "category": "Job Title",
+          "total_leads": 1423,
+          "total_pages": 15,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "founder": {
+          "keyword": "Founder",
+          "category": "Job Title",
+          "total_leads": 913,
+          "total_pages": 10,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "chief": {
+          "keyword": "Chief",
+          "category": "Job Title",
+          "total_leads": 740,
+          "total_pages": 8,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "vice president": {
+          "keyword": "Vice President",
+          "category": "Job Title",
+          "total_leads": 730,
+          "total_pages": 8,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "ceo": {
+          "keyword": "CEO",
+          "category": "Job Title",
+          "total_leads": 452,
+          "total_pages": 5,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "co-founder": {
+          "keyword": "Co-Founder",
+          "category": "Job Title",
+          "total_leads": 387,
+          "total_pages": 4,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "vp": {
+          "keyword": "VP",
+          "category": "Job Title",
+          "total_leads": 310,
+          "total_pages": 4,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "director of sales": {
+          "keyword": "Director of Sales",
+          "category": "Job Title",
+          "total_leads": 228,
+          "total_pages": 3,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "chief executive officer": {
+          "keyword": "Chief Executive Officer",
+          "category": "Job Title",
+          "total_leads": 226,
+          "total_pages": 3,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "director of operations": {
+          "keyword": "Director of Operations",
+          "category": "Job Title",
+          "total_leads": 175,
+          "total_pages": 2,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "senior director": {
+          "keyword": "Senior Director",
+          "category": "Job Title",
+          "total_leads": 139,
+          "total_pages": 2,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "director of marketing": {
+          "keyword": "Director of Marketing",
+          "category": "Job Title",
+          "total_leads": 132,
+          "total_pages": 2,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "chief operating officer": {
+          "keyword": "Chief Operating Officer",
+          "category": "Job Title",
+          "total_leads": 121,
+          "total_pages": 2,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "vice president of sales": {
+          "keyword": "Vice President of Sales",
+          "category": "Job Title",
+          "total_leads": 119,
+          "total_pages": 2,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "managing director": {
+          "keyword": "Managing Director",
+          "category": "Job Title",
+          "total_leads": 111,
+          "total_pages": 2,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "chief financial officer": {
+          "keyword": "Chief Financial Officer",
+          "category": "Job Title",
+          "total_leads": 108,
+          "total_pages": 2,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "chief marketing officer": {
+          "keyword": "Chief Marketing Officer",
+          "category": "Job Title",
+          "total_leads": 54,
+          "total_pages": 1,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "senior vice president": {
+          "keyword": "Senior Vice President",
+          "category": "Job Title",
+          "total_leads": 50,
+          "total_pages": 1,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "cfo": {
+          "keyword": "CFO",
+          "category": "Job Title",
+          "total_leads": 49,
+          "total_pages": 1,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "regional director": {
+          "keyword": "Regional Director",
+          "category": "Job Title",
+          "total_leads": 47,
+          "total_pages": 1,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "executive vice president": {
+          "keyword": "Executive Vice President",
+          "category": "Job Title",
+          "total_leads": 45,
+          "total_pages": 1,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "vice president of operations": {
+          "keyword": "Vice President of Operations",
+          "category": "Job Title",
+          "total_leads": 28,
+          "total_pages": 1,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "executive director": {
+          "keyword": "Executive Director",
+          "category": "Job Title",
+          "total_leads": 28,
+          "total_pages": 1,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        },
+        "director of engineering": {
+          "keyword": "Director of Engineering",
+          "category": "Job Title",
+          "total_leads": 26,
+          "total_pages": 1,
+          "first_recommended": "2026-10-07 14:41:14",
+          "times_recommended": 1,
+          "status": "recommended"
+        }
+      }
+    }
   }
 }

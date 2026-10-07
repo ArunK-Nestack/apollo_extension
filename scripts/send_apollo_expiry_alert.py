@@ -18,6 +18,9 @@ from __future__ import annotations
 import os
 import sys
 import json
+import csv
+import io
+import html
 import urllib.parse
 import argparse
 from datetime import datetime, timezone, timedelta
@@ -214,6 +217,209 @@ def format_whatsapp_expiry_message(
     return "\n".join(lines)
 
 
+def _expiry_display_fields(
+    account: Dict[str, Any],
+    now_utc: datetime,
+) -> Dict[str, Any]:
+    """Return presentation fields shared by the HTML and CSV reports."""
+    row = dict(account)
+    billing_end = account.get("billing_end")
+    row["expiry_ist"] = "No data"
+    row["time_left"] = "-"
+    row["urgency"] = "unknown"
+
+    if billing_end:
+        try:
+            dt_utc = datetime.fromisoformat(str(billing_end).replace("Z", "+00:00"))
+            dt_ist = dt_utc.astimezone(IST)
+            seconds = int((dt_utc - now_utc).total_seconds())
+            days = seconds // 86400
+            hours = (seconds % 86400) // 3600
+            minutes = (seconds % 3600) // 60
+
+            if seconds <= 0:
+                row["time_left"] = "EXPIRED"
+                row["urgency"] = "expired"
+            elif seconds <= 48 * 3600:
+                row["time_left"] = f"{max(days, 0)}d {hours}h {minutes}m"
+                row["urgency"] = "urgent"
+            elif seconds <= 7 * 86400:
+                row["time_left"] = f"{days}d {hours}h"
+                row["urgency"] = "upcoming"
+            else:
+                row["time_left"] = f"{days}d {hours}h"
+                row["urgency"] = "healthy"
+
+            row["expiry_ist"] = dt_ist.strftime("%d %b %Y, %I:%M %p IST")
+        except (TypeError, ValueError):
+            row["expiry_ist"] = "Parse error"
+
+    available = int(account.get("credits_avail", 0) or 0)
+    remaining = int(account.get("credits_remaining", 0) or 0)
+    row["credits_used"] = max(0, available - remaining)
+    return row
+
+
+def format_email_expiry_report(
+    accounts_data: List[Dict[str, Any]],
+    now_utc: Optional[datetime] = None,
+) -> str:
+    """Build the Apollo 19 live credit and expiry report as an HTML email."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    now_ist = now_utc.astimezone(IST)
+    rows = [_expiry_display_fields(account, now_utc) for account in accounts_data]
+    total_credits = sum(int(row.get("credits_remaining", 0) or 0) for row in rows)
+    expired = sum(row["urgency"] == "expired" for row in rows)
+    urgent = sum(row["urgency"] == "urgent" for row in rows)
+    upcoming = sum(row["urgency"] == "upcoming" for row in rows)
+
+    color_by_urgency = {
+        "expired": "#ef4444",
+        "urgent": "#f59e0b",
+        "upcoming": "#fb923c",
+        "healthy": "#22c55e",
+        "unknown": "#94a3b8",
+    }
+    account_rows = []
+    for index, row in enumerate(rows, 1):
+        urgency = row.get("urgency", "unknown")
+        color = color_by_urgency.get(urgency, "#94a3b8")
+        status = row.get("status", "unknown")
+        account_rows.append(
+            "<tr>"
+            f"<td>{index:02d}</td>"
+            f"<td><strong>{html.escape(str(row.get('name', '')))}</strong></td>"
+            f"<td>{html.escape(str(row.get('email', '')))}</td>"
+            f"<td>{html.escape(str(row.get('expiry_ist', 'No data')))}</td>"
+            f"<td style=\"color:{color};font-weight:700\">{html.escape(str(row.get('time_left', '-')))}</td>"
+            f"<td style=\"text-align:right;font-weight:700\">{int(row.get('credits_remaining', 0) or 0):,}</td>"
+            f"<td style=\"color:{color}\">{html.escape(str(status))}</td>"
+            "</tr>"
+        )
+
+    return f"""<!doctype html>
+<html><body style="margin:0;background:#0f172a;color:#e2e8f0;font-family:Arial,sans-serif;">
+<div style="max-width:1050px;margin:0 auto;padding:24px;">
+  <div style="background:#111827;border:1px solid #334155;border-radius:14px;overflow:hidden;">
+    <div style="padding:24px;background:linear-gradient(135deg,#172554,#111827);">
+      <h1 style="margin:0 0 8px;font-size:24px;color:#f8fafc;">Apollo Accounts Expiring Within the Next 7 Days</h1>
+      <div style="color:#94a3b8;font-size:13px;">Live probe generated {now_ist.strftime('%d %b %Y, %I:%M %p IST')}</div>
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;padding:18px 24px;background:#0b1220;">
+      <div style="padding:12px 16px;border:1px solid #334155;border-radius:10px;"><strong style="font-size:20px;color:#4ade80;">{total_credits:,}</strong><br><span style="font-size:11px;color:#94a3b8;">Credits in 7-Day Window</span></div>
+      <div style="padding:12px 16px;border:1px solid #334155;border-radius:10px;"><strong style="font-size:20px;color:#ef4444;">{expired}</strong><br><span style="font-size:11px;color:#94a3b8;">Expired</span></div>
+      <div style="padding:12px 16px;border:1px solid #334155;border-radius:10px;"><strong style="font-size:20px;color:#f59e0b;">{urgent}</strong><br><span style="font-size:11px;color:#94a3b8;">Expiring &lt;48h</span></div>
+      <div style="padding:12px 16px;border:1px solid #334155;border-radius:10px;"><strong style="font-size:20px;color:#fb923c;">{upcoming}</strong><br><span style="font-size:11px;color:#94a3b8;">Expiring &lt;7 days</span></div>
+    </div>
+    <div style="padding:0 24px 24px;overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:#1e293b;color:#cbd5e1;">
+          <th style="padding:10px;text-align:left;">#</th><th style="padding:10px;text-align:left;">Account</th>
+          <th style="padding:10px;text-align:left;">Email / Login</th><th style="padding:10px;text-align:left;">Expiry (IST)</th>
+          <th style="padding:10px;text-align:left;">Time Left</th><th style="padding:10px;text-align:right;">Credits</th>
+          <th style="padding:10px;text-align:left;">Status</th>
+        </tr></thead>
+        <tbody>{''.join(account_rows)}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</body></html>"""
+
+
+def build_expiry_csv(
+    accounts_data: List[Dict[str, Any]],
+    now_utc: Optional[datetime] = None,
+) -> str:
+    """Build a downloadable audit attachment for the emailed live report."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Account ID", "Account Name", "Email", "Expiry IST", "Time Left",
+        "Credits Available", "Credits Used", "Credits Remaining", "Status",
+    ])
+    for account in accounts_data:
+        row = _expiry_display_fields(account, now_utc)
+        writer.writerow([
+            row.get("id"), row.get("name"), row.get("email"), row.get("expiry_ist"),
+            row.get("time_left"), row.get("credits_avail", 0), row.get("credits_used", 0),
+            row.get("credits_remaining", 0), row.get("status", "unknown"),
+        ])
+    return output.getvalue()
+
+
+def filter_accounts_expiring_within(
+    accounts_data: List[Dict[str, Any]],
+    now_utc: datetime,
+    days: int = 7,
+) -> List[Dict[str, Any]]:
+    """Keep accounts whose billing expiry is in the next rolling N-day window."""
+    cutoff_seconds = days * 24 * 3600
+    filtered: List[Dict[str, Any]] = []
+    for account in accounts_data:
+        billing_end = account.get("billing_end")
+        if not billing_end:
+            continue
+        try:
+            expiry_utc = datetime.fromisoformat(str(billing_end).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        seconds_left = (expiry_utc - now_utc).total_seconds()
+        if 0 < seconds_left <= cutoff_seconds:
+            filtered.append(account)
+    return filtered
+
+
+def run_expiry_report_pipeline(
+    channels: Optional[List[str]] = None,
+    accounts_data: Optional[List[Dict[str, Any]]] = None,
+    now_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Probe Apollo once and dispatch the live account report to selected channels."""
+    selected = [channel.lower() for channel in (channels or ["email"])]
+    if accounts_data is None:
+        from scripts.apollo_account_report import fetch_all_accounts_live
+        accounts_data = fetch_all_accounts_live()
+
+    if not accounts_data:
+        return {"status": "error", "message": "No Apollo account data retrieved", "channels": {}}
+
+    now_utc = now_utc or datetime.now(timezone.utc)
+    now_ist = now_utc.astimezone(IST)
+    expiring_accounts = filter_accounts_expiring_within(accounts_data, now_utc, days=7)
+    total_credits = sum(int(account.get("credits_remaining", 0) or 0) for account in expiring_accounts)
+    results: Dict[str, Any] = {
+        "status": "ok",
+        "timestamp": now_ist.strftime("%d %b %Y, %I:%M %p IST"),
+        "total_accounts_probed": len(accounts_data),
+        "total_accounts": len(expiring_accounts),
+        "window_days": 7,
+        "total_credits": total_credits,
+        "channels": {},
+    }
+
+    if "email" in selected:
+        from scripts.send_saving_report import dispatch_email
+        subject = (
+            f"[Apollo Credit & Expiry Report] {now_ist.strftime('%d %b %Y')} "
+            f"• {len(expiring_accounts)} Expiring Within 7 Days • {total_credits:,} Credits Remaining"
+        )
+        results["channels"]["email"] = dispatch_email(
+            subject,
+            format_email_expiry_report(expiring_accounts, now_utc),
+            build_expiry_csv(expiring_accounts, now_utc),
+            attachment_filename=f"apollo_credit_expiry_{now_ist.strftime('%Y%m%d_%H%M%S')}.csv",
+        )
+
+    if "whatsapp" in selected:
+        accounts_with_expiry = [account for account in accounts_data if account.get("billing_end")]
+        message = format_whatsapp_expiry_message(accounts_with_expiry, now_utc=now_utc)
+        results["channels"]["whatsapp"] = send_whatsapp_alert(message)
+
+    return results
+
+
 # =====================================================================
 # 3. DISPATCH ENGINE (CALLMEBOT API)
 # =====================================================================
@@ -314,6 +520,12 @@ def main():
     parser.add_argument("--apikey", type=str, help="CallMeBot API key")
     parser.add_argument("--schedule", action="store_true", help="Register Windows Task Scheduler to run daily at 8:30 AM")
     parser.add_argument("--time", type=str, default="08:30", help="Scheduled time in HH:MM (default: 08:30)")
+    parser.add_argument(
+        "--channels",
+        type=str,
+        default="whatsapp",
+        help="Comma-separated dispatch channels: email,whatsapp (default: whatsapp)",
+    )
     args = parser.parse_args()
 
     if args.schedule:
@@ -324,20 +536,24 @@ def main():
             print(f"[!] Invalid time format: {e}. Use HH:MM, e.g. 08:30")
         return
 
-    print("\nScanning all 19 Apollo accounts live for billing cycles & credits...")
-    accounts_data = fetch_all_account_expiries()
-    if not accounts_data:
-        print("[!] No account expiry data retrieved. Check config/apollo_accounts.json and connection.")
+    selected_channels = [item.strip().lower() for item in args.channels.split(",") if item.strip()]
+    if args.dry_run and selected_channels == ["whatsapp"]:
+        print("\nScanning all 19 Apollo accounts live for billing cycles & credits...")
+        accounts_data = fetch_all_account_expiries()
+        if not accounts_data:
+            print("[!] No account expiry data retrieved. Check config/apollo_accounts.json and connection.")
+            return
+        send_whatsapp_alert(
+            message=format_whatsapp_expiry_message(accounts_data),
+            phone=args.phone,
+            apikey=args.apikey,
+            dry_run=True,
+        )
         return
 
-    message = format_whatsapp_expiry_message(accounts_data)
-
-    send_whatsapp_alert(
-        message=message,
-        phone=args.phone,
-        apikey=args.apikey,
-        dry_run=args.dry_run
-    )
+    print("\nScanning all 19 Apollo accounts live for billing cycles & credits...")
+    result = run_expiry_report_pipeline(channels=selected_channels)
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

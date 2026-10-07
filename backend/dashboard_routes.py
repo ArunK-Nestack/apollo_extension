@@ -1980,6 +1980,20 @@ def api_send_saving_report(channels: Optional[str] = "email,whatsapp,teams"):
         return {"status": "error", "message": str(e)}
 
 
+@dashboard_router.post("/api/reports/send-account-report")
+def api_send_account_report():
+    """Probe all Apollo accounts live and email the credit/expiry report."""
+    try:
+        from scripts.send_apollo_expiry_alert import run_expiry_report_pipeline
+        result = run_expiry_report_pipeline(channels=["email"])
+        if result.get("status") != "ok":
+            return {"status": "error", "message": result.get("message", "Report generation failed")}
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        print(f"[Reports] Error in send-account-report: {e}", flush=True)
+        return {"status": "error", "message": str(e)}
+
+
 @dashboard_router.get("/api/reports/verification-summary")
 def get_verification_summary(filter_cycle: Optional[str] = "october"):
     """

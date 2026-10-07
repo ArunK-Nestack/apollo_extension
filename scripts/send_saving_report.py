@@ -567,7 +567,8 @@ def dispatch_email(
     subject: str,
     html_content: str,
     csv_content: Optional[str] = None,
-    to_emails: Optional[List[str]] = None
+    to_emails: Optional[List[str]] = None,
+    attachment_filename: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Sends email via SMTP to configured recipient(s)."""
     raw_to = os.getenv("REPORT_EMAIL_TO", "")
@@ -630,7 +631,7 @@ def dispatch_email(
             part = MIMEBase("application", "octet-stream")
             part.set_payload(csv_content.encode("utf-8"))
             encoders.encode_base64(part)
-            filename = f"apollo_saving_ledger_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            filename = attachment_filename or f"apollo_saving_ledger_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             part.add_header("Content-Disposition", f"attachment; filename=\"{filename}\"")
             msg.attach(part)
 
