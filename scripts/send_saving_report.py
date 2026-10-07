@@ -119,7 +119,7 @@ def format_whatsapp_message(report_data: Dict[str, Any], timestamp_str: str) -> 
         "💼 *STAGE 3: FRESHSALES CRM INGESTION*",
         "• 🏷️ Target Tag:           *RAHUL.CHANDRAN@NESTACK-TECH.COM(sep 03 - oct 03)*",
         f"• 📥 Ingested Breakdown:   *{crm_created:,d}* created | *{crm_updated:,d}* updated",
-        f"• 🏢 Sales Accounts:       *{crm_accounts:,d}* companies across {crm_batches} batches",
+        f"• 🏢 Accounts Created (verified): *{crm_accounts:,d}* ({crm.get('account_reconciled_runs', 0)}/{crm_batches} runs reconciled)",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "⚡ _Automated report via Apollo Intelligence Engine_"
@@ -159,7 +159,7 @@ def format_teams_card(report_data: Dict[str, Any], timestamp_str: str) -> Dict[s
         {"name": "Inbox-Ready Good Leads", "value": f"{v_good:,d} ({v_rate}% Deliverable)"},
         {"name": "Suppressed (Bad/Risky)", "value": f"{v_supp:,d} Leads"},
         {"name": "Freshsales Contacts", "value": f"{crm_created:,d} created | {crm_updated:,d} updated"},
-        {"name": "Freshsales Accounts", "value": f"{crm_accounts:,d} companies ({crm_batches} batches)"},
+        {"name": "Verified Freshsales Accounts Created", "value": f"{crm_accounts:,d} ({crm.get('account_reconciled_runs', 0)}/{crm_batches} runs reconciled)"},
     ]
 
     card = {
@@ -281,7 +281,7 @@ def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
             <td style="padding: 9px 11px; text-align: right; font-family: monospace; color: #fbbf24;">-{r.get('cleaned_out', 0):,d}</td>
             <td style="padding: 9px 11px; text-align: right; font-family: monospace; color: #4ade80; font-weight: 700;">+{r.get('contacts_created', 0):,d}</td>
             <td style="padding: 9px 11px; text-align: right; font-family: monospace; color: #38bdf8; font-weight: 700;">↺ {r.get('contacts_updated', 0):,d}</td>
-            <td style="padding: 9px 11px; text-align: right; font-family: monospace; color: #a78bfa; font-weight: 700;">+{r.get('accounts_created', 0):,d}</td>
+            <td style="padding: 9px 11px; text-align: right; font-family: monospace; color: #a78bfa; font-weight: 700;">{'Unreconciled' if r.get('accounts_created') is None else format(r['accounts_created'], ',d')}</td>
             <td style="padding: 9px 11px; font-family: monospace; font-size: 10px; color: #94a3b8;">{r.get('sync_timestamp', '')}</td>
         </tr>
         """
@@ -419,7 +419,7 @@ def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
   <!-- SECTION 3: FRESHSALES CRM -->
   <div class="sec-head" style="border-top:1px solid #334155;">
     <span>💼 Section 3: Freshsales CRM Bridge &amp; Master Ingestion Ledger</span>
-    <span style="font-size:11px; color:#a78bfa; font-weight:normal;">{crm_accounts:,d} Companies Linked</span>
+    <span style="font-size:11px; color:#a78bfa; font-weight:normal;">{crm.get('account_reconciled_runs', 0)}/{crm_batches} Runs Reconciled</span>
   </div>
   <div class="kpi-row">
     <div class="kpi-cell">
@@ -436,7 +436,7 @@ def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
     </div>
     <div class="kpi-cell">
       <div class="kpi-val" style="color:#a78bfa;">+{crm_accounts:,d}</div>
-      <div class="kpi-lbl">Accounts Created</div>
+      <div class="kpi-lbl">Verified Accounts Created</div>
     </div>
     <div class="kpi-cell">
       <div class="kpi-val" style="color:#fbbf24;">-{crm_blocked:,d}</div>
@@ -448,7 +448,7 @@ def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
       <strong>Active Ingestion Target (October Cycle):</strong><br>
       • <strong>Account:</strong> Rahul Chandran (RAHUL.CHANDRAN@NESTACK-TECH.COM)<br>
       • <strong>Freshsales Tag:</strong> <code style="color:#38bdf8;">RAHUL.CHANDRAN@NESTACK-TECH.COM(sep 03 - oct 03)</code><br>
-      • <strong>Ingested Leads:</strong> <strong>1,941</strong> contacts created • <strong>433</strong> contacts updated • <strong>2,248</strong> accounts linked.
+      • Account creation counts are shown only for runs reconciled to Freshsales account IDs.
     </div>
   </div>
   <div class="table-wrapper" style="padding-top:0;">
@@ -461,7 +461,7 @@ def format_email_html(report_data: Dict[str, Any], timestamp_str: str) -> str:
           <th style="text-align: right;">Cleaned</th>
           <th style="text-align: right;">Created</th>
           <th style="text-align: right;">Updated</th>
-          <th style="text-align: right;">Accounts</th>
+          <th style="text-align: right;">Accounts Created</th>
           <th>Sync Timestamp</th>
         </tr>
       </thead>
@@ -539,7 +539,7 @@ def build_csv_attachment(report_data: Dict[str, Any]) -> str:
     writer.writerow(["=== SECTION 3: FRESHSALES CRM SYNC LEDGER ==="])
     writer.writerow([
         "Batch Key", "Login Owner", "Tag", "Import Label", "Initial Leads",
-        "Cleaned Out TLD", "Contacts Created", "Contacts Updated", "Accounts Created", "Sync Timestamp"
+        "Cleaned Out TLD", "Contacts Created", "Contacts Updated", "Account Reconciliation Status", "Exact Accounts Created", "Sync Timestamp"
     ])
     for r in crm.get("records", []):
         writer.writerow([
@@ -551,6 +551,7 @@ def build_csv_attachment(report_data: Dict[str, Any]) -> str:
             r.get("cleaned_out"),
             r.get("contacts_created"),
             r.get("contacts_updated"),
+            r.get("account_reconciliation_status"),
             r.get("accounts_created"),
             r.get("sync_timestamp")
         ])

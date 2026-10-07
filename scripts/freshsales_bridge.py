@@ -95,10 +95,14 @@ def record_batch_sync(
     updated: int,
     tld_blocked: int,
     audit_file: str,
-    file_path: str = ""
+    file_path: str = "",
+    import_label: Optional[str] = None,
+    account_ids: Optional[List[str]] = None,
+    started_at: Optional[str] = None,
 ) -> None:
     """Record successful sync metrics in ledger."""
     ledger = get_freshsales_ledger()
+    previous = ledger.get(file_stem.lower(), {})
     ledger[file_stem.lower()] = {
         "file_stem": file_stem,
         "file_path": file_path,
@@ -109,7 +113,13 @@ def record_batch_sync(
         "updated": updated,
         "tld_blocked": tld_blocked,
         "audit_file": audit_file,
+        "started_at": started_at or previous.get("started_at"),
+        "import_label": import_label or previous.get("import_label"),
+        "account_ids": sorted({str(i) for i in (account_ids if account_ids is not None else previous.get("account_ids", [])) if i}),
     }
+    for field in ("mapping_status", "account_reconciliation_status", "account_reconciliation_evidence"):
+        if previous.get(field):
+            ledger[file_stem.lower()][field] = previous[field]
     save_freshsales_ledger(ledger)
 
 
@@ -652,6 +662,7 @@ def sync_good_file_to_freshsales(
     default_owner_id: Optional[str] = None,
     reports_dir: Optional[Path] = None,
     audit_cache_path: Optional[Path] = None,
+    import_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute the Freshsales Agent pipeline on a verified Good CSV.
@@ -694,6 +705,7 @@ def sync_good_file_to_freshsales(
     env["PYTHONUNBUFFERED"] = "1"
 
     # Stream output live to console with immediate line flushing
+    started_at = datetime.now().astimezone().isoformat(timespec="seconds")
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -737,6 +749,9 @@ def sync_good_file_to_freshsales(
         tld_blocked=res_data.get("tld_filtered_count", 0),
         audit_file=res_data.get("report_file_path", ""),
         file_path=str(good_csv_path),
+        started_at=started_at,
+        import_label=import_label,
+        account_ids=res_data.get("account_ids"),
     )
 
     print("\n" + "=" * 95)

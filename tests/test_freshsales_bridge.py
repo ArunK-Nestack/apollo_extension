@@ -122,6 +122,9 @@ def test_ledger_persistence():
                 tld_blocked=5,
                 audit_file="reports/audit.csv",
                 file_path="/path/to/dental_batch_good.csv",
+                import_label="5501",
+                account_ids=["42", "42", "43"],
+                started_at="2026-10-05T10:00:00+05:30",
             )
 
             # Reload
@@ -133,6 +136,18 @@ def test_ledger_persistence():
             assert entry["created"] == 120
             assert entry["updated"] == 30
             assert entry["tld_blocked"] == 5
+            assert entry["import_label"] == "5501"
+            assert entry["account_ids"] == ["42", "43"]
+            assert entry["started_at"] == "2026-10-05T10:00:00+05:30"
+
+            # A retry without reconciliation metadata must retain the run mapping.
+            entry["account_reconciliation_status"] = "confirmed"
+            save_freshsales_ledger(reloaded)
+            record_batch_sync("dental_batch_good", "vraghavan-dental", 150, 120, 30, 5, "reports/retry.csv")
+            retried = get_freshsales_ledger()["dental_batch_good"]
+            assert retried["import_label"] == "5501"
+            assert retried["account_ids"] == ["42", "43"]
+            assert retried["account_reconciliation_status"] == "confirmed"
 
 
 def test_discover_verified_good_batches():

@@ -2162,7 +2162,7 @@ def get_crm_sync_summary(filter_cycle: Optional[str] = "all"):
     Section 3: Freshsales CRM Sync & Master Ingestion Ledger.
     Reconciles all batches synced to Freshsales, tracking login owner,
     tag created on Freshsales, contacts created, contacts updated,
-    accounts created (sales accounts), and TLD/GDPR cleaned out.
+    confirmed sales-account IDs (when recorded), and TLD/GDPR cleaned out.
     """
     fs_ledger_file = CONFIG_DIR / "freshsales_synced_batches.json"
     fs_ledger = {}
@@ -2173,27 +2173,12 @@ def get_crm_sync_summary(filter_cycle: Optional[str] = "all"):
         except Exception:
             pass
 
-    label_map = {
-        "vraghavan@nestack.com": "5407–5412",
-        "madhava.reddy@nestack-tech.com": "5413–5418",
-        "vraghav@nestacktechnology.com": "5419–5424",
-        "vijay.raghavan@nestacktech.com": "5425–5429",
-        "vijay.raghavan@nestack.net": "5430",
-        "madhava.reddy@nestacktech.com": "5439",
-        "rchandran@nestack.info": "5440",
-        "rahul@nestaktechnology.com": "5441–5444",
-        "rahul@nestack-tech.com": "5445–5448",
-        "vraghavan@nestacktech.com": "5449–5452",
-        "rahul@nestack.co.in": "5453–5454",
-        "rahul.chandran@nestack-tech.com": "5455–5460",
-    }
-
     records = []
     total_leads = 0
     total_created = 0
     total_updated = 0
     total_blocked = 0
-    total_accounts = 0
+    confirmed_account_ids = set()
 
     for key, v in fs_ledger.items():
         tag = v.get("tag", "") or ""
@@ -2201,7 +2186,8 @@ def get_crm_sync_summary(filter_cycle: Optional[str] = "all"):
         created = int(v.get("created", 0) or 0)
         updated = int(v.get("updated", 0) or 0)
         blocked = int(v.get("tld_blocked", 0) or 0)
-        accounts = int(v.get("accounts_created", 0) or 0)
+        account_ids = {str(account_id) for account_id in (v.get("account_ids") or []) if account_id}
+        accounts_reconciled = v.get("account_reconciliation_status") == "confirmed"
         ts = v.get("synced_at") or v.get("timestamp") or "2026-09-30 18:30:00"
 
         # Apply cycle filter if specified
@@ -2209,35 +2195,41 @@ def get_crm_sync_summary(filter_cycle: Optional[str] = "all"):
             continue
 
         owner = "Freshsales Sync"
-        matched_label = "5400-Series"
-        sorted_labels = sorted(label_map.items(), key=lambda x: len(x[0]), reverse=True)
-        for em, lbl in sorted_labels:
+        for em in ("vraghavan@nestack.com", "madhava.reddy@nestack-tech.com",
+                   "vraghav@nestacktechnology.com", "vijay.raghavan@nestacktech.com",
+                   "vijay.raghavan@nestack.net", "madhava.reddy@nestacktech.com",
+                   "rchandran@nestack.info", "rahul@nestaktechnology.com",
+                   "rahul@nestack-tech.com", "vraghavan@nestacktech.com",
+                   "rahul@nestack.co.in", "rahul.chandran@nestack-tech.com"):
             clean_em = em.lower()
             clean_tag = tag.lower().replace(".", "_").replace("-", "_")
             prefix = clean_em.split("@")[0].replace(".", "_").replace("-", "_")
             if clean_em in tag.lower() or prefix in clean_tag:
                 owner = em
-                matched_label = lbl
                 break
 
         total_leads += leads
         total_created += created
         total_updated += updated
         total_blocked += blocked
-        total_accounts += accounts
+        if accounts_reconciled:
+            confirmed_account_ids.update(account_ids)
 
         records.append({
             "batch_key": key,
             "login_owner": owner,
             "tag": tag,
-            "import_label": matched_label,
+            "import_label": v.get("import_label") or None,
+            "mapping_status": v.get("mapping_status") or ("exact" if v.get("import_label") else "unmapped"),
             "initial_leads": leads,
             "cleaned_out": blocked,
             "contacts_created": created,
             "contacts_updated": updated,
-            "accounts_created": accounts,
+            "accounts_created": len(account_ids) if accounts_reconciled else None,
+            "account_reconciliation_status": "confirmed" if accounts_reconciled else "unreconciled",
+            "account_ids": sorted(account_ids) if accounts_reconciled else [],
             "sync_timestamp": ts,
-            "status": "Synced & Audited",
+            "status": "Contacts Audited",
             "has_audit_file": bool(v.get("audit_file"))
         })
 
@@ -2250,7 +2242,8 @@ def get_crm_sync_summary(filter_cycle: Optional[str] = "all"):
         "total_initial_leads": total_leads,
         "total_contacts_created": total_created,
         "total_contacts_updated": total_updated,
-        "total_accounts_created": total_accounts,
+        "total_accounts_created": len(confirmed_account_ids),
+        "account_reconciled_runs": sum(r["account_reconciliation_status"] == "confirmed" for r in records),
         "total_cleaned_out": total_blocked,
         "records": records
     }
@@ -2303,7 +2296,8 @@ def get_crm_batch_audit(batch_key: str):
         "total_records": len(rows),
         "contacts_created": batch.get("created", 0),
         "contacts_updated": batch.get("updated", 0),
-        "accounts_created": batch.get("accounts_created", 0),
+        "accounts_created": (len(set(str(i) for i in (batch.get("account_ids") or []) if i))
+                             if batch.get("account_reconciliation_status") == "confirmed" else None),
         "tld_cleaned_out": batch.get("tld_blocked", 0),
         "failed_errors_count": len(failed_rows),
         "failed_samples": failed_rows[:25],

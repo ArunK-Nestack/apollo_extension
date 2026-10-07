@@ -94,7 +94,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       contacts: message.contacts,
       batch: message.batch || "batch_1",
       title_guardrail_enabled: message.title_guardrail_enabled !== false,
-      indian_name_guardrail_enabled: message.indian_name_guardrail_enabled !== false
+      indian_name_guardrail_enabled: message.indian_name_guardrail_enabled !== false,
+      page_number: message.page_number || null
     };
   } else if (message.type === "SYNC_SAVED_LEADS") {
     endpoint = "/sync-saved-leads";
@@ -103,7 +104,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       contacts: message.contacts || [],
       replace_all: Boolean(message.replace_all),
       cycle: message.cycle || "",
-      account_used: message.account_used || ""
+      account_used: message.account_used || "",
+      page_number: message.page_number || null
     };
   } else if (message.type === "EVALUATE_PENDING_TITLES" || message.type === "EVALUATE_PENDING_BATCH") {
     endpoint = "/evaluate-pending-titles";

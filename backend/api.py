@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 import re
 import sys
@@ -2828,6 +2829,7 @@ class ApolloMatchRequest(BaseModel):
     batch: str = "batch_1"
     title_guardrail_enabled: bool = True
     indian_name_guardrail_enabled: bool = True
+    page_number: int | None = None
 
 
 class SyncSavedLeadItem(BaseModel):
@@ -2845,6 +2847,7 @@ class SyncSavedLeadItem(BaseModel):
     linkedin_url: str | None = ""
     apollo_profile_url: str | None = ""
     segment: str | None = ""
+    page_number: int | None = None
 
 
 class SyncSavedLeadsRequest(BaseModel):
@@ -2853,6 +2856,7 @@ class SyncSavedLeadsRequest(BaseModel):
     replace_all: bool = False
     cycle: str | None = ""
     account_used: str | None = ""
+    page_number: int | None = None
 
 
 class EvaluatePendingTitlesRequest(BaseModel):
@@ -3038,6 +3042,14 @@ def ensure_apollo_saved_leads_table(conn):
                 pass
             try:
                 cur.execute("ALTER TABLE `apollo_saved_leads` ADD INDEX `idx_account_cycle` (`account_used`, `cycle`);")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD COLUMN `page_number` INT NULL DEFAULT NULL AFTER `batch`;")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD INDEX `idx_batch_page` (`batch`, `page_number`);")
             except Exception:
                 pass
     except Exception as e:
@@ -3288,9 +3300,14 @@ class ExtensionActivityRequest(BaseModel):
     cycle_tag: str | None = ""
     batch: str | None = ""
     page_number: int | None = None
-    required_on_page: int | None = None
+    total_on_page: int | None = 0
+    required_on_page: int | None = 0
+    not_required_on_page: int | None = 0
+    existing_on_page: int | None = 0
+    guardrail_rejected_on_page: int | None = 0
     collected_total: int | None = None
     page_url: str | None = ""
+    breakdown_json: Any = None
 
 
 def ensure_extension_activity_log_table(conn):
@@ -3304,28 +3321,62 @@ def ensure_extension_activity_log_table(conn):
                 `cycle_tag` VARCHAR(64) NOT NULL DEFAULT '',
                 `batch` VARCHAR(128) NOT NULL DEFAULT '',
                 `page_number` INT NULL,
-                `required_on_page` INT NULL,
+                `total_on_page` INT NULL DEFAULT 0,
+                `required_on_page` INT NULL DEFAULT 0,
+                `not_required_on_page` INT NULL DEFAULT 0,
+                `existing_on_page` INT NULL DEFAULT 0,
+                `guardrail_rejected_on_page` INT NULL DEFAULT 0,
                 `collected_total` INT NULL,
                 `page_url` VARCHAR(512) NOT NULL DEFAULT '',
+                `breakdown_json` LONGTEXT NULL,
                 `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX `idx_account_cycle` (`account_email`, `cycle_tag`),
-                INDEX `idx_event_created` (`event_type`, `created_at`)
+                INDEX `idx_event_created` (`event_type`, `created_at`),
+                INDEX `idx_batch_page` (`batch`, `page_number`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """)
+        for col_name, col_def in [
+            ("total_on_page", "INT NULL DEFAULT 0 AFTER `page_number`"),
+            ("not_required_on_page", "INT NULL DEFAULT 0 AFTER `required_on_page`"),
+            ("existing_on_page", "INT NULL DEFAULT 0 AFTER `not_required_on_page`"),
+            ("guardrail_rejected_on_page", "INT NULL DEFAULT 0 AFTER `existing_on_page`"),
+            ("breakdown_json", "LONGTEXT NULL AFTER `page_url`"),
+        ]:
+            try:
+                cur.execute(f"ALTER TABLE `extension_activity_log` ADD COLUMN `{col_name}` {col_def};")
+            except Exception:
+                pass
+        try:
+            cur.execute("ALTER TABLE `extension_activity_log` ADD INDEX `idx_batch_page` (`batch`, `page_number`);")
+        except Exception:
+            pass
 
 
 @app.post("/log-extension-activity")
 def log_extension_activity(request: ExtensionActivityRequest):
-    """Record an extension event (start, login selected, page loaded/advanced) with login, cycle and lead counts."""
+    """Record an extension event (start, login selected, page loaded/advanced, page evaluated) with login, cycle and lead counts."""
     with get_connection() as conn:
         ensure_extension_activity_log_table(conn)
+
+        breakdown_str = None
+        if request.breakdown_json is not None:
+            if isinstance(request.breakdown_json, str):
+                breakdown_str = request.breakdown_json
+            else:
+                try:
+                    breakdown_str = json.dumps(request.breakdown_json)
+                except Exception:
+                    breakdown_str = str(request.breakdown_json)
+
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO `extension_activity_log`
                     (`event_type`, `account_email`, `cycle_tag`, `batch`, `page_number`,
-                     `required_on_page`, `collected_total`, `page_url`)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                     `total_on_page`, `required_on_page`, `not_required_on_page`,
+                     `existing_on_page`, `guardrail_rejected_on_page`,
+                     `collected_total`, `page_url`, `breakdown_json`)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     (request.event_type or "")[:32],
@@ -3333,9 +3384,14 @@ def log_extension_activity(request: ExtensionActivityRequest):
                     (request.cycle_tag or "").strip()[:64],
                     (request.batch or "").strip()[:128],
                     request.page_number,
-                    request.required_on_page,
+                    request.total_on_page or 0,
+                    request.required_on_page or 0,
+                    request.not_required_on_page or 0,
+                    request.existing_on_page or 0,
+                    request.guardrail_rejected_on_page or 0,
                     request.collected_total,
                     (request.page_url or "")[:512],
+                    breakdown_str,
                 ),
             )
         conn.commit()
@@ -3384,8 +3440,10 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
                     norm_n = normalize_text(c.name or "")
                     apollo_id_val = f"name_{norm_n}" if norm_n else f"lead_{int(time.time() * 1000)}_{idx}"
 
+                lead_page = getattr(c, "page_number", None) if getattr(c, "page_number", None) is not None else request.page_number
                 rows_to_insert.append((
                     batch_tag,
+                    lead_page,
                     _s(apollo_id_val, 128),
                     _s(c.name, 250),
                     _s(c.first_name, 128),
@@ -3404,11 +3462,12 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
 
             sql = """
                 INSERT INTO `apollo_saved_leads` (
-                    `batch`, `apollo_id`, `name`, `first_name`, `last_name`,
+                    `batch`, `page_number`, `apollo_id`, `name`, `first_name`, `last_name`,
                     `job_title`, `company`, `company_domain`, `website_link`, `location`,
                     `linkedin_url`, `apollo_profile_url`, `segment`, `account_used`, `cycle`
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
+                    `page_number` = IF(VALUES(`page_number`) IS NOT NULL, VALUES(`page_number`), `page_number`),
                     `name` = VALUES(`name`),
                     `first_name` = VALUES(`first_name`),
                     `last_name` = VALUES(`last_name`),
@@ -3840,8 +3899,10 @@ def match_apollo(request: ApolloMatchRequest):
                 web_link_val = contact_website_link.get(contact.key) or getattr(contact, "website_link", "") or (f"https://{domain_val}" if domain_val else "")
                 apollo_url_val = contact.apollo_profile_url or (f"https://app.apollo.io/#/people/{apollo_id_val}" if (contact.apollo_id and not contact.apollo_id.startswith("apollo-row-")) else "")
 
+                lead_page = request.page_number
                 required_leads_to_save.append((
                     _s(batch_tag, 64),
+                    lead_page,
                     _s(apollo_id_val, 128),
                     _s(contact.name, 250),
                     _s(first_name_val, 128),
@@ -3861,11 +3922,12 @@ def match_apollo(request: ApolloMatchRequest):
                 with conn.cursor() as cur:
                     sql = """
                         INSERT INTO `apollo_saved_leads` (
-                            `batch`, `apollo_id`, `name`, `first_name`, `last_name`,
+                            `batch`, `page_number`, `apollo_id`, `name`, `first_name`, `last_name`,
                             `job_title`, `company`, `company_domain`, `website_link`, `location`,
                             `linkedin_url`, `apollo_profile_url`, `segment`
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
+                            `page_number` = IF(VALUES(`page_number`) IS NOT NULL, VALUES(`page_number`), `page_number`),
                             `job_title` = VALUES(`job_title`),
                             `company_domain` = VALUES(`company_domain`),
                             `website_link` = VALUES(`website_link`),
@@ -3887,8 +3949,9 @@ def match_apollo(request: ApolloMatchRequest):
     # --------------------------------------------------------
     # STEP 6: PER-PAGE DASHBOARD LOG
     # --------------------------------------------------------
+    display_page = request.page_number if request.page_number is not None else batch_num
     print("\n" + "=" * 80, flush=True)
-    print(f">>> [APOLLO PAGE #{batch_num} DASHBOARD] Ingested {total_received} Contacts | Title Filter: {'ON' if request.title_guardrail_enabled else 'OFF'} | Indian Filter: {'ON' if request.indian_name_guardrail_enabled else 'OFF'}", flush=True)
+    print(f">>> [APOLLO PAGE #{display_page} DASHBOARD] Ingested {total_received} Contacts | Title Filter: {'ON' if request.title_guardrail_enabled else 'OFF'} | Indian Filter: {'ON' if request.indian_name_guardrail_enabled else 'OFF'}", flush=True)
     print("=" * 80, flush=True)
     print(f"Contacts Summary : Total: {total_received} | 🟢 Required: {required_count} | ⚪ Existing/Ignored: {ignored_count}", flush=True)
     print(f"Domain Breakdown : Unique Domains: {len(unique_domains_seen)} | In CRM: {existing_domain_contacts} | Net-New: {net_new_domain_contacts}", flush=True)
