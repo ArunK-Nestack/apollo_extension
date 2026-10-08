@@ -1,0 +1,135 @@
+[
+  {
+    "id": 1,
+    "name": "Scraper Account 01",
+    "email": "account01@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 01"
+  },
+  {
+    "id": 2,
+    "name": "Scraper Account 02",
+    "email": "account02@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 02"
+  },
+  {
+    "id": 3,
+    "name": "Scraper Account 03",
+    "email": "account03@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 03"
+  },
+  {
+    "id": 4,
+    "name": "Scraper Account 04",
+    "email": "account04@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 04"
+  },
+  {
+    "id": 5,
+    "name": "Scraper Account 05",
+    "email": "account05@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 05"
+  },
+  {
+    "id": 6,
+    "name": "Scraper Account 06",
+    "email": "account06@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 06"
+  },
+  {
+    "id": 7,
+    "name": "Scraper Account 07",
+    "email": "account07@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 07"
+  },
+  {
+    "id": 8,
+    "name": "Scraper Account 08",
+    "email": "account08@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 08"
+  },
+  {
+    "id": 9,
+    "name": "Scraper Account 09",
+    "email": "account09@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 09"
+  },
+  {
+    "id": 10,
+    "name": "Scraper Account 10",
+    "email": "account10@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 10"
+  },
+  {
+    "id": 11,
+    "name": "Scraper Account 11",
+    "email": "account11@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 11"
+  },
+  {
+    "id": 12,
+    "name": "Scraper Account 12",
+    "email": "account12@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 12"
+  },
+  {
+    "id": 13,
+    "name": "Scraper Account 13",
+    "email": "account13@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 13"
+  },
+  {
+    "id": 14,
+    "name": "Scraper Account 14",
+    "email": "account14@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 14"
+  },
+  {
+    "id": 15,
+    "name": "Scraper Account 15",
+    "email": "account15@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 15"
+  },
+  {
+    "id": 16,
+    "name": "Scraper Account 16",
+    "email": "account16@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 16"
+  },
+  {
+    "id": 17,
+    "name": "Scraper Account 17",
+    "email": "account17@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 17"
+  },
+  {
+    "id": 18,
+    "name": "Scraper Account 18",
+    "email": "account18@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 18"
+  },
+  {
+    "id": 19,
+    "name": "Scraper Account 19",
+    "email": "account19@nestacktechnologies.com",
+    "api_key": "YOUR_APOLLO_API_KEY_HERE",
+    "notes": "Account 19"
+  }
+]

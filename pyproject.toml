@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apollo-contact-database-checker"
+version = "2.0.0"
+description = "Deterministic Apollo contact qualification with CRM domain indexing, 64K title guardrails, and automated verification/CRM sync."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "ISC" }
+authors = [
+    { name = "Nestack Technologies" }
+]
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.10.0",
+    "python-multipart>=0.0.12",
+    "PyMySQL>=1.1.1",
+    "cryptography>=43.0.0",
+    "DBUtils>=3.1.0",
+    "sqlalchemy>=2.0.0",
+    "openai>=1.50.0",
+    "httpx>=0.27.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.1",
+    "pandas>=2.2.0",
+    "openpyxl>=3.1.0",
+    "tabulate>=0.9.0",
+    "marisa-trie>=1.4.0",
+    "dnspython>=2.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.14.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.5.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
+[tool.pyright]
+include = ["backend", "scripts", "tests", "freshsales_agent", "millionverifier_agent_step1"]
+extraPaths = [
+    ".",
+    "freshsales_agent",
+    "millionverifier_agent_step1",
+]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+
+[tool.ruff]
+line-length = 105
+target-version = "py310"
+exclude = [
+    ".git",
+    "__pycache__",
+    ".pytest_cache",
+    "dist",
+    "scratch",
+]

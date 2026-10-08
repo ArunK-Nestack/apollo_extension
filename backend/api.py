@@ -7,8 +7,16 @@ import sys
 import threading
 import time
 import unicodedata
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timezone, timedelta
 from typing import Any
+
+try:
+    import dns.resolver as _dns_resolver
+    _DNS_AVAILABLE = True
+except ImportError:
+    _dns_resolver = None
+    _DNS_AVAILABLE = False
 from urllib.parse import urlparse
 
 # Ensure Windows stdout/stderr never crashes on non-ASCII international names
@@ -20,12 +28,12 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 import pymysql
-import psycopg
 from dotenv import load_dotenv
 from openai import OpenAI
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uvicorn
 
 # ============================================================
@@ -34,17 +42,13 @@ import uvicorn
 
 load_dotenv()
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
 _batch_counter = 0
 
 DB_HOST = os.getenv("DB_HOST", "localhost").strip()
 DB_PORT_STR = os.getenv("DB_PORT", "").strip()
-if DB_PORT_STR:
-    DB_PORT = int(DB_PORT_STR)
-elif "rds.amazonaws.com" in DB_HOST or "mysql" in DB_HOST:
-    DB_PORT = 3306
-else:
-    DB_PORT = 5432
-
+DB_PORT = int(DB_PORT_STR) if DB_PORT_STR else 3306
 DB_NAME = os.getenv("DB_NAME", "apollo_scrapers").strip()
 DB_USER = os.getenv("DB_USER", "nestack").strip()
 DB_PASSWORD = os.getenv("DB_PASSWORD", "").strip()
@@ -73,6 +77,459 @@ _schema_cache_lock = threading.Lock()
 
 _batch_seen_companies: dict[str, dict[str, list[str]]] = {}  # batch_tag -> (comp_key -> list of contact names)
 _batch_seen_companies_lock = threading.Lock()
+
+# ============================================================
+# LAYER 2: PERSON-NAME LCS ANCHOR CACHE
+# {normalized_name -> [(domain, raw_name), ...]} loaded from DB on first use
+# ============================================================
+_person_domain_cache: dict[str, list[str]] = {}  # normalized_name -> [db_domain1, ...]
+_person_domain_cache_lock = threading.Lock()
+
+# ============================================================
+# LAYER 3: DATABASE-DRIVEN DOMAIN PREFIX TRIE
+# Built on startup from all unique domains already in emails table
+# ============================================================
+
+try:
+    import marisa_trie  # type: ignore
+    _MARISA_AVAILABLE = True
+except ImportError:
+    _marisa_trie = None
+    _MARISA_AVAILABLE = False
+
+class _TrieNode:
+    __slots__ = ("children", "is_end", "domain")
+    def __init__(self):
+        self.children: dict[str, "_TrieNode"] = {}
+        self.is_end: bool = False
+        self.domain: str = ""
+
+class DomainPrefixTrie:
+    """
+    Radix prefix trie of all unique DB domain slugs (TLD stripped).
+    High-Performance Edition:
+      - Uses compiled memory-mapped marisa_trie (mmap) for instant ~7ms startup and ~30MB RAM.
+      - Keeps dynamic overlay tree for runtime additions.
+      - Fully backward-compatible fallback to pure Python Trie if marisa_trie is unavailable.
+    """
+    def __init__(self):
+        self._root = _TrieNode()
+        self._marisa_trie = None
+        self._lock = threading.Lock()
+        self._loaded = False
+        self._node_count = 0
+        self._dynamic_entries: dict[str, str] = {}
+
+    def insert(self, slug: str, full_domain: str):
+        with self._lock:
+            self._dynamic_entries[slug] = full_domain
+            node = self._root
+            for ch in slug:
+                if ch not in node.children:
+                    node.children[ch] = _TrieNode()
+                node = node.children[ch]
+            node.is_end = True
+            node.domain = full_domain
+            self._node_count += 1
+
+    def find_prefix_match(self, slug: str, min_prefix_len: int = 4) -> tuple[str, str]:
+        """
+        Walk the trie with the incoming domain slug.
+        Returns (matched_db_domain, common_prefix) for the shortest prefix >= min_prefix_len.
+        Preserves exact parity with the radix trie where generic root stems (e.g. 'star', 'apple')
+        properly trigger the generic dictionary guardrail to prevent false positives.
+        """
+        # 1. Fast Path: Check memory-mapped marisa trie if loaded (returns shortest prefix >= min_prefix_len)
+        if self._marisa_trie is not None:
+            try:
+                prefixes = self._marisa_trie.prefixes(slug)
+                for p in prefixes:
+                    if len(p) >= min_prefix_len and len(slug) > len(p):
+                        raw_domain = self._marisa_trie[p][0].decode("utf-8")
+                        return raw_domain, p
+            except Exception:
+                pass
+
+        # 2. Check dynamic entries & fallback pure-Python trie
+        node = self._root
+        prefix = []
+        for ch in slug:
+            if ch not in node.children:
+                break
+            node = node.children[ch]
+            prefix.append(ch)
+            if node.is_end and len(prefix) >= min_prefix_len:
+                remaining = slug[len(prefix):]
+                if remaining:
+                    return node.domain, "".join(prefix)
+        return "", ""
+
+    @property
+    def loaded(self) -> bool:
+        return self._loaded
+
+    @property
+    def node_count(self) -> int:
+        if self._marisa_trie is not None:
+            return len(self._marisa_trie) + len(self._dynamic_entries)
+        return self._node_count
+
+
+# Singleton trie instance
+_domain_trie = DomainPrefixTrie()
+_domain_trie_lock = threading.Lock()
+
+
+def _strip_tld(domain: str) -> str:
+    """
+    Strip TLD and return bare slug for trie indexing.
+    e.g. 'mullinaxford.com' -> 'mullinaxford'
+         'tynan.com.au' -> 'tynan'
+    """
+    MULTI_PART = {
+        "co.uk", "org.uk", "gov.uk", "com.au", "net.au", "org.au",
+        "co.nz", "net.nz", "co.in", "co.za", "com.br", "com.sg", "co.jp", "gc.ca"
+    }
+    dom = domain.strip().lower()
+    parts = dom.split(".")
+    if len(parts) >= 3:
+        two = ".".join(parts[-2:])
+        if two in MULTI_PART:
+            # e.g. ['tynan', 'com', 'au'] -> slug = 'tynan'
+            return ".".join(parts[:-2]) if len(parts) > 2 else parts[0]
+    # standard .com / .net etc
+    return ".".join(parts[:-1]) if len(parts) >= 2 else dom
+
+
+def _clean_slug(domain: str) -> str:
+    """
+    Normalize domain slug by removing non-alphanumeric characters (hyphens, dots).
+    e.g. 'lubri-care.com' -> 'lubricare'
+         'manukau.toyota.co.nz' -> 'manukautoyota'
+    """
+    s = _strip_tld(domain)
+    return re.sub(r'[^a-z0-9]', '', s.lower())
+
+
+MARISA_CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "domain_trie.marisa")
+TRIE_CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "domain_slugs_cache.txt")
+
+def load_domain_trie(connection=None):
+    """
+    Load all unique domain slugs into the in-memory prefix trie.
+    Ultra-Optimized:
+      1. Memory-maps `data/domain_trie.marisa` in < 10ms with 30MB RAM.
+      2. If .marisa is missing, auto-compiles from `data/domain_slugs_cache.txt`.
+      3. Otherwise falls back to querying MySQL.
+    """
+    with _domain_trie_lock:
+        if _domain_trie.loaded:
+            return
+
+        t0 = time.perf_counter()
+
+        # Fast Path 1: Load pre-compiled MARISA-Trie via memory mapping (mmap) in ~7ms
+        if _MARISA_AVAILABLE and os.path.exists(MARISA_CACHE_FILE):
+            try:
+                trie = marisa_trie.BytesTrie()
+                trie.mmap(MARISA_CACHE_FILE)
+                _domain_trie._marisa_trie = trie
+                _domain_trie._loaded = True
+                dur = (time.perf_counter() - t0) * 1000
+                print(f"[DomainTrie] Instantly memory-mapped {len(trie):,} unique domain slugs via MARISA-Trie in {dur:.2f}ms! (RAM: ~30MB)", flush=True)
+                return
+            except Exception as ex_marisa:
+                print(f"[DomainTrie] MARISA mmap notice: {ex_marisa} - falling back to disk cache", flush=True)
+
+        # Fast Path 2: Auto-compile MARISA-Trie directly from domain_slugs_cache.txt
+        if _MARISA_AVAILABLE and os.path.exists(TRIE_CACHE_FILE):
+            try:
+                entries = {}
+                with open(TRIE_CACHE_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        raw_dom = line.strip().lower()
+                        if raw_dom:
+                            slug = _strip_tld(raw_dom)
+                            cslug = _clean_slug(raw_dom)
+                            raw_b = raw_dom.encode("utf-8")
+                            if slug and len(slug) >= 3 and slug not in entries:
+                                entries[slug] = raw_b
+                            if cslug and cslug != slug and len(cslug) >= 3 and cslug not in entries:
+                                entries[cslug] = raw_b
+                trie = marisa_trie.BytesTrie(entries.items())
+                trie.save(MARISA_CACHE_FILE)
+                loaded = marisa_trie.BytesTrie()
+                loaded.mmap(MARISA_CACHE_FILE)
+                _domain_trie._marisa_trie = loaded
+                _domain_trie._loaded = True
+                dur = (time.perf_counter() - t0) * 1000
+                print(f"[DomainTrie] Compiled and memory-mapped {len(loaded):,} domain slugs into MARISA-Trie in {dur:.1f}ms!", flush=True)
+                return
+            except Exception as ex_compile:
+                print(f"[DomainTrie] MARISA compile notice: {ex_compile} - falling back to standard loader", flush=True)
+
+        # Path 3: Pure Python Disk cache fallback
+        if os.path.exists(TRIE_CACHE_FILE):
+            try:
+                inserted = 0
+                with open(TRIE_CACHE_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        raw_dom = line.strip().lower()
+                        if raw_dom:
+                            slug = _strip_tld(raw_dom)
+                            cslug = _clean_slug(raw_dom)
+                            if slug and len(slug) >= 3:
+                                _domain_trie.insert(slug, raw_dom)
+                                inserted += 1
+                            if cslug and cslug != slug and len(cslug) >= 3:
+                                _domain_trie.insert(cslug, raw_dom)
+                                inserted += 1
+                _domain_trie._loaded = True
+                dur = (time.perf_counter() - t0) * 1000
+                print(f"[DomainTrie] Loaded {inserted:,} unique domain slugs from disk cache in {dur:.1f}ms!", flush=True)
+                return
+            except Exception as e:
+                print(f"[DomainTrie] Disk cache read notice: {e} - falling back to DB query", flush=True)
+
+        # Fallback Path 4: Query MySQL database directly
+        def _do_load(conn):
+            inserted = 0
+            schema = get_target_table_schema(conn)
+            domain_col = schema["email_domain"]
+            tbl_name = schema["table_name"]
+            domains_to_cache = []
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT DISTINCT `{domain_col}` FROM `{tbl_name}` WHERE `{domain_col}` != ''")
+                    for (dom,) in cur.fetchall():
+                        if dom:
+                            raw_dom = str(dom).strip().lower()
+                            domains_to_cache.append(raw_dom)
+                            slug = _strip_tld(raw_dom)
+                            cslug = _clean_slug(raw_dom)
+                            if slug and len(slug) >= 3:
+                                _domain_trie.insert(slug, raw_dom)
+                                inserted += 1
+                            if cslug and cslug != slug and len(cslug) >= 3:
+                                _domain_trie.insert(cslug, raw_dom)
+                                inserted += 1
+
+                try:
+                    os.makedirs(os.path.dirname(TRIE_CACHE_FILE), exist_ok=True)
+                    with open(TRIE_CACHE_FILE, "w", encoding="utf-8") as f:
+                        f.write("\n".join(domains_to_cache))
+                except Exception:
+                    pass
+
+                _domain_trie._loaded = True
+                dur = (time.perf_counter() - t0) * 1000
+                print(f"[DomainTrie] Loaded {inserted:,} unique domain slugs from MySQL in {dur:.1f}ms.", flush=True)
+            except Exception as e:
+                print(f"[DomainTrie] Warning: trie load error: {e}", flush=True)
+                _domain_trie._loaded = True
+
+        if connection:
+            _do_load(connection)
+        else:
+            with get_connection() as conn:
+                _do_load(conn)
+
+
+
+# ============================================================
+# LAYER 2 HELPER: LONGEST COMMON SUBSTRING (LCS) RATIO
+# ============================================================
+
+def _lcs_ratio(a: str, b: str) -> tuple[float, str]:
+    """
+    Compute the longest common substring and its ratio relative to the shorter string.
+    Returns (ratio: float, common_substring: str).
+    Complexity: O(len(a) * len(b)) - fast for short domain slugs (<30 chars each).
+    """
+    if not a or not b:
+        return 0.0, ""
+    m, n = len(a), len(b)
+    # DP table
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    best_len = 0
+    best_end_a = 0
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if a[i - 1] == b[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1] + 1
+                if dp[i][j] > best_len:
+                    best_len = dp[i][j]
+                    best_end_a = i
+            else:
+                dp[i][j] = 0
+    common = a[best_end_a - best_len: best_end_a]
+    ratio = best_len / min(m, n) if min(m, n) > 0 else 0.0
+    return ratio, common
+
+
+# Generic corporate descriptors that cannot constitute a unique brand root match in Layer 2
+GENERIC_CORPORATE_WORDS = {
+    "company", "companies", "services", "service", "solutions", "solution",
+    "holdings", "holding", "group", "groups", "enterprises", "enterprise",
+    "partners", "partner", "international", "global", "national", "american",
+    "technologies", "technology", "logistics", "management", "financial",
+    "finance", "capital", "automotive", "dealership", "commercial",
+    "industries", "industry", "ventures", "venture", "corp", "corporation",
+    "limited", "consulting", "consultants", "medical", "health", "healthcare",
+    "online", "retail", "media", "financials", "associates", "systems", "network",
+    "networks", "digital", "agency", "direct", "directors", "products"
+}
+
+
+# Generic dictionary stems that should not act as wildcard prefixes in Layer 3 Trie matching
+GENERIC_DICTIONARY_STEMS = {
+    "star", "apple", "first", "stan", "gold", "blue", "sun", "park", "best",
+    "auto", "tech", "data", "meta", "open", "home", "city", "line", "care",
+    "lead", "real", "fast", "well", "free", "good", "high", "main", "safe",
+    "true", "view", "west", "east", "north", "south", "iron", "peak", "bell",
+    "clear", "smart", "bright", "prime", "grand", "pure", "wise", "next"
+}
+
+BRANCH_INDICATORS = (
+    "auto", "autogroup", "motors", "motorcycles", "dealer", "dealers", "dealership",
+    "sales", "direct", "group", "holdings", "express", "center", "centre", "of",
+    "north", "south", "east", "west", "parts", "kiss", "service", "services",
+    "care", "chev", "chevrolet", "honda", "ford", "jeep", "dodge", "nissan",
+    "toyota", "subaru", "hyundai", "kia", "detail", "distributors"
+)
+
+
+def _is_valid_branch_match(db_domain: str, common_prefix: str, incoming_slug: str) -> bool:
+    """
+    Validate that an incoming domain slug is a legitimate branch of a DB domain,
+    preventing common dictionary words (e.g. 'star', 'apple', 'stan', 'first')
+    from falsely matching unrelated businesses in Layer 3 Trie.
+    """
+    pref = common_prefix.lower()
+    rem = incoming_slug[len(common_prefix):].lower()
+    if not rem:
+        return False
+    # Long distinctive brand stem (>= 7 chars)
+    if len(pref) >= 7 and pref not in GENERIC_DICTIONARY_STEMS:
+        return True
+    # Short stem must not be generic dictionary word AND must be accompanied by branch indicator
+    if pref in GENERIC_DICTIONARY_STEMS:
+        return False
+    # Check if remainder starts with branch indicator
+    return any(rem.startswith(ind) for ind in BRANCH_INDICATORS)
+
+
+# ============================================================
+# LAYER 4: ASYNC DNS MX MAIL ROUTING RESOLVER
+# ============================================================
+_mx_cache: dict[str, str] = {}  # incoming_domain -> resolved_mail_root_domain
+_mx_cache_lock = threading.Lock()
+
+SHARED_MAIL_PROVIDERS = {
+    "google.com", "googlemail.com", "outlook.com", "hotmail.com", "protection.outlook.com",
+    "mailgun.org", "sendgrid.net", "amazonses.com", "secureserver.net", "zoho.com",
+    "zoho.eu", "zohomail.com", "pphosted.com", "mimecast.com", "barracudanetworks.com",
+    "emailsrvr.com", "ovh.net", "hostinger.com", "cpanel.net", "cloudflare.net",
+    "messagelabs.com", "intermedia.net", "prodigy.net", "godaddy.com", "inmotionhosting.com",
+    "bluehost.com", "hostgator.com", "dreamhost.com", "siteground.com", "mailhostbox.com",
+    "bluetie.com", "privateemail.com", "netsolmail.net", "registrar-servers.com",
+    "kundenserver.de", "ionos.com", "1and1.com", "everyone.net", "fastmail.com",
+    "messagingengine.com", "mailroute.net", "appriver.com", "spamexperts.com",
+    "spamexperts.net", "spamexperts.eu", "antispamcloud.com", "thexyz.com",
+    "yandex.net", "yandex.ru", "mail.ru", "one.com", "pair.com", "networksolutions.com",
+    "register.com", "fatcow.com", "ipower.com", "yahoo.com", "protonmail.ch", "proton.me",
+    "tutanota.com", "tuta.com", "earthlink.net", "att.net", "comcast.net", "verizon.net",
+    "charter.net", "spectrum.net", "cox.net", "centurylink.net", "frontier.com"
+}
+
+
+def _resolve_mx_root_domain(domain: str, timeout: float = 0.35) -> str:
+    """
+    Query DNS MX record for `domain` and extract the canonical mail root domain.
+    e.g. MX for cortesecyclesales.com -> 'corteseauto-com.mail.protection.outlook.com'
+         Extracts -> 'corteseauto.com'
+    Returns empty string if DNS lookup fails or no useful MX found.
+    Cached in _mx_cache to make subsequent calls instant (0.0001ms).
+    """
+    if not _DNS_AVAILABLE or not domain:
+        return ""
+
+    with _mx_cache_lock:
+        if domain in _mx_cache:
+            return _mx_cache[domain]
+
+    result = ""
+    try:
+        answers = _dns_resolver.resolve(domain, "MX", lifetime=timeout)
+        for rdata in answers:
+            mx_host = str(rdata.exchange).rstrip(".").lower()
+            # Pattern 1: Microsoft 365 tenant encoding
+            # e.g. 'corteseauto-com.mail.protection.outlook.com' or 'premier-truck-com.mail.protection.outlook.com'
+            if mx_host.endswith(".mail.protection.outlook.com"):
+                tenant_label = mx_host[:-len(".mail.protection.outlook.com")].strip()
+                # Match common TLD patterns in the tenant prefix
+                candidate_dom = ""
+                for tld_suffix, tld in [
+                    ("-com-au", ".com.au"), ("-co-uk", ".co.uk"), ("-co-nz", ".co.nz"),
+                    ("-com", ".com"), ("-net", ".net"), ("-org", ".org"),
+                    ("-ca", ".ca"), ("-de", ".de"), ("-fr", ".fr"), ("-io", ".io"),
+                    ("-us", ".us"), ("-uk", ".uk"), ("-biz", ".biz"), ("-info", ".info")
+                ]:
+                    if tenant_label.endswith(tld_suffix):
+                        stem = tenant_label[:-len(tld_suffix)]
+                        candidate_dom = f"{stem}{tld}"
+                        break
+
+                if not candidate_dom and "-" in tenant_label:
+                    stem, last_part = tenant_label.rsplit("-", 1)
+                    if len(last_part) in (2, 3, 4):
+                        candidate_dom = f"{stem}.{last_part}"
+
+                if candidate_dom:
+                    result = candidate_dom
+                    break
+
+            # Pattern 2: Skip any known shared ESP / public mail provider
+            if any(esp in mx_host for esp in SHARED_MAIL_PROVIDERS):
+                continue
+
+            # Pattern 3: Canonical root domain extraction with brand-stem guardrail
+            root = extract_root_domain(mx_host)
+            if root and root != domain and root not in SHARED_MAIL_PROVIDERS:
+                # Ensure candidate root domain shares brand identity with incoming domain
+                d_slug = _clean_slug(domain)
+                r_slug = _clean_slug(root)
+                common_pfx = 0
+                for c1, c2 in zip(d_slug, r_slug):
+                    if c1 == c2:
+                        common_pfx += 1
+                    else:
+                        break
+                if common_pfx >= 3 or _lcs_ratio(d_slug, r_slug) >= 0.35:
+                    result = root
+                    break
+    except Exception:
+        pass
+
+    with _mx_cache_lock:
+        _mx_cache[domain] = result
+    return result
+
+
+def prefetch_mx_records(domains: list[str]):
+    """High-speed parallel DNS MX pre-fetch using ThreadPoolExecutor."""
+    if not _DNS_AVAILABLE or not domains:
+        return
+    with _mx_cache_lock:
+        to_resolve = [d for d in set(domains) if d and d not in _mx_cache]
+    if not to_resolve:
+        return
+    import concurrent.futures
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(to_resolve), 15)) as executor:
+            list(executor.map(lambda d: _resolve_mx_root_domain(d, timeout=0.35), to_resolve))
+    except Exception:
+        pass
 
 BLOCKER_KEYWORDS = ("compliance", "legal", "regulatory", "procurement", "privacy", "gdpr", "grc", "trade", "ethics", "audit")
 
@@ -112,41 +569,37 @@ app.add_middleware(
 # DATABASE CONNECTION & SCHEMA DETECTION
 # ============================================================
 
-def is_mysql_conn(conn) -> bool:
-    return True # We only use MySQL in this environment for Apollo DB
+def is_mysql_conn(conn=None) -> bool:
+    return True
 
 
 from dbutils.pooled_db import PooledDB
 
 _mysql_pool = None
+_mysql_pool_lock = threading.Lock()
 
 def get_connection():
     global _mysql_pool
-    if DB_PORT == 3306 or "rds.amazonaws.com" in DB_HOST:
-        if _mysql_pool is None:
-            _mysql_pool = PooledDB(
-                creator=pymysql,
-                # Bug #5 Fix: Reduced from 20 to 10 to stay within free-tier cloud DB limits.
-                maxconnections=10,
-                mincached=2,
-                blocking=True,
-                host=DB_HOST,
-                port=DB_PORT,
-                user=DB_USER,
-                password=DB_PASSWORD,
-                database=DB_NAME,
-                autocommit=True,
-                connect_timeout=15,
-            )
-        return _mysql_pool.connection()
-
-    return psycopg.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-    )
+    if _mysql_pool is None:
+        with _mysql_pool_lock:
+            if _mysql_pool is None:
+                _mysql_pool = PooledDB(
+                    creator=pymysql,
+                    maxconnections=10,
+                    mincached=2,
+                    maxcached=5,
+                    maxusage=1000,
+                    ping=7,  # Transparently test and auto-reconnect if idle or dropped by server
+                    blocking=True,
+                    host=DB_HOST,
+                    port=DB_PORT,
+                    user=DB_USER,
+                    password=DB_PASSWORD,
+                    database=DB_NAME,
+                    autocommit=True,
+                    connect_timeout=15,
+                )
+    return _mysql_pool.connection()
 
 
 def get_target_table_schema(conn) -> dict[str, Any]:
@@ -160,20 +613,12 @@ def get_target_table_schema(conn) -> dict[str, Any]:
 
         target_table = DB_TABLE
         with conn.cursor() as cur:
-            if is_mysql_conn(conn):
-                cur.execute("""
-                    SELECT COLUMN_NAME
-                    FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s;
-                """, (DB_NAME, target_table))
-                cols = [row[0] for row in cur.fetchall()]
-            else:
-                cur.execute("""
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_name = %s;
-                """, (target_table,))
-                cols = [row[0] for row in cur.fetchall()]
+            cur.execute("""
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s;
+            """, (DB_NAME, target_table))
+            cols = [row[0] for row in cur.fetchall()]
 
             _schema_cache = {
                 "table_name": target_table,
@@ -241,11 +686,28 @@ def extract_root_domain(raw_url_or_domain: str) -> str:
       - 'www.datadoghq.com' -> 'datadoghq.com'
       - 'checkout.shopify.co.uk' -> 'shopify.co.uk'
       - 'liquid.ai' -> 'liquid.ai'
+      - '//www.example.com/page' -> 'example.com'
+      - 'example.com.' -> 'example.com'
+      - 'mailto:ceo@company.com' -> 'company.com'
     """
     if not raw_url_or_domain:
         return ""
 
-    dom = str(raw_url_or_domain).strip().lower()
+    dom = str(raw_url_or_domain).strip().lower().replace(",", ".")
+    dom = re.sub(r"\s+", "", dom)
+
+    # Strip mailto: prefix if present
+    if dom.startswith("mailto:"):
+        dom = dom[len("mailto:"):]
+
+    # If an email address is passed, take the domain portion after '@'
+    if "@" in dom:
+        dom = dom.split("@")[-1]
+
+    # Handle protocol-relative URLs (e.g. '//www.example.com/path')
+    if dom.startswith("//"):
+        dom = dom.lstrip("/")
+
     if dom.startswith("http://") or dom.startswith("https://") or "://" in dom:
         try:
             parsed = urlparse(dom)
@@ -257,6 +719,8 @@ def extract_root_domain(raw_url_or_domain: str) -> str:
     dom = dom.split("/")[0].split(":")[0].strip()
     # Strip leading www
     dom = re.sub(r"^www\d*\.", "", dom)
+    # Strip trailing FQDN dots (e.g. 'example.com.')
+    dom = dom.rstrip(".")
 
     parts = dom.split(".")
     if len(parts) <= 2:
@@ -276,6 +740,91 @@ def normalize_domain(domain: str) -> str:
     return extract_root_domain(domain)
 
 
+def get_domain_brand(domain: str) -> str:
+    """Extract core brand component from domain for matching."""
+    if not domain:
+        return ""
+    domain = domain.strip().lower()
+    if "@" in domain:
+        domain = domain.split("@", 1)[1]
+    domain = re.sub(r"^https?://", "", domain)
+    if domain.startswith("www."):
+        domain = domain[4:]
+    domain = domain.split(":")[0].split("/")[0]
+    parts = [p for p in domain.split(".") if p]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    second_level = {"co", "com", "org", "net", "gov", "edu", "ac"}
+    if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in second_level:
+        return parts[-3]
+    return parts[-2]
+
+
+def company_tokens(value: str) -> set[str]:
+    """Tokenize company name into alphanumeric words."""
+    if not value:
+        return set()
+    value = unicodedata.normalize("NFKD", str(value).strip().lower())
+    value = "".join(c for c in value if not unicodedata.combining(c))
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return {t for t in value.split() if t}
+
+
+def company_matches(apollo_company: str, crm_domain: str) -> bool:
+    """Deterministic company vs CRM domain matcher."""
+    if not apollo_company or not crm_domain:
+        return False
+    brand = get_domain_brand(crm_domain)
+    if not brand:
+        return False
+    c_comp = normalize_text(apollo_company)
+    b_comp = normalize_text(brand)
+    if not c_comp or not b_comp:
+        return False
+    if c_comp == b_comp:
+        return True
+    if len(b_comp) >= 4 and b_comp in c_comp:
+        return True
+    if len(c_comp) >= 4 and c_comp in b_comp:
+        return True
+    a_tokens = company_tokens(apollo_company)
+    d_tokens = company_tokens(brand)
+    if d_tokens and d_tokens.issubset(a_tokens):
+        return True
+    m_tokens = [t for t in a_tokens if len(t) > 1]
+    if len(m_tokens) >= 2:
+        acr = "".join(t[0] for t in m_tokens)
+        if acr and (acr in d_tokens or acr == b_comp):
+            return True
+    return False
+
+
+def domains_equivalent(left: str, right: str) -> bool:
+    """Check if two domains are equivalent (exact or subdomain)."""
+    def canonical(d):
+        d = re.sub(r"^https?://", "", (d or "").strip().lower()).split("/")[0].split(":")[0]
+        return d[4:] if d.startswith("www.") else d
+    l, r = canonical(left), canonical(right)
+    if not l or not r:
+        return False
+    if l == r:
+        return True
+    return l.endswith(f".{r}") or r.endswith(f".{l}")
+
+
+def resolve_contact_domains(name: str = "", job_title: str = "", company: str = "", location: str = "", **kwargs) -> dict:
+    """Deterministic contact domain candidate resolver."""
+    cands = generate_candidate_domains(company)
+    return {
+        "status": "resolved" if cands else "not_found",
+        "domains": [{"domain": d, "type": "candidate"} for d in cands],
+        "method": "deterministic"
+    }
+
+
+
 def get_seniority_score(job_title: str) -> int:
     """
     Evaluate job title seniority hierarchy score for best lead election:
@@ -289,15 +838,30 @@ def get_seniority_score(job_title: str) -> int:
         return 0
     t = str(job_title).strip().lower()
 
-    if re.search(r"\b(founder|co-founder|ceo|cto|cmo|cro|coo|cfo|cpo|cio|chief|owner|president|partner)\b", t):
+    if re.search(r"\b(founder|co-founder|ceo|cto|cmo|cro|coo|cfo|cpo|cio|chief|owner|managing partner|chair)\b", t) or re.search(r"(?<!vice\s)(?<!vice-)(?<!asst\s)(?<!assistant\s)\bpresident\b", t):
         return 100
-    if re.search(r"\b(vp|vice president|head of|general manager|gm)\b", t) or t.startswith("head ") or t.startswith("head,") or t.startswith("head -"):
+    if re.search(r"\b(vp|svp|evp|avp|vice president|head of|general manager|gm)\b", t) or t.startswith("head ") or t.startswith("head,") or t.startswith("head -"):
         return 80
     if re.search(r"\b(director|principal|lead architect|group product manager|staff)\b", t):
         return 60
     if re.search(r"\b(manager|team lead|lead|senior|sr\.?)\b", t):
         return 40
     return 20
+
+
+BUSINESS_NOISE_SUFFIXES = {
+    "technologies", "technology", "tech", "services", "solutions", "group",
+    "holdings", "holding", "enterprises", "consulting", "international", "global",
+    "systems", "media", "labs", "partners"
+}
+
+GENERIC_STOP_WORDS = {
+    "first", "national", "american", "united", "general", "global", "standard",
+    "all", "one", "pro", "sun", "star", "apex", "summit", "advance", "advanced",
+    "central", "pacific", "atlantic", "metro", "city", "premier", "elite",
+    "prime", "total", "direct", "select", "choice", "group", "home", "service",
+    "services", "auto", "care", "top", "best", "new", "the"
+}
 
 
 def clean_company_name(company: str) -> str:
@@ -314,6 +878,40 @@ def clean_company_name(company: str) -> str:
     while words and words[-1].lower().rstrip(".") in LEGAL_SUFFIXES:
         words.pop()
     return " ".join(words).strip() or text
+
+
+def normalize_company_stem(name: str) -> str:
+    """Extract core company stem stripping legal and business noise words."""
+    if not name:
+        return ""
+    cleaned = clean_company_name(name).lower()
+    words = re.sub(r"[^\w\s]", " ", cleaned).split()
+    while words and (words[-1] in LEGAL_SUFFIXES or words[-1] in BUSINESS_NOISE_SUFFIXES):
+        words.pop()
+    return " ".join(words).strip() or cleaned
+
+
+def generate_company_lookup_variants(raw_name: str) -> list[str]:
+    """Generate high-probability variants for exact B-Tree SQL lookup."""
+    if not raw_name:
+        return []
+    variants = set()
+    raw = str(raw_name).strip()
+    cleaned = clean_company_name(raw).strip()
+    stem = normalize_company_stem(raw)
+
+    variants.add(raw)
+    if cleaned:
+        variants.add(cleaned)
+    if stem:
+        variants.add(stem)
+        variants.add(stem.title())
+        for suffix in ["Inc", "LLC", "Corp", "Ltd", "Technologies", "Services", "Solutions", "Group"]:
+            variants.add(f"{stem.title()} {suffix}")
+            variants.add(f"{stem.title()}, {suffix}")
+            variants.add(f"{stem.title()}, {suffix}.")
+
+    return [v for v in variants if v]
 
 
 def generate_candidate_domains(company_name: str) -> list[str]:
@@ -353,10 +951,35 @@ def generate_candidate_domains(company_name: str) -> list[str]:
 
     # 3. Standard candidate permutations
     candidates.append(f"{norm_comp}.com")
+    candidates.append(f"{norm_comp}.net")
     candidates.append(f"{norm_comp}.io")
     candidates.append(f"{norm_comp}.ai")
     candidates.append(f"{norm_comp}hq.com")
     candidates.append(f"{norm_comp}tech.com")
+
+    # 4. Hyphenated domain candidate (e.g. 'LaBrie Media' -> 'labrie-media.com', '110 Studios' -> '110-studios.com')
+    words = [w for w in re.sub(r"[^a-zA-Z0-9\s]", "", comp_raw).lower().split() if w]
+    if len(words) >= 2:
+        clean_words = [w for w in words if w not in ("inc", "llc", "ltd", "corp", "corporation")]
+        if 2 <= len(clean_words) <= 3:
+            hyphen_cand = "-".join(clean_words)
+            candidates.append(f"{hyphen_cand}.com")
+
+    # 5. Ampersand 'and' expansion and 'co' retention (e.g. 'Twenty-Six & Co' -> 'twentysixandco.com', 'Mash Creative Co' -> 'mashcreativeco.com')
+    if "&" in comp_raw or " and " in comp_raw.lower():
+        expanded = comp_raw.replace("&", " and ")
+        norm_exp = normalize_text(clean_company_name(expanded))
+        if norm_exp:
+            candidates.append(f"{norm_exp}.com")
+            # Also with 'co'
+            norm_exp_all = normalize_text(expanded.replace("company", "co"))
+            candidates.append(f"{norm_exp_all}.com")
+
+    # With full words (including 'co' if present in raw)
+    if " co" in comp_raw.lower() or " company" in comp_raw.lower():
+        words_co = [w for w in words if w not in ("inc", "llc", "ltd", "corp")]
+        if words_co:
+            candidates.append("".join(words_co) + ".com")
 
     # Remove duplicates while preserving order
     seen = set()
@@ -373,52 +996,73 @@ def generate_candidate_domains(company_name: str) -> list[str]:
 # REFINED DOMAIN LOOKUP CHAIN (detected_companies Table)
 # ============================================================
 
+_detected_companies_table_created = False
+
 def ensure_detected_companies_table(conn):
     """Ensure the detected_companies table exists for storing detected company names, website links, and domains."""
+    global _detected_companies_table_created
+    if _detected_companies_table_created or conn is None:
+        return
     try:
         with conn.cursor() as cur:
-            if is_mysql_conn(conn):
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS `detected_companies` (
+                    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    `company_name` VARCHAR(255) NOT NULL DEFAULT '',
+                    `normalized_company` VARCHAR(255) NOT NULL DEFAULT '',
+                    `website_link` VARCHAR(512) DEFAULT '',
+                    `domain` VARCHAR(255) NOT NULL DEFAULT '',
+                    `source` VARCHAR(64) NOT NULL DEFAULT '',
+                    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX `idx_normalized_company` (`normalized_company`),
+                    INDEX `idx_domain` (`domain`),
+                    INDEX `idx_source` (`source`),
+                    UNIQUE KEY `unique_company_domain` (`normalized_company`(128), `domain`(128))
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            # Ensure source column exists if table was created previously without it
+            try:
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS `detected_companies` (
-                        `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                        `company_name` VARCHAR(255) NOT NULL DEFAULT '',
-                        `normalized_company` VARCHAR(255) NOT NULL DEFAULT '',
-                        `website_link` VARCHAR(512) DEFAULT '',
-                        `domain` VARCHAR(255) NOT NULL DEFAULT '',
-                        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        INDEX `idx_normalized_company` (`normalized_company`),
-                        INDEX `idx_domain` (`domain`),
-                        UNIQUE KEY `unique_company_domain` (`normalized_company`(128), `domain`(128))
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    SELECT COUNT(*) FROM information_schema.COLUMNS 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                      AND TABLE_NAME = 'detected_companies' 
+                      AND COLUMN_NAME = 'source';
                 """)
-            else:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS detected_companies (
-                        id SERIAL PRIMARY KEY,
-                        company_name VARCHAR(255) NOT NULL DEFAULT '',
-                        normalized_company VARCHAR(255) NOT NULL DEFAULT '',
-                        website_link VARCHAR(512) DEFAULT '',
-                        domain VARCHAR(255) NOT NULL DEFAULT '',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        CONSTRAINT unique_company_domain UNIQUE (normalized_company, domain)
-                    );
-                """)
+                if cur.fetchone()[0] == 0:
+                    cur.execute("ALTER TABLE `detected_companies` ADD COLUMN `source` VARCHAR(64) NOT NULL DEFAULT '' AFTER `domain`, ADD INDEX `idx_source` (`source`);")
+            except Exception:
+                pass
+        _detected_companies_table_created = True
     except Exception as e:
         print(f"[ContactChecker] Notice: ensure detected_companies table error: {e}", flush=True)
 
 
+
+def _domain_lookup_candidates(contact) -> list[tuple[str, str]]:
+    """Ordered lookup candidates: (source, root_domain). Column, website, then email."""
+    col = extract_root_domain((getattr(contact, "company_domain", None) or "").strip())
+    web = extract_root_domain((getattr(contact, "website_link", None) or "").strip())
+    email = extract_root_domain((getattr(contact, "email", None) or "").strip())
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for source, dom in (("column", col), ("website", web), ("email", email)):
+        if dom and dom not in seen:
+            out.append((source, dom))
+            seen.add(dom)
+    return out
+
+
+def canonical_lookup_domain(contact) -> str:
+    """Primary export/lookup domain: first real candidate, never invented."""
+    cands = _domain_lookup_candidates(contact)
+    return cands[0][1] if cands else ""
+
+
 def resolve_company_domains(contacts: list[Any], connection=None) -> tuple[dict[str, str], dict[str, str]]:
     """
-    Refined Domain Lookup Chain:
-      1. Query 'detected_companies' table / L1 cache using normalized company name.
-      2. If found in 'detected_companies', reuse preserved domain.
-      3. If NOT found in 'detected_companies', extract domain from Apollo website_link (or candidate generator)
-         and insert (company_name, normalized_company, website_link, domain) into 'detected_companies'.
-    Returns:
-      - contact_primary_domain: dict[contact_key -> domain]
-      - contact_website_link: dict[contact_key -> website_link]
+    Resolve canonical lookup domain per contact from real Apollo sources only.
+    No company-name guessing. Empty when column, website, and email all missing.
     """
     if not contacts:
         return {}, {}
@@ -426,113 +1070,11 @@ def resolve_company_domains(contacts: list[Any], connection=None) -> tuple[dict[
     contact_primary_domain: dict[str, str] = {}
     contact_website_link: dict[str, str] = {}
 
-    missing_norm_comps = set()
     for c in contacts:
-        comp_name = clean_company_name(c.company)
-        norm_comp = normalize_text(comp_name)
-        with _company_domain_cache_lock:
-            if norm_comp in _company_domain_cache:
-                contact_primary_domain[c.key] = _company_domain_cache[norm_comp]
-            else:
-                if norm_comp:
-                    missing_norm_comps.add(norm_comp)
-
-    # Batch query detected_companies DB table for cache misses
-    if missing_norm_comps:
-        def do_comp_query(conn):
-            ensure_detected_companies_table(conn)
-            try:
-                with conn.cursor() as cur:
-                    if is_mysql_conn(conn):
-                        format_strings = ",".join(["%s"] * len(missing_norm_comps))
-                        sql = f"SELECT `normalized_company`, `domain` FROM `detected_companies` WHERE `normalized_company` IN ({format_strings});"
-                        cur.execute(sql, tuple(missing_norm_comps))
-                    else:
-                        sql = 'SELECT normalized_company, domain FROM "detected_companies" WHERE normalized_company = ANY(%s);'
-                        cur.execute(sql, (list(missing_norm_comps),))
-
-                    rows = cur.fetchall()
-                    with _company_domain_cache_lock:
-                        for row in rows:
-                            if row and len(row) >= 2:
-                                n_c = str(row[0]).strip().lower()
-                                d_v = str(row[1]).strip().lower()
-                                if n_c and d_v:
-                                    _company_domain_cache[n_c] = d_v
-            except Exception as e:
-                print(f"[ContactChecker] Notice: detected_companies lookup: {e}", flush=True)
-
-        if connection:
-            do_comp_query(connection)
-        else:
-            with get_connection() as conn:
-                do_comp_query(conn)
-
-    # For contacts without domain, extract from website_link and persist to detected_companies
-    new_records_to_insert = []
-    for c in contacts:
-        comp_name = clean_company_name(c.company)
-        norm_comp = normalize_text(comp_name)
-
-        resolved_domain = _company_domain_cache.get(norm_comp)
+        lookup = canonical_lookup_domain(c)
         web_link = (getattr(c, "website_link", None) or "").strip()
-
-        if not resolved_domain:
-            if web_link:
-                resolved_domain = normalize_domain(web_link)
-            elif getattr(c, "company_domain", None):
-                resolved_domain = normalize_domain(c.company_domain)
-
-            if not resolved_domain:
-                cand_doms = generate_candidate_domains(comp_name)
-                resolved_domain = cand_doms[0] if cand_doms else (norm_comp + ".com" if norm_comp else "")
-
-            if resolved_domain and norm_comp:
-                with _company_domain_cache_lock:
-                    _company_domain_cache[norm_comp] = resolved_domain
-
-                new_records_to_insert.append((
-                    comp_name[:255],
-                    norm_comp[:255],
-                    web_link[:512] or (f"https://{resolved_domain}" if resolved_domain else ""),
-                    resolved_domain[:255],
-                ))
-
-        contact_primary_domain[c.key] = resolved_domain or (norm_comp + ".com" if norm_comp else "")
-        contact_website_link[c.key] = web_link or (f"https://{resolved_domain}" if resolved_domain else "")
-
-    if new_records_to_insert:
-        def do_insert_comps(conn):
-            ensure_detected_companies_table(conn)
-            try:
-                with conn.cursor() as cur:
-                    if is_mysql_conn(conn):
-                        sql = """
-                            INSERT INTO `detected_companies` (`company_name`, `normalized_company`, `website_link`, `domain`)
-                            VALUES (%s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE
-                                `website_link` = IF(VALUES(`website_link`) != '', VALUES(`website_link`), `website_link`),
-                                `domain` = VALUES(`domain`),
-                                `updated_at` = CURRENT_TIMESTAMP;
-                        """
-                    else:
-                        sql = """
-                            INSERT INTO detected_companies (company_name, normalized_company, website_link, domain)
-                            VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (normalized_company, domain) DO UPDATE
-                                SET website_link = CASE WHEN EXCLUDED.website_link != '' THEN EXCLUDED.website_link ELSE detected_companies.website_link END,
-                                    updated_at = CURRENT_TIMESTAMP;
-                        """
-                    cur.executemany(sql, new_records_to_insert)
-                    print(f"[ContactChecker] Auto-persisted {len(new_records_to_insert)} new record(s) into `detected_companies`.", flush=True)
-            except Exception as e:
-                print(f"[ContactChecker] Notice: insert detected_companies error: {e}", flush=True)
-
-        if connection:
-            do_insert_comps(connection)
-        else:
-            with get_connection() as conn:
-                do_insert_comps(conn)
+        contact_primary_domain[c.key] = lookup
+        contact_website_link[c.key] = web_link or (f"https://{lookup}" if lookup else "")
 
     return contact_primary_domain, contact_website_link
 
@@ -540,6 +1082,158 @@ def resolve_company_domains(contacts: list[Any], connection=None) -> tuple[dict[
 # ============================================================
 # DETERMINISTIC CRM DOMAIN CHECKER (7.28M Database)
 # ============================================================
+
+def _try_domain_layers(
+    contact,
+    prim_d: str,
+    norm_c_name: str,
+    matched_records: dict,
+    matched_domains: set,
+    connection=None,
+    domain_source: str = "",
+) -> dict | None:
+    """Run L1-L4 for one candidate domain. Returns result dict or None."""
+    source_suffix = f" [{domain_source}]" if domain_source else ""
+
+    if (norm_c_name, prim_d) in matched_records:
+        matched_crm_name = matched_records[(norm_c_name, prim_d)]
+        return {
+            "exists": True, "required": False, "ignored": True,
+            "guardrail_status": "contact_already_in_db",
+            "guardrail_reason": (
+                f"[L1] Contact '{contact.name}' at domain '{prim_d}' already exists in CRM "
+                f"(matched: '{matched_crm_name}').{source_suffix}"
+            ),
+            "matched_domain": prim_d, "matched_db_domain": prim_d,
+            "domain_source": domain_source,
+        }
+
+    if prim_d in matched_domains:
+        return {
+            "exists": True, "required": False, "ignored": True,
+            "guardrail_status": "domain_already_in_db",
+            "guardrail_reason": (
+                f"[L1] Company domain '{prim_d}' already exists in CRM database.{source_suffix}"
+            ),
+            "matched_domain": prim_d, "matched_db_domain": prim_d,
+            "domain_source": domain_source,
+        }
+
+    # Candidate permutations are only checked for direct CRM existence (Layer 1)
+    if domain_source == "company_candidate":
+        return None
+
+    if contact.name and prim_d:
+        with _person_domain_cache_lock:
+            db_domains_for_person = list(_person_domain_cache.get(norm_c_name, []))
+
+        incoming_slug = _clean_slug(prim_d)
+        for db_dom in db_domains_for_person:
+            db_slug = _clean_slug(db_dom)
+            if not db_slug or not incoming_slug:
+                continue
+            ratio, common = _lcs_ratio(db_slug, incoming_slug)
+            if (
+                not common
+                or common.lower() in GENERIC_CORPORATE_WORDS
+                or common.lower() in GENERIC_DICTIONARY_STEMS
+            ):
+                continue
+            hit = (
+                (ratio >= 0.65 and len(common) >= 4) or
+                (ratio >= 0.50 and len(common) >= 5) or
+                (ratio >= 0.55 and len(common) >= 4) or
+                (db_slug.startswith(common) and incoming_slug.startswith(common) and len(common) >= 4) or
+                (len(common) >= 7)
+            )
+            if hit:
+                return {
+                    "exists": True, "required": False, "ignored": True,
+                    "guardrail_status": "person_domain_overlap",
+                    "guardrail_reason": (
+                        f"[L2] Person '{contact.name}' exists in DB at '{db_dom}'. "
+                        f"Domain '{prim_d}' shares brand root '{common}' "
+                        f"(overlap {ratio:.0%}) \u2192 same company branch.{source_suffix}"
+                    ),
+                    "matched_domain": prim_d, "matched_db_domain": db_dom,
+                    "domain_source": domain_source,
+                }
+
+    if prim_d and _domain_trie.loaded:
+        incoming_slug = _clean_slug(prim_d)
+        if incoming_slug:
+            trie_match_domain, common_prefix = _domain_trie.find_prefix_match(incoming_slug, min_prefix_len=4)
+            if trie_match_domain and trie_match_domain != prim_d and _is_valid_branch_match(trie_match_domain, common_prefix, incoming_slug):
+                return {
+                    "exists": True, "required": False, "ignored": True,
+                    "guardrail_status": "trie_brand_stem_match",
+                    "guardrail_reason": (
+                        f"[L3] Domain '{prim_d}' is a branch of known DB domain '{trie_match_domain}' "
+                        f"(shared stem: '{common_prefix}').{source_suffix}"
+                    ),
+                    "matched_domain": prim_d, "matched_db_domain": trie_match_domain,
+                    "domain_source": domain_source,
+                }
+
+    if prim_d and _DNS_AVAILABLE:
+        with _mx_cache_lock:
+            mx_root = _mx_cache.get(prim_d)
+        if mx_root is None:
+            mx_root = _resolve_mx_root_domain(prim_d, timeout=0.2)
+        if mx_root and mx_root != prim_d:
+            with _crm_domain_cache_lock:
+                mx_in_cache = _crm_domain_cache.get(mx_root)
+            if mx_in_cache is True:
+                return {
+                    "exists": True, "required": False, "ignored": True,
+                    "guardrail_status": "mx_routing_match",
+                    "guardrail_reason": (
+                        f"[L4] Domain '{prim_d}' routes mail through '{mx_root}' "
+                        f"which is already in your CRM (shared mail infrastructure).{source_suffix}"
+                    ),
+                    "matched_domain": prim_d, "matched_db_domain": mx_root,
+                    "domain_source": domain_source,
+                }
+            if mx_in_cache is None:
+                def _check_mx_in_db(conn, dom):
+                    schema = get_target_table_schema(conn)
+                    tbl_name = schema["table_name"]
+                    domain_col = schema["email_domain"]
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                f"SELECT 1 FROM `{tbl_name}` WHERE `{domain_col}` = %s LIMIT 1", (dom,)
+                            )
+                            return cur.fetchone() is not None
+                    except Exception:
+                        return False
+
+                try:
+                    if connection:
+                        mx_found = _check_mx_in_db(connection, mx_root)
+                    else:
+                        with get_connection() as conn:
+                            mx_found = _check_mx_in_db(conn, mx_root)
+                except Exception:
+                    mx_found = False
+
+                with _crm_domain_cache_lock:
+                    _crm_domain_cache[mx_root] = mx_found
+
+                if mx_found:
+                    return {
+                        "exists": True, "required": False, "ignored": True,
+                        "guardrail_status": "mx_routing_match",
+                        "guardrail_reason": (
+                            f"[L4] Domain '{prim_d}' routes mail through '{mx_root}' "
+                            f"which is already in your CRM (shared mail infrastructure).{source_suffix}"
+                        ),
+                        "matched_domain": prim_d, "matched_db_domain": mx_root,
+                        "domain_source": domain_source,
+                    }
+
+    return None
+
 
 def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) -> tuple[bool, str]:
     """
@@ -557,20 +1251,16 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
                 if _crm_domain_cache[dom] is True:
                     return True, dom
 
-    # 2. Query MySQL / Postgres
+    # 2. Query MySQL
     def do_query(conn):
         schema = get_target_table_schema(conn)
         tbl_name = schema["table_name"]
         domain_col = schema["email_domain"]
 
         with conn.cursor() as cur:
-            if is_mysql_conn(conn):
-                format_strings = ",".join(["%s"] * len(candidate_domains))
-                query = f"SELECT `{domain_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings}) LIMIT 1;"
-                cur.execute(query, tuple(candidate_domains))
-            else:
-                query = f"SELECT {domain_col} FROM \"{tbl_name}\" WHERE {domain_col} = ANY(%s) LIMIT 1;"
-                cur.execute(query, (candidate_domains,))
+            format_strings = ",".join(["%s"] * len(candidate_domains))
+            query = f"SELECT `{domain_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings}) LIMIT 1;"
+            cur.execute(query, tuple(candidate_domains))
 
             row = cur.fetchone()
             if row and row[0]:
@@ -580,18 +1270,17 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
                 return True, found_domain
                 
             # If not in CRM, check apollo_saved_leads
-            if is_mysql_conn(conn):
-                query2 = f"SELECT `company_domain` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) LIMIT 1;"
-                try:
-                    cur.execute(query2, tuple(candidate_domains))
-                    row2 = cur.fetchone()
-                    if row2 and row2[0]:
-                        found_domain = str(row2[0]).strip().lower()
-                        with _crm_domain_cache_lock:
-                            _crm_domain_cache[found_domain] = True
-                        return True, found_domain
-                except Exception:
-                    pass
+            query2 = f"SELECT `company_domain` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) LIMIT 1;"
+            try:
+                cur.execute(query2, tuple(candidate_domains))
+                row2 = cur.fetchone()
+                if row2 and row2[0]:
+                    found_domain = str(row2[0]).strip().lower()
+                    with _crm_domain_cache_lock:
+                        _crm_domain_cache[found_domain] = True
+                    return True, found_domain
+            except Exception:
+                pass
 
             # Cache negatives
             with _crm_domain_cache_lock:
@@ -606,21 +1295,197 @@ def check_domains_in_crm_batch(candidate_domains: list[str], connection=None) ->
             return do_query(conn)
 
 
-def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain: dict[str, str], connection=None) -> dict[str, dict]:
+def check_company_names_in_crm_batch(company_names: list[str], connection=None) -> set[str]:
     """
-    Check if (full_name, domain) or domain exists in CRM 'emails' table.
-    1. Collects all candidate domains.
-    2. Executes 1 single fast indexed query on 'idx_emails_domain' in 'emails' table.
-    3. Matches both exact person at domain (full_name + domain) and company domain.
+    Pre-Check Layer 0: Direct Company Name Lookup in CRM `emails` table.
+    Performs normalized multi-variant and bounded prefix lookup on `emails.company_name`.
+    Handles legal suffix variations (Nestack, Nestack Inc, Nestack LLC, Nestack, Inc.)
+    and business noise suffixes (Nestack Technologies, Nestack Solutions).
+    Returns a set of lowercase normalized company names and stems that exist in the CRM.
+    """
+    if not company_names:
+        return set()
+
+    variant_to_inputs: dict[str, set[str]] = {}
+    stem_to_inputs: dict[str, set[str]] = {}
+    matched_inputs: set[str] = set()
+
+    for raw in company_names:
+        if not raw:
+            continue
+        raw_clean = str(raw).strip()
+        raw_lower = raw_clean.lower()
+        cleaned_lower = clean_company_name(raw_clean).lower()
+        stem_lower = normalize_company_stem(raw_clean).lower()
+
+        # Track mapping from forms to raw_lower
+        for form in [raw_clean, cleaned_lower, stem_lower]:
+            if form:
+                variant_to_inputs.setdefault(form.lower(), set()).add(raw_lower)
+
+        for v in generate_company_lookup_variants(raw_clean):
+            variant_to_inputs.setdefault(v.lower(), set()).add(raw_lower)
+
+        if stem_lower and len(stem_lower) >= 4 and stem_lower not in GENERIC_STOP_WORDS and not stem_lower.isdigit():
+            stem_to_inputs.setdefault(stem_lower, set()).add(raw_lower)
+
+    if not variant_to_inputs:
+        return set()
+
+    def do_query(conn):
+        try:
+            with conn.cursor() as cur:
+                # Phase 1: Batched Exact IN lookup on all generated variants
+                unique_variants = list(variant_to_inputs.keys())
+                chunk_size = 500
+                for i in range(0, len(unique_variants), chunk_size):
+                    chunk = unique_variants[i:i + chunk_size]
+                    fmt = ",".join(["%s"] * len(chunk))
+
+                    def _absorb_company_rows(rows):
+                        for (db_cname,) in rows:
+                            if not db_cname:
+                                continue
+                            db_clean = str(db_cname).strip()
+                            db_lower = db_clean.lower()
+                            db_cleaned = clean_company_name(db_clean).lower()
+                            db_stem = normalize_company_stem(db_clean).lower()
+                            for key in [db_lower, db_cleaned, db_stem]:
+                                if key in variant_to_inputs:
+                                    for matched_raw in variant_to_inputs[key]:
+                                        matched_inputs.add(matched_raw)
+                                        matched_inputs.add(clean_company_name(matched_raw).lower())
+                                        matched_inputs.add(normalize_company_stem(matched_raw).lower())
+
+                    # Phase 1a: master CRM emails table
+                    cur.execute(f"SELECT DISTINCT company_name FROM emails WHERE company_name IN ({fmt});", tuple(chunk))
+                    _absorb_company_rows(cur.fetchall())
+
+                    # Phase 1b: apollo_saved_leads (company column)
+                    try:
+                        cur.execute(f"SELECT DISTINCT company FROM apollo_saved_leads WHERE company IN ({fmt});", tuple(chunk))
+                        _absorb_company_rows(cur.fetchall())
+                    except Exception:
+                        pass
+
+                    # Phase 1c: enrich_saved_leads (company column)
+                    try:
+                        cur.execute(f"SELECT DISTINCT company FROM enrich_saved_leads WHERE company IN ({fmt});", tuple(chunk))
+                        _absorb_company_rows(cur.fetchall())
+                    except Exception:
+                        pass
+
+                # Phase 2: Bounded Prefix Range Scan for unmatched distinctive stems
+                unmatched_stems = {s: raw_set for s, raw_set in stem_to_inputs.items() if not raw_set.issubset(matched_inputs)}
+                for stem, raw_set in unmatched_stems.items():
+                    matched_this_stem = False
+
+                    # Phase 2a: emails table
+                    cur.execute("""
+                        SELECT company_name FROM emails
+                        WHERE company_name = %s
+                           OR company_name LIKE %s
+                           OR company_name LIKE %s
+                        LIMIT 1;
+                    """, (stem, f"{stem} %", f"{stem},%"))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        matched_this_stem = True
+
+                    # Phase 2b: apollo_saved_leads
+                    if not matched_this_stem:
+                        try:
+                            cur.execute("""
+                                SELECT company FROM apollo_saved_leads
+                                WHERE company = %s
+                                   OR company LIKE %s
+                                   OR company LIKE %s
+                                LIMIT 1;
+                            """, (stem, f"{stem} %", f"{stem},%"))
+                            row = cur.fetchone()
+                            if row and row[0]:
+                                matched_this_stem = True
+                        except Exception:
+                            pass
+
+                    # Phase 2c: enrich_saved_leads
+                    if not matched_this_stem:
+                        try:
+                            cur.execute("""
+                                SELECT company FROM enrich_saved_leads
+                                WHERE company = %s
+                                   OR company LIKE %s
+                                   OR company LIKE %s
+                                LIMIT 1;
+                            """, (stem, f"{stem} %", f"{stem},%"))
+                            row = cur.fetchone()
+                            if row and row[0]:
+                                matched_this_stem = True
+                        except Exception:
+                            pass
+
+                    if matched_this_stem:
+                        for r in raw_set:
+                            matched_inputs.add(r)
+                            matched_inputs.add(clean_company_name(r).lower())
+                            matched_inputs.add(normalize_company_stem(r).lower())
+
+        except Exception as ex:
+            print(f"[ContactChecker] Notice: company_name CRM lookup error: {ex}", flush=True)
+        return matched_inputs
+
+    if connection:
+        return do_query(connection)
+    else:
+        with get_connection() as conn:
+            return do_query(conn)
+
+
+def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain: dict[str, str], connection=None, active_batch: str | None = None, active_table: str = "apollo_saved_leads") -> dict[str, dict]:
+    """
+    4-Layer Deduplication Engine:
+      Layer 1 – Exact domain match in emails, saved leads, and successful enrichment ledger rows.
+      Layer 2 – Person-name anchor: looks up full_name in DB and computes LCS ratio
+                between the DB email domain and the Apollo-displayed domain.
+      Layer 3 – Database-driven prefix trie: checks if the incoming domain slug is
+                a branch extension of a known DB domain (e.g. mullinaxfordkiss -> mullinaxford).
+      Layer 4 – DNS MX mail routing: resolves the incoming domain's mail exchange server
+                and checks if the mail root domain is known in the DB.
     """
     if not contacts:
         return {}
 
-    candidate_domains = list({contact_primary_domain.get(c.key, "") for c in contacts if contact_primary_domain.get(c.key)})
+    contact_candidates: dict[str, list[tuple[str, str]]] = {}
+    candidate_domains_set: set[str] = set()
+    for c in contacts:
+        cands = _domain_lookup_candidates(c)
+        comp = getattr(c, "company", None) or getattr(c, "company_name", None) or ""
+        if comp:
+            seen_doms = {dom for _, dom in cands}
+            for cdom in generate_candidate_domains(comp):
+                root_cdom = extract_root_domain(cdom)
+                if root_cdom and root_cdom not in seen_doms:
+                    cands.append(("company_candidate", root_cdom))
+                    seen_doms.add(root_cdom)
+        contact_candidates[c.key] = cands
+        for _, dom in cands:
+            candidate_domains_set.add(dom)
+
+    candidate_domains = list(candidate_domains_set)
     if not candidate_domains:
         return {}
 
-    # Query DB for all records matching these domains
+    # Parallel asynchronous DNS MX prefetch (only prefetch authentic domains, never tens of thousands of candidate strings)
+    mx_prefetch_thread = None
+    if _DNS_AVAILABLE and candidate_domains:
+        real_domains = list({dom for c in contacts for src, dom in contact_candidates.get(c.key, []) if src != "company_candidate" and dom})
+        if real_domains:
+            mx_prefetch_thread = threading.Thread(target=prefetch_mx_records, args=(real_domains,), daemon=True)
+            mx_prefetch_thread.start()
+
+    # ----------------------------------------------------------
+    # LAYER 1: Exact domain batch query (CRM, saved leads, enrichment ledger)
+    # ----------------------------------------------------------
     def do_query(conn):
         schema = get_target_table_schema(conn)
         tbl_name = schema["table_name"]
@@ -632,27 +1497,16 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
 
         try:
             with conn.cursor() as cur:
-                format_strings = ",".join(["%s"] * len(candidate_domains))
-                
-                # 1. Query CRM table
-                query1 = f"SELECT `{domain_col}`, `{name_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings});"
-                cur.execute(query1, tuple(candidate_domains))
-                rows1 = cur.fetchall()
-                for r in rows1:
-                    dom = str(r[0] or "").strip().lower()
-                    raw_nm = str(r[1] or "").strip()
-                    norm_nm = normalize_text(raw_nm)
-                    if dom:
-                        matched_domains.add(dom)
-                        if norm_nm:
-                            matched_records[(norm_nm, dom)] = raw_nm
-                
-                # 2. Query apollo_saved_leads table
-                query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings});"
-                try:
-                    cur.execute(query2, tuple(candidate_domains))
-                    rows2 = cur.fetchall()
-                    for r in rows2:
+                chunk_size = 1000
+                for i in range(0, len(candidate_domains), chunk_size):
+                    chunk = candidate_domains[i:i + chunk_size]
+                    format_strings = ",".join(["%s"] * len(chunk))
+
+                    # Layer 1a: Query CRM emails table by exact domain
+                    query1 = f"SELECT `{domain_col}`, `{name_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings});"
+                    cur.execute(query1, tuple(chunk))
+                    rows1 = cur.fetchall()
+                    for r in rows1:
                         dom = str(r[0] or "").strip().lower()
                         raw_nm = str(r[1] or "").strip()
                         norm_nm = normalize_text(raw_nm)
@@ -660,8 +1514,64 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                             matched_domains.add(dom)
                             if norm_nm:
                                 matched_records[(norm_nm, dom)] = raw_nm
-                except Exception as ex2:
-                    print(f"[ContactChecker] Notice: apollo_saved_leads lookup error: {ex2}", flush=True)
+
+                    # Layer 1b: Query apollo_saved_leads by exact domain (exclude active batch if auditing apollo_saved_leads)
+                    if active_batch and active_table == "apollo_saved_leads":
+                        query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) AND `batch` != %s;"
+                        params2 = tuple(chunk) + (active_batch,)
+                    else:
+                        query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings});"
+                        params2 = tuple(chunk)
+                    try:
+                        cur.execute(query2, params2)
+                        rows2 = cur.fetchall()
+                        for r in rows2:
+                            dom = str(r[0] or "").strip().lower()
+                            raw_nm = str(r[1] or "").strip()
+                            norm_nm = normalize_text(raw_nm)
+                            if dom:
+                                matched_domains.add(dom)
+                                if norm_nm:
+                                    matched_records[(norm_nm, dom)] = raw_nm
+                    except Exception as ex2:
+                        print(f"[ContactChecker] Notice: apollo_saved_leads lookup error: {ex2}", flush=True)
+
+                    # Layer 1c: Query enrich_saved_leads by exact domain (exclude active batch if auditing enrich_saved_leads)
+                    try:
+                        if active_batch and active_table == "enrich_saved_leads":
+                            query3 = f"SELECT `company_domain`, `name` FROM `enrich_saved_leads` WHERE `company_domain` IN ({format_strings}) AND `batch` != %s;"
+                            params3 = tuple(chunk) + (active_batch,)
+                        else:
+                            query3 = f"SELECT `company_domain`, `name` FROM `enrich_saved_leads` WHERE `company_domain` IN ({format_strings});"
+                            params3 = tuple(chunk)
+                        cur.execute(query3, params3)
+                        rows3 = cur.fetchall()
+                        for r in rows3:
+                            dom = str(r[0] or "").strip().lower()
+                            raw_nm = str(r[1] or "").strip()
+                            norm_nm = normalize_text(raw_nm)
+                            if dom:
+                                matched_domains.add(dom)
+                                if norm_nm:
+                                    matched_records[(norm_nm, dom)] = raw_nm
+                    except Exception as ex3:
+                        pass
+
+                    # Ledger rows can outlive or differ from their saved-lead rows.
+                    # Include the active batch: an already enriched domain is not net-new.
+                    try:
+                        cur.execute(
+                            f"SELECT DISTINCT `company_domain` FROM `batch_enrichment_ledger` "
+                            f"WHERE `company_domain` IN ({format_strings}) "
+                            "AND `outcome` = 'email_found' AND `email` != '';",
+                            tuple(chunk),
+                        )
+                        for (raw_dom,) in cur.fetchall():
+                            dom = str(raw_dom or "").strip().lower()
+                            if dom:
+                                matched_domains.add(dom)
+                    except Exception as ex4:
+                        print(f"[ContactChecker] Notice: enrichment ledger lookup error: {ex4}", flush=True)
 
         except Exception as e:
             print(f"[ContactChecker] Notice: CRM lookup error: {e}", flush=True)
@@ -674,35 +1584,129 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
         with get_connection() as conn:
             matched_records, matched_domains = do_query(conn)
 
-    # Evaluate each contact
+    # ----------------------------------------------------------
+    # LAYER 2 PREP: Fetch DB domains for each contact's full name
+    # (batch query: all unique names at once across CRM, Apollo & Enrich)
+    # ----------------------------------------------------------
+    unique_names_needed = set()
+    for c in contacts:
+        cands = contact_candidates.get(c.key, [])
+        if not c.name or not cands:
+            continue
+        norm_nm = normalize_text(c.name)
+        any_l1_hit = any(
+            (norm_nm, dom) in matched_records or dom in matched_domains
+            for _, dom in cands
+        )
+        if not any_l1_hit:
+            with _person_domain_cache_lock:
+                if norm_nm not in _person_domain_cache:
+                    unique_names_needed.add(c.name.strip())
+
+    if unique_names_needed:
+        def _fetch_person_domains(conn):
+            schema = get_target_table_schema(conn)
+            tbl_name = schema["table_name"]
+            domain_col = schema["email_domain"]
+            name_col = schema["name"] or "full_name"
+            fmt = ",".join(["%s"] * len(unique_names_needed))
+            try:
+                with conn.cursor() as cur:
+                    # 1. Query master CRM emails table
+                    cur.execute(
+                        f"SELECT `{name_col}`, `{domain_col}` FROM `{tbl_name}` WHERE `{name_col}` IN ({fmt})",
+                        tuple(unique_names_needed)
+                    )
+                    rows = cur.fetchall()
+                    with _person_domain_cache_lock:
+                        for row in rows:
+                            raw_nm = str(row[0] or "").strip()
+                            dom = str(row[1] or "").strip().lower()
+                            norm_nm = normalize_text(raw_nm)
+                            if norm_nm and dom:
+                                if norm_nm not in _person_domain_cache:
+                                    _person_domain_cache[norm_nm] = []
+                                if dom not in _person_domain_cache[norm_nm]:
+                                    _person_domain_cache[norm_nm].append(dom)
+
+                    # 2. Query apollo_saved_leads (excluding active batch if apollo_saved_leads)
+                    try:
+                        if active_batch and active_table == "apollo_saved_leads":
+                            sql_saved = f"SELECT `name`, `company_domain` FROM `apollo_saved_leads` WHERE `name` IN ({fmt}) AND `batch` != %s;"
+                            params_saved = tuple(unique_names_needed) + (active_batch,)
+                        else:
+                            sql_saved = f"SELECT `name`, `company_domain` FROM `apollo_saved_leads` WHERE `name` IN ({fmt});"
+                            params_saved = tuple(unique_names_needed)
+                        cur.execute(sql_saved, params_saved)
+                        rows_saved = cur.fetchall()
+                        with _person_domain_cache_lock:
+                            for row in rows_saved:
+                                raw_nm = str(row[0] or "").strip()
+                                dom = str(row[1] or "").strip().lower()
+                                norm_nm = normalize_text(raw_nm)
+                                if norm_nm and dom:
+                                    if norm_nm not in _person_domain_cache:
+                                        _person_domain_cache[norm_nm] = []
+                                    if dom not in _person_domain_cache[norm_nm]:
+                                        _person_domain_cache[norm_nm].append(dom)
+                    except Exception:
+                        pass
+
+                    # 3. Query enrich_saved_leads (excluding active batch if enrich_saved_leads)
+                    try:
+                        if active_batch and active_table == "enrich_saved_leads":
+                            sql_enrich = f"SELECT `name`, `company_domain` FROM `enrich_saved_leads` WHERE `name` IN ({fmt}) AND `batch` != %s;"
+                            params_enrich = tuple(unique_names_needed) + (active_batch,)
+                        else:
+                            sql_enrich = f"SELECT `name`, `company_domain` FROM `enrich_saved_leads` WHERE `name` IN ({fmt});"
+                            params_enrich = tuple(unique_names_needed)
+                        cur.execute(sql_enrich, params_enrich)
+                        rows_enrich = cur.fetchall()
+                        with _person_domain_cache_lock:
+                            for row in rows_enrich:
+                                raw_nm = str(row[0] or "").strip()
+                                dom = str(row[1] or "").strip().lower()
+                                norm_nm = normalize_text(raw_nm)
+                                if norm_nm and dom:
+                                    if norm_nm not in _person_domain_cache:
+                                        _person_domain_cache[norm_nm] = []
+                                    if dom not in _person_domain_cache[norm_nm]:
+                                        _person_domain_cache[norm_nm].append(dom)
+                    except Exception:
+                        pass
+
+                    # Also mark names not found in DB as empty list (negative cache)
+                    with _person_domain_cache_lock:
+                        for nm in unique_names_needed:
+                            norm_nm = normalize_text(nm)
+                            if norm_nm not in _person_domain_cache:
+                                _person_domain_cache[norm_nm] = []
+            except Exception as e:
+                print(f"[ContactChecker] Notice: person-domain lookup error: {e}", flush=True)
+
+        if connection:
+            _fetch_person_domains(connection)
+        else:
+            with get_connection() as conn:
+                _fetch_person_domains(conn)
+
+    if mx_prefetch_thread and mx_prefetch_thread.is_alive():
+        mx_prefetch_thread.join(timeout=0.35)
+
+    # ----------------------------------------------------------
+    # Evaluate each contact through all 4 layers
+    # ----------------------------------------------------------
     results = {}
     for c in contacts:
-        prim_d = contact_primary_domain.get(c.key, "")
         norm_c_name = normalize_text(c.name)
-
-        # 1. Exact Person at Domain Match (Full Name + Domain in CRM emails table)
-        if (norm_c_name, prim_d) in matched_records:
-            matched_crm_name = matched_records[(norm_c_name, prim_d)]
-            results[c.key] = {
-                "exists": True,
-                "required": False,
-                "ignored": True,
-                "guardrail_status": "contact_already_in_db",
-                "guardrail_reason": f"Contact '{c.name}' at domain '{prim_d}' already exists in CRM database (matched: '{matched_crm_name}').",
-                "matched_domain": prim_d,
-                "matched_db_domain": prim_d
-            }
-        # 2. Company Domain Match in CRM emails table
-        elif prim_d in matched_domains:
-            results[c.key] = {
-                "exists": True,
-                "required": False,
-                "ignored": True,
-                "guardrail_status": "domain_already_in_db",
-                "guardrail_reason": f"Company domain '{prim_d}' already exists in CRM database.",
-                "matched_domain": prim_d,
-                "matched_db_domain": prim_d
-            }
+        for source, prim_d in contact_candidates.get(c.key, []):
+            hit = _try_domain_layers(
+                c, prim_d, norm_c_name, matched_records, matched_domains,
+                connection=connection, domain_source=source,
+            )
+            if hit:
+                results[c.key] = hit
+                break
 
     return results
 
@@ -762,6 +1766,21 @@ EXCLUDED_ENTRY_SUBSTRINGS = [
     r"\btrainee\b",
     r"\bapprentice\b",
     r"\bstudent\b",
+    r"\bassistant to\b",
+    r"\bexecutive assistant\b",
+    r"\bpersonal assistant\b",
+    r"\bcompliance\b",
+    r"\blegal\b",
+    r"\bregulatory\b",
+    r"\bprocurement\b",
+    r"\bprivacy\b",
+    r"\bgdpr\b",
+    r"\bgrc\b",
+    r"\baudit\b",
+    r"\bauditor\b",
+    r"\bjunior\b",
+    r"\bjr\b",
+    r"\bjr\.\b",
 ]
 
 
@@ -810,8 +1829,274 @@ PURE_INDIAN_SURNAMES = {
     "subramanian", "venkataraman", "swamy", "naidu", "shetty", "hegde", "pai",
     "kulkarni", "deshmukh", "patil", "jadhav", "pawar", "shinde", "gaikwad",
     "prasad", "sinha", "srivastava", "chawla", "arora", "sethi", "sood", "puri",
-    "deshpande", "gokhale", "bhave", "apte", "gadgil", "kelkar", "chawla"
+    "deshpande", "gokhale", "bhave", "apte", "gadgil", "kelkar", "chawla",
 }
+
+INDIAN_SURNAMES_XLSX = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data",
+    "indian surnames  (2).xlsx",
+)
+
+_indian_surname_db_set: set[str] = set()
+_indian_surname_db_lock = threading.Lock()
+_indian_surname_db_loaded = False
+
+
+def ensure_indian_name_guardrails_table(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `indian_name_guardrails` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `display_name` VARCHAR(255) NOT NULL,
+                `normalized_name` VARCHAR(255) NOT NULL,
+                `entry_kind` ENUM('surname', 'full_name') NOT NULL DEFAULT 'full_name',
+                `is_indian` TINYINT(1) NULL,
+                `source` VARCHAR(32) NOT NULL DEFAULT 'local',
+                `reason` VARCHAR(255) NULL,
+                `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY `uq_norm_kind` (`normalized_name`, `entry_kind`),
+                INDEX `idx_norm` (`normalized_name`),
+                INDEX `idx_kind_indian` (`entry_kind`, `is_indian`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+        )
+
+
+def ensure_pending_job_titles_table(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `pending_job_titles` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `job_title` VARCHAR(255) NOT NULL,
+                `normalized_title` VARCHAR(255) NOT NULL,
+                `batch` VARCHAR(128) NULL,
+                `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY `uq_norm_title` (`normalized_title`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+        )
+
+
+def _refresh_indian_surname_set(connection) -> None:
+    global _indian_surname_db_loaded
+    ensure_indian_name_guardrails_table(connection)
+    with connection.cursor() as cur:
+        cur.execute(
+            "SELECT `normalized_name` FROM `indian_name_guardrails` "
+            "WHERE `entry_kind` = 'surname' AND `is_indian` = 1"
+        )
+        db_surnames = {row[0] for row in cur.fetchall() if row[0]}
+    with _indian_surname_db_lock:
+        _indian_surname_db_set.clear()
+        _indian_surname_db_set.update(PURE_INDIAN_SURNAMES)
+        _indian_surname_db_set.update(db_surnames)
+        _indian_surname_db_loaded = True
+
+
+def get_indian_surname_set(connection=None) -> set[str]:
+    if connection and not _indian_surname_db_loaded:
+        _refresh_indian_surname_set(connection)
+    with _indian_surname_db_lock:
+        if _indian_surname_db_set:
+            return set(_indian_surname_db_set)
+    return set(PURE_INDIAN_SURNAMES)
+
+
+def seed_indian_surnames_from_excel(connection, xlsx_path: str | None = None) -> int:
+    """Load definite Indian surnames from Excel into indian_name_guardrails. Returns rows upserted."""
+    path = xlsx_path or INDIAN_SURNAMES_XLSX
+    if not os.path.isfile(path):
+        return 0
+    try:
+        import pandas as pd
+    except ImportError:
+        print(f"[IndianNames] pandas required to seed from {path}", flush=True)
+        return 0
+
+    ensure_indian_name_guardrails_table(connection)
+    df = pd.read_excel(path)
+    col = "surname" if "surname" in df.columns else df.columns[0]
+    rows = []
+    for raw in df[col].dropna().astype(str):
+        surname = raw.strip()
+        norm = normalize_text(surname)
+        if not norm:
+            continue
+        rows.append((surname[:255], norm[:255], "surname", 1, "excel", "Definite Indian surname (Excel seed)"))
+
+    if not rows:
+        return 0
+
+    with connection.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `indian_name_guardrails`
+                (`display_name`, `normalized_name`, `entry_kind`, `is_indian`, `source`, `reason`)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                `display_name` = VALUES(`display_name`),
+                `is_indian` = VALUES(`is_indian`),
+                `source` = VALUES(`source`),
+                `reason` = VALUES(`reason`);
+            """,
+            rows,
+        )
+    connection.commit()
+    _refresh_indian_surname_set(connection)
+    return len(rows)
+
+
+_indian_surnames_seeded_checked = False
+_indian_surnames_seeded_lock = threading.Lock()
+
+
+def ensure_indian_surnames_seeded(connection) -> int:
+    """Seed Excel surnames once when the surname table is empty."""
+    global _indian_surnames_seeded_checked
+    if _indian_surnames_seeded_checked:
+        return 0
+    with _indian_surnames_seeded_lock:
+        if _indian_surnames_seeded_checked:
+            return 0
+        ensure_indian_name_guardrails_table(connection)
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM `indian_name_guardrails` WHERE `entry_kind` = 'surname'"
+            )
+            count = int(cur.fetchone()[0] or 0)
+        if count > 0:
+            if not _indian_surname_db_loaded:
+                _refresh_indian_surname_set(connection)
+            _indian_surnames_seeded_checked = True
+            return 0
+        inserted = seed_indian_surnames_from_excel(connection)
+        if inserted:
+            print(f"[IndianNames] Seeded {inserted} surnames from Excel into `indian_name_guardrails`.", flush=True)
+        _indian_surnames_seeded_checked = True
+        return inserted
+
+
+def lookup_indian_names_batch(full_names: list[str], connection) -> dict[str, dict]:
+    """DB lookup for prior full-name classifications (LLM, audit, pending resolved)."""
+    if not full_names:
+        return {}
+    ensure_indian_surnames_seeded(connection)
+    norm_map = {}
+    for name in full_names:
+        raw = (name or "").strip()
+        if not raw:
+            continue
+        norm_map[normalize_text(raw)] = raw
+
+    if not norm_map:
+        return {}
+
+    results: dict[str, dict] = {}
+    norms = list(norm_map.keys())
+    with connection.cursor() as cur:
+        for i in range(0, len(norms), 200):
+            chunk = norms[i : i + 200]
+            placeholders = ", ".join(["%s"] * len(chunk))
+            cur.execute(
+                f"""
+                SELECT `normalized_name`, `is_indian`, `source`, `reason`
+                FROM `indian_name_guardrails`
+                WHERE `entry_kind` = 'full_name'
+                  AND `is_indian` IS NOT NULL
+                  AND `normalized_name` IN ({placeholders})
+                """,
+                chunk,
+            )
+            for norm_nm, is_ind, source, reason in cur.fetchall():
+                raw = norm_map.get(norm_nm)
+                if raw is None:
+                    continue
+                results[raw] = {
+                    "is_indian": bool(is_ind),
+                    "reason": reason or "",
+                    "source": source or "db",
+                }
+    return results
+
+
+def persist_indian_name_classifications(connection, rows: list[tuple]) -> None:
+    """rows: (display_name, normalized_name, entry_kind, is_indian, source, reason)"""
+    if not rows:
+        return
+    ensure_indian_name_guardrails_table(connection)
+    with connection.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `indian_name_guardrails`
+                (`display_name`, `normalized_name`, `entry_kind`, `is_indian`, `source`, `reason`)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                `is_indian` = VALUES(`is_indian`),
+                `source` = VALUES(`source`),
+                `reason` = VALUES(`reason`);
+            """,
+            rows,
+        )
+
+
+def queue_pending_job_titles(titles: list[str], batch: str, connection) -> int:
+    if not titles:
+        return 0
+    ensure_pending_job_titles_table(connection)
+    rows = []
+    for raw in titles:
+        title = (raw or "").strip()
+        norm = normalize_text(title)
+        if not title or not norm:
+            continue
+        rows.append((title[:255], norm[:255], (batch or "")[:128]))
+    if not rows:
+        return 0
+    with connection.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `pending_job_titles` (`job_title`, `normalized_title`, `batch`)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE `batch` = VALUES(`batch`);
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def queue_pending_names(names: list[str], batch: str, connection) -> int:
+    """Store ambiguous names for later audit LLM (is_indian=NULL until classified)."""
+    if not names:
+        return 0
+    ensure_indian_name_guardrails_table(connection)
+    rows = []
+    for raw in names:
+        name = (raw or "").strip()
+        norm = normalize_text(name)
+        if not name or not norm:
+            continue
+        rows.append(
+            (name[:255], norm[:255], "full_name", None, "pending_scrape", "Queued during scrape — run batch name audit")
+        )
+    if not rows:
+        return 0
+    with connection.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `indian_name_guardrails`
+                (`display_name`, `normalized_name`, `entry_kind`, `is_indian`, `source`, `reason`)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                `source` = IF(`is_indian` IS NULL, VALUES(`source`), `source`),
+                `reason` = IF(`is_indian` IS NULL, VALUES(`reason`), `reason`);
+            """,
+            rows,
+        )
+    return len(rows)
+
 
 SAFE_EDGE_CASE_SURNAMES = {
     "dsouza", "d souza", "fernandes", "pinto", "pereira", "lobo", "albuquerque",
@@ -837,60 +2122,138 @@ SAFE_GLOBAL_FIRST_NAMES = {
     "yang", "huang", "wu", "zhou", "xu", "sun", "ma", "zhu", "hu", "guo", "he", "gao"
 }
 
+PURE_INDIAN_GIVEN_NAMES = {
+    "rahul", "priya", "venkatesh", "amit", "suresh", "ramesh", "rajesh", "vikram",
+    "ananya", "deepak", "neha", "rohit", "arun", "sanjay", "vijay", "manoj", "ajay",
+    "sunil", "anil", "pooja", "sneha", "kavita", "swati", "aditya", "abhishek",
+    "pradeep", "sandip", "sandeep", "dinesh", "naresh", "mahesh", "ashok", "alok",
+    "mukesh", "rakesh", "vinod", "harish", "satish", "girish", "tarun", "varun",
+    "kiran", "naveen", "praveen", "nitin", "sachin", "vishal", "gaurav", "sumit",
+    "ankit", "mohit", "saurabh", "mayank", "ankur", "rohan", "nikhil", "kunal",
+    "karan", "shubham", "ayush", "harsh", "yash", "dev", "shivam", "rishabh",
+    "tushar", "chirag", "chetan", "bhupendra", "dharmendra", "jitendra", "narendra",
+    "surendra", "birendra", "ravindra", "mahendra", "gajendra", "raghav", "madhav",
+    "keshav", "krishna", "govind", "gopal", "shyam", "radha", "laxmi", "lakshmi",
+    "saraswati", "durga", "parvati", "ganga", "yamuna", "gayatri", "meena", "rekha",
+    "sita", "gita", "rita", "shanti", "usha", "asha", "shobha", "sudha", "vidya",
+    "sharda", "sarla", "kamla", "pushpa", "leela", "veena", "bina", "savita",
+    "sarita", "sunita", "anita", "geeta", "babita", "lalita", "mamta", "archana",
+    "vandana", "kalpana", "sadhana", "bhavna", "dhaval", "jignesh", "hitesh",
+    "bhavin", "paresh", "kamlesh", "kalpesh", "nilesh", "shailesh", "pragnesh",
+    "bhavesh", "dharmesh", "alpesh", "jagdish", "mukund", "anand", "vivek",
+    "prashant", "srikant", "shrikant", "hemant", "jayant", "siddharth", "pranav",
+    "chinmay", "tanmay", "kaustubh", "atharva", "vedant", "omkar", "sanket",
+    "swapnil", "amol", "parag", "milind", "makarand", "subhash", "prakash",
+    "kailash", "avinash", "srinivas", "srinivasan", "venkat", "venkataraman",
+    "subramanian", "balasubramanian", "ramanathan", "swaminathan", "viswanathan",
+    "narayanan", "raghavan", "kalyan", "karthik", "kartik", "aravind", "arvind",
+    "sriram", "krishnan", "muthu", "murugan", "saravanan", "senthil", "velu",
+    "selvam", "palaniswamy"
+}
 
-def is_unambiguous_pure_indian_name(full_name: str, connection=None) -> tuple[bool, str]:
+
+def classify_name_local(full_name: str, connection=None) -> tuple[str, str]:
+    """
+    Local + DB surname rules. Returns (verdict, reason):
+      indian    — definite pure Indian (filter)
+      foreign   — definite non-Indian (skip LLM)
+      ambiguous — needs LLM in batch audit
+    """
+    if not full_name:
+        return "foreign", "No name specified"
+
+    norm_name = normalize_text(full_name)
+    if not norm_name:
+        return "foreign", "Empty normalized name"
+
+    with _indian_name_cache_lock:
+        if norm_name in _indian_name_cache:
+            is_ind, reason = _indian_name_cache[norm_name]
+            return ("indian" if is_ind else "foreign"), reason
+
+    name_parts = full_name.strip().lower().split()
+    if not name_parts:
+        return "foreign", "Invalid name"
+
+    first_name = name_parts[0]
+    last_name = name_parts[-1] if len(name_parts) > 1 else ""
+    norm_last = normalize_text(last_name)
+    indian_surnames = get_indian_surname_set(connection)
+
+    for safe_sur in SAFE_EDGE_CASE_SURNAMES:
+        if safe_sur in last_name or safe_sur in full_name.lower():
+            reason = f"Safe Edge-Case Origin: '{last_name.title()}' preserved (Goan/Parsi/Global)"
+            with _indian_name_cache_lock:
+                _indian_name_cache[norm_name] = (False, reason)
+            return "foreign", reason
+
+    if first_name in SAFE_GLOBAL_FIRST_NAMES and norm_last not in indian_surnames:
+        reason = f"Foreign / Global Name: '{full_name}' preserved"
+        with _indian_name_cache_lock:
+            _indian_name_cache[norm_name] = (False, reason)
+        return "foreign", reason
+
+    if norm_last in indian_surnames:
+        reason = f"Demographic Filter: Pure Indian Name Origin ('{last_name.title()}')"
+        with _indian_name_cache_lock:
+            _indian_name_cache[norm_name] = (True, reason)
+        return "indian", reason
+
+    for part in name_parts:
+        if normalize_text(part) in indian_surnames:
+            reason = f"Demographic Filter: Pure Indian Name Origin ('{part.title()}')"
+            with _indian_name_cache_lock:
+                _indian_name_cache[norm_name] = (True, reason)
+            return "indian", reason
+
+    norm_first = normalize_text(first_name)
+    if norm_first in PURE_INDIAN_GIVEN_NAMES:
+        reason = f"Demographic Filter: Pure Indian Given Name ('{first_name.title()}')"
+        with _indian_name_cache_lock:
+            _indian_name_cache[norm_name] = (True, reason)
+        return "indian", reason
+
+    return "ambiguous", f"Ambiguous name '{full_name}' — needs LLM audit"
+
+
+def is_unambiguous_pure_indian_name(full_name: str, connection=None, prefetched_db_hits: dict | None = None) -> tuple[bool, str]:
     """
     Option 2: Strict Pure Indian Name Origin Evaluation with Edge-Case Protection.
     Returns: (is_pure_indian: bool, reason: str)
-      - True -> Pure Indian Name Origin (Excluded / Ignored)
-      - False -> Foreign / Anglo / Goan Christian / Parsi / Global (Preserved as Required)
+      - True  -> definite Indian (exclude)
+      - False -> foreign or ambiguous (preserve during scrape; ambiguous resolved in batch audit)
     """
     if not full_name:
         return False, "No name specified"
 
     norm_name = normalize_text(full_name)
-    if not norm_name:
-        return False, "Empty normalized name"
-
     with _indian_name_cache_lock:
         if norm_name in _indian_name_cache:
-            return _indian_name_cache[norm_name]
+            is_ind, reason = _indian_name_cache[norm_name]
+            return is_ind, reason
 
-    name_parts = full_name.strip().lower().split()
-    if not name_parts:
-        return False, "Invalid name"
-
-    first_name = name_parts[0]
-    last_name = name_parts[-1] if len(name_parts) > 1 else ""
-
-    # 1. Check for Goan Christian / Mangalorean / Parsi / Arab / Global safe exceptions
-    for safe_sur in SAFE_EDGE_CASE_SURNAMES:
-        if safe_sur in last_name or safe_sur in full_name.lower():
-            res = (False, f"Safe Edge-Case Origin: '{last_name.title()}' preserved (Goan/Parsi/Global)")
-            with _indian_name_cache_lock:
-                _indian_name_cache[norm_name] = res
-            return res
-
-    # 2. Check for unmistakable Western / Global first names
-    if first_name in SAFE_GLOBAL_FIRST_NAMES and last_name not in PURE_INDIAN_SURNAMES:
-        res = (False, f"Foreign / Global Name: '{full_name}' preserved")
+    if prefetched_db_hits and (full_name in prefetched_db_hits or norm_name in prefetched_db_hits):
+        hit = prefetched_db_hits.get(full_name) or prefetched_db_hits.get(norm_name)
+        is_ind = bool(hit["is_indian"])
+        reason = hit.get("reason") or ""
         with _indian_name_cache_lock:
-            _indian_name_cache[norm_name] = res
-        return res
+            _indian_name_cache[norm_name] = (is_ind, reason)
+        return is_ind, reason
 
-    # 3. Check for unmistakable Pure Indian surnames
-    for ind_sur in PURE_INDIAN_SURNAMES:
-        if ind_sur == last_name or (len(name_parts) > 1 and ind_sur in [p.lower() for p in name_parts]):
-            res = (True, f"Demographic Filter: Pure Indian Name Origin ('{ind_sur.title()}')")
+    if connection and not prefetched_db_hits:
+        ensure_indian_surnames_seeded(connection)
+        db_hit = lookup_indian_names_batch([full_name], connection)
+        if full_name in db_hit:
+            is_ind = bool(db_hit[full_name]["is_indian"])
+            reason = db_hit[full_name].get("reason") or ""
             with _indian_name_cache_lock:
-                _indian_name_cache[norm_name] = res
-            return res
+                _indian_name_cache[norm_name] = (is_ind, reason)
+            return is_ind, reason
 
-    # Default conservative policy: Non-Indian or Ambiguous is PRESERVED
-    res = (False, f"Global Name: '{full_name}' preserved")
-    with _indian_name_cache_lock:
-        _indian_name_cache[norm_name] = res
-    return res
+    verdict, reason = classify_name_local(full_name, connection=connection)
+    if verdict == "indian":
+        return True, reason
+    return False, reason
 
 
 # ============================================================
@@ -910,29 +2273,31 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
             "low_conf": 0,
         }
 
-    client = OpenAI(api_key=OPENAI_API_KEY, timeout=8.0)
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=35.0)
     user_prompt = "Classify these titles:\n" + "\n".join(f"{i+1}. {t}" for i, t in enumerate(novel_titles))
 
     t0 = time.perf_counter()
-    try:
-        response = client.chat.completions.create(
-            model=OPENAI_DOMAIN_MODEL,
-            messages=[
-                {"role": "system", "content": LLM_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=1500,
-            temperature=0.0
-        )
-        latency_ms = (time.perf_counter() - t0) * 1000
-        raw_text = response.choices[0].message.content or ""
-        raw_text = raw_text.replace("```csv", "").replace("```", "").strip()
-        usage = response.usage
-        prompt_tokens = usage.prompt_tokens
-        comp_tokens = usage.completion_tokens
-        total_tokens = usage.total_tokens
-    except Exception as e:
-        print(f"[LLM Error] Failed to classify novel titles with {OPENAI_DOMAIN_MODEL}: {e}", flush=True)
+    response = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=OPENAI_DOMAIN_MODEL,
+                messages=[
+                    {"role": "system", "content": LLM_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=1500,
+                temperature=0.0
+            )
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1.0)
+
+    if not response:
+        print(f"[LLM Error] Failed to classify novel titles with {OPENAI_DOMAIN_MODEL}: {last_err}", flush=True)
         return {}, {
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -942,6 +2307,14 @@ def classify_novel_titles_compact_llm(novel_titles: list[str], connection=None) 
             "med_conf": 0,
             "low_conf": 0,
         }
+
+    latency_ms = (time.perf_counter() - t0) * 1000
+    raw_text = response.choices[0].message.content or ""
+    raw_text = raw_text.replace("```csv", "").replace("```", "").strip()
+    usage = response.usage
+    prompt_tokens = usage.prompt_tokens
+    comp_tokens = usage.completion_tokens
+    total_tokens = usage.total_tokens
 
     parsed_items = {}
     csv_reader = csv.reader(io.StringIO(raw_text))
@@ -1063,32 +2436,42 @@ def classify_names_compact_llm(names: list[str], connection=None) -> tuple[dict[
     if not names or not OPENAI_API_KEY:
         return {}, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0}
 
-    client = OpenAI(api_key=OPENAI_API_KEY, timeout=8.0)
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=35.0)
     user_prompt = "Classify these names:\n" + "\n".join(f"{i+1}. {n}" for i, n in enumerate(names))
 
     t0 = time.perf_counter()
-    try:
-        response = client.chat.completions.create(
-            model=OPENAI_DOMAIN_MODEL,
-            messages=[
-                {"role": "system", "content": DEMOGRAPHIC_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=1500,
-            temperature=0.0
-        )
-        latency_ms = (time.perf_counter() - t0) * 1000
-        raw_text = (response.choices[0].message.content or "").replace("```csv", "").replace("```", "").strip()
-        usage = response.usage
-        token_stats = {
-            "prompt_tokens": usage.prompt_tokens,
-            "completion_tokens": usage.completion_tokens,
-            "total_tokens": usage.total_tokens,
-            "latency_ms": round(latency_ms, 1)
-        }
-    except Exception as e:
-        print(f"[LLM Error] Failed to classify names with {OPENAI_DOMAIN_MODEL}: {e}", flush=True)
+    response = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=OPENAI_DOMAIN_MODEL,
+                messages=[
+                    {"role": "system", "content": DEMOGRAPHIC_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=1500,
+                temperature=0.0
+            )
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1.0)
+
+    if not response:
+        print(f"[LLM Error] Failed to classify names with {OPENAI_DOMAIN_MODEL}: {last_err}", flush=True)
         return {}, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "latency_ms": 0.0}
+
+    latency_ms = (time.perf_counter() - t0) * 1000
+    raw_text = (response.choices[0].message.content or "").replace("```csv", "").replace("```", "").strip()
+    usage = response.usage
+    token_stats = {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        "latency_ms": round(latency_ms, 1)
+    }
 
     parsed_items = {}
     csv_reader = csv.reader(io.StringIO(raw_text))
@@ -1107,12 +2490,29 @@ def classify_names_compact_llm(names: list[str], connection=None) -> tuple[dict[
             continue
 
     classified_dict = {}
+    db_rows = []
     for idx, raw_name in enumerate(names, 1):
         norm_nm = normalize_text(raw_name)
         res = parsed_items.get(idx, {"is_indian": False, "reason": "Global / Foreign Name"})
         classified_dict[raw_name] = res
         with _indian_name_cache_lock:
             _indian_name_cache[norm_nm] = (res["is_indian"], res["reason"])
+        db_rows.append(
+            (
+                raw_name[:255],
+                norm_nm[:255],
+                "full_name",
+                1 if res["is_indian"] else 0,
+                "llm",
+                (res.get("reason") or "")[:255],
+            )
+        )
+
+    if db_rows and connection:
+        try:
+            persist_indian_name_classifications(connection, db_rows)
+        except Exception as e:
+            print(f"[DB Error] Failed to persist LLM name classifications: {e}", flush=True)
 
     return classified_dict, token_stats
 
@@ -1137,7 +2537,7 @@ class BackgroundTitleBatchWorker:
         self._thread.start()
 
     def enqueue(self, job_title: str) -> bool:
-        if not job_title or not OPENAI_API_KEY:
+        if not job_title:
             return False
         raw_title = job_title.strip()
         norm_title = normalize_text(raw_title)
@@ -1175,17 +2575,16 @@ class BackgroundTitleBatchWorker:
 
         try:
             with get_connection() as conn:
-                res_dict, token_stats = classify_novel_titles_compact_llm(titles_to_process, connection=conn)
+                queued = queue_pending_job_titles(titles_to_process, "background", conn)
+                conn.commit()
                 self._processed_batches += 1
                 self._processed_titles += len(titles_to_process)
-                est_cost = (token_stats['prompt_tokens'] * 0.00000015) + (token_stats['completion_tokens'] * 0.0000006)
                 print(
-                    f"\n[BackgroundBatchWorker] Evaluated {len(titles_to_process)} novel titles in {token_stats['latency_ms']}ms "
-                    f"({token_stats['total_tokens']} tokens, ${est_cost:.6f} USD). Persisted to MySQL `job_title_guardrails`.",
-                    flush=True
+                    f"\n[BackgroundBatchWorker] Queued {queued} novel title(s) to `pending_job_titles` (no scrape-time LLM).",
+                    flush=True,
                 )
         except Exception as e:
-            print(f"[BackgroundBatchWorker Error] Failed to process batch of {len(titles_to_process)} titles: {e}", flush=True)
+            print(f"[BackgroundBatchWorker Error] Failed to queue batch of {len(titles_to_process)} titles: {e}", flush=True)
 
     def _worker_loop(self):
         while self._running:
@@ -1317,10 +2716,69 @@ def lookup_job_title_in_db(job_title: str, connection=None) -> dict:
     }
 
 
-# Backwards compatibility helper
-def evaluate_job_title_with_ai(title: str = "", name: str = "", company: str = "", location: str = "", employee_count: int | None = None, apollo_id: str = "", connection=None, **kwargs) -> dict:
+# Backwards compatibility & detailed AI hierarchy evaluator
+def evaluate_job_title_with_ai(title: str = "", name: str = "", company: str = "", location: str = "", employee_count: int | None = None, apollo_id: str = "", connection=None, region: str = "", **kwargs) -> dict:
     job_t = title or kwargs.get("job_title", "")
-    return lookup_job_title_in_db(job_t, connection=connection)
+    t = (job_t or "").strip().lower()
+    reg = (region or kwargs.get("reg", "")).strip().upper()
+    loc = (location or "").lower()
+    is_anz_sg = reg in ("AU", "NZ", "SG") or any(k in loc for k in ("australia", "new zealand", "singapore", "sydney", "auckland", "melbourne"))
+
+    # Tier 7 Exclude: intern, recruiter, sdr, coordinator
+    if any(k in t for k in ("intern", "recruiter", "talent", "sdr", "sales development representative", "coordinator")):
+        return {"required": False, "role_type": None, "tier": 7, "confidence": "high", "status": "disqualified_title", "reason": "Tier 7 IC/Junior Exclusion"}
+
+    # Functional Exclusions
+    if any(k in t for k in ("human resources", "hr director", "hr manager", "people operations")):
+        return {"required": False, "role_type": None, "tier": 4, "confidence": "high", "status": "disqualified_title", "reason": "Functional Exclusion: HR"}
+    if any(k in t for k in ("legal counsel", "corporate legal", "compliance", "general counsel")):
+        return {"required": False, "role_type": None, "tier": 4, "confidence": "high", "status": "disqualified_title", "reason": "Functional Exclusion: Legal"}
+    if "sales" in t and not any(k in t for k in ("revops", "sales engineering", "solution", "tech")):
+        return {"required": False, "role_type": None, "tier": 3, "confidence": "high", "status": "disqualified_title", "reason": "Functional Exclusion: Sales"}
+    if "marketing" in t and not any(k in t for k in ("growth-ai", "martech", "product")):
+        return {"required": False, "role_type": None, "tier": 7, "confidence": "high", "status": "disqualified_title", "reason": "Functional Exclusion: Marketing"}
+
+    # Regional mappings
+    reg_syn = None
+    if is_anz_sg:
+        if "managing director" in t:
+            reg_syn = "Managing Director -> CEO equivalent (Tier 2)"
+            return {"required": True, "role_type": "decision_maker", "tier": 2, "confidence": "high", "status": "qualified", "regional_synonym_applied": reg_syn, "reason": "Regional Tier 2: AU Managing Director"}
+        if "country manager" in t:
+            reg_syn = "Country Manager -> Tier 3"
+            return {"required": True, "role_type": "decision_maker", "tier": 3, "confidence": "high", "status": "qualified", "regional_synonym_applied": reg_syn, "reason": "Regional Tier 3: SG Country Manager"}
+        if "head of" in t:
+            reg_syn = "Head of Product -> Tier 3/4"
+            return {"required": True, "role_type": "decision_maker", "tier": 3, "confidence": "high", "status": "qualified", "regional_synonym_applied": reg_syn, "reason": "Regional Tier 3/4: Startup Head of"}
+
+    # Keyword overrides (AI/Automation)
+    has_ai_override = any(k in t for k in ("applied ai", "ai", "automation", "agentic", "machine learning"))
+    is_startup = employee_count is not None and employee_count <= 50
+
+    # Tier 1 & 2
+    if any(k in t for k in ("founder", "owner", "ceo", "cto", "cio", "cpo", "coo", "president", "chief technology officer", "chief executive officer")):
+        return {"required": True, "role_type": "decision_maker", "tier": 1 if "founder" in t else 2, "confidence": "high", "status": "qualified", "reason": "Tier 1/2 Executive"}
+    # Tier 3
+    if any(k in t for k in ("vp", "vice president", "svp", "evp")):
+        return {"required": True, "role_type": "decision_maker", "tier": 3, "confidence": "high", "status": "qualified", "reason": "Tier 3 VP"}
+    # Tier 4
+    if any(k in t for k in ("director", "head of")):
+        return {"required": True, "role_type": "decision_maker", "tier": 4, "confidence": "high", "status": "qualified", "reason": "Tier 4 Director"}
+    # Tier 5 (Engineering Manager, Lead, Principal)
+    if any(k in t for k in ("engineering manager", "lead", "principal", "architect")):
+        rt = "decision_maker" if (is_startup or has_ai_override) else "evaluator"
+        return {"required": True, "role_type": rt, "tier": 5, "confidence": "high", "status": "qualified", "reason": f"Tier 5 Manager ({rt})"}
+    # Tier 6 (Product Manager, Program Manager, Manager)
+    if any(k in t for k in ("product manager", "program manager", "manager")):
+        rt = "decision_maker" if (is_startup or has_ai_override) else "evaluator"
+        return {"required": True, "role_type": rt, "tier": 6, "confidence": "high", "status": "qualified", "reason": f"Tier 6 Manager ({rt})"}
+
+    # Fallback to DB lookup
+    db_res = lookup_job_title_in_db(job_t, connection=connection)
+    db_res.setdefault("role_type", "decision_maker" if db_res.get("required") else None)
+    db_res.setdefault("tier", 4 if db_res.get("required") else 7)
+    db_res.setdefault("confidence", "high" if db_res.get("required") else "low")
+    return db_res
 
 
 # ============================================================
@@ -1337,10 +2795,36 @@ class ApolloContact(BaseModel):
     company: str = ""
     location: str | None = ""
     company_domain: str | None = None
+    domain: str | None = None
     website_link: str | None = None
     email: str | None = ""
     linkedin_url: str | None = None
     apollo_profile_url: str | None = None
+    employee_count: int | None = None
+
+    @model_validator(mode="after")
+    def _sync_domain_fields(self):
+        dom = self.company_domain or self.domain
+        if dom:
+            if not self.company_domain:
+                self.company_domain = dom
+            if not self.domain:
+                self.domain = dom
+        return self
+
+
+def lead_dict_to_contact(lead: dict[str, Any], key: str) -> ApolloContact:
+    """Map apollo_saved_leads row dict to ApolloContact for shared domain engine."""
+    return ApolloContact(
+        key=key,
+        apollo_id=str(lead.get("apollo_id") or ""),
+        name=str(lead.get("name") or ""),
+        job_title=str(lead.get("job_title") or ""),
+        company=str(lead.get("company") or ""),
+        company_domain=str(lead.get("company_domain") or ""),
+        website_link=str(lead.get("website_link") or ""),
+        email=str(lead.get("email") or ""),
+    )
 
 
 class ApolloMatchRequest(BaseModel):
@@ -1348,6 +2832,7 @@ class ApolloMatchRequest(BaseModel):
     batch: str = "batch_1"
     title_guardrail_enabled: bool = True
     indian_name_guardrail_enabled: bool = True
+    page_number: int | None = None
 
 
 class SyncSavedLeadItem(BaseModel):
@@ -1358,18 +2843,23 @@ class SyncSavedLeadItem(BaseModel):
     job_title: str | None = ""
     company: str | None = ""
     domain: str | None = ""
+    company_domain: str | None = ""
     website_link: str | None = ""
     email: str | None = ""
     location: str | None = ""
     linkedin_url: str | None = ""
     apollo_profile_url: str | None = ""
     segment: str | None = ""
+    page_number: int | None = None
 
 
 class SyncSavedLeadsRequest(BaseModel):
     batch: str = "batch_1"
     contacts: list[SyncSavedLeadItem]
     replace_all: bool = False
+    cycle: str | None = ""
+    account_used: str | None = ""
+    page_number: int | None = None
 
 
 class EvaluatePendingTitlesRequest(BaseModel):
@@ -1387,10 +2877,8 @@ def health_check():
 @app.post("/evaluate-pending-batch")
 def evaluate_pending_titles(request: EvaluatePendingTitlesRequest):
     """
-    50-Item Threshold Batch LLM Evaluator:
-    Receives batch of novel unrecognized titles and candidate names accumulated in local storage,
-    evaluates both with LLM in 1-shot batch, persists classifications to database/caches,
-    and returns decisions so non-required leads and pure Indian names can be excluded.
+    Scrape-time queue only — no LLM. Stores unrecognized titles and ambiguous names in MySQL
+    for manage_batches audit [5]/[6]. Applies only definite local/DB name rules for exclusion.
     """
     titles_to_eval = request.titles or []
     names_to_eval = request.names or []
@@ -1402,83 +2890,66 @@ def evaluate_pending_titles(request: EvaluatePendingTitlesRequest):
             "title_results": {},
             "name_results": {},
             "total_titles_evaluated": 0,
-            "total_names_evaluated": 0
+            "total_names_evaluated": 0,
+            "queued_titles": 0,
+            "queued_names": 0,
         }
 
     final_title_results = {}
     final_name_results = {}
-    total_token_stats = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    queued_titles = 0
+    queued_names = 0
+    batch_tag = (request.batch or "batch_1").strip()
 
     with get_connection() as conn:
-        # 1. Batch Title Evaluation
+        ensure_indian_surnames_seeded(conn)
+        ensure_pending_job_titles_table(conn)
+
         if titles_to_eval:
-            unique_titles = list(set(t.strip() for t in titles_to_eval if t.strip()))
+            unique_titles = list({t.strip() for t in titles_to_eval if t.strip()})
+            queued_titles = queue_pending_job_titles(unique_titles, batch_tag, conn)
             db_res = lookup_job_titles_batch(unique_titles, connection=conn)
-            unresolved = [t for t in unique_titles if db_res.get(t, {}).get("status") == "not_recognized_title"]
-
-            llm_res = {}
-            llm_actually_failed = False
-            if unresolved and OPENAI_API_KEY:
-                llm_res, t_stats = classify_novel_titles_compact_llm(unresolved, connection=conn)
-                for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    total_token_stats[k] += t_stats.get(k, 0)
-                # Bug #3 Fix: Detect a genuine LLM failure — unresolved titles were sent but
-                # nothing came back. This prevents silent approval of unqualified contacts.
-                if not llm_res and unresolved:
-                    llm_actually_failed = True
-                    print(f"[LLM Warning] evaluate_pending_titles: LLM returned empty for {len(unresolved)} titles — marking as llm_failed to prevent silent bypass.", flush=True)
-
             for t in unique_titles:
-                norm_t = normalize_text(t)
-                if norm_t in llm_res:
-                    final_title_results[t] = llm_res[norm_t]
-                elif t in db_res and db_res[t].get("status") != "not_recognized_title":
+                if t in db_res and db_res[t].get("status") != "not_recognized_title":
                     final_title_results[t] = db_res[t]
-                elif llm_actually_failed and t in unresolved:
-                    # Bug #3 Fix: LLM genuinely failed — do NOT silently approve.
-                    # Return a distinct status so the frontend keeps these contacts pending for retry.
-                    final_title_results[t] = {
-                        "required": True,
-                        "status": "llm_failed",
-                        "segment": "Pending_Evaluation",
-                        "reason": "AI evaluation failed — will retry on next batch"
-                    }
                 else:
                     final_title_results[t] = {
                         "required": True,
-                        "status": "qualified",
-                        "segment": "Unclassified_Kept",
-                        "reason": "Preserved provisionally"
+                        "status": "pending_title_eval",
+                        "segment": "Pending_Evaluation",
+                        "reason": "Queued for batch title audit (no scrape-time LLM)",
                     }
 
-        # 2. Batch Demographic Name Evaluation
         if names_to_eval:
-            unique_names = list(set(n.strip() for n in names_to_eval if n.strip()))
-            unresolved_names = []
+            unique_names = list({n.strip() for n in names_to_eval if n.strip()})
+            db_name_hits = lookup_indian_names_batch(unique_names, conn)
+            ambiguous_names = []
             for n in unique_names:
-                norm_n = normalize_text(n)
-                with _indian_name_cache_lock:
-                    if norm_n in _indian_name_cache:
-                        is_ind, reason = _indian_name_cache[norm_n]
-                        final_name_results[n] = {"is_indian": is_ind, "reason": reason}
-                    else:
-                        is_ind, reason = is_unambiguous_pure_indian_name(n, connection=conn)
-                        if is_ind:
-                            final_name_results[n] = {"is_indian": True, "reason": reason}
-                        else:
-                            unresolved_names.append(n)
+                if n in db_name_hits:
+                    info = db_name_hits[n]
+                    final_name_results[n] = {"is_indian": info["is_indian"], "reason": info.get("reason", "")}
+                    continue
+                verdict, reason = classify_name_local(n, connection=conn)
+                if verdict == "indian":
+                    final_name_results[n] = {"is_indian": True, "reason": reason}
+                elif verdict == "foreign":
+                    final_name_results[n] = {"is_indian": False, "reason": reason}
+                else:
+                    ambiguous_names.append(n)
+                    final_name_results[n] = {
+                        "is_indian": False,
+                        "reason": "Queued for batch name audit (no scrape-time LLM)",
+                    }
+            if ambiguous_names:
+                queued_names = queue_pending_names(ambiguous_names, batch_tag, conn)
 
-            if unresolved_names and OPENAI_API_KEY:
-                llm_name_res, n_stats = classify_names_compact_llm(unresolved_names, connection=conn)
-                for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    total_token_stats[k] += n_stats.get(k, 0)
-                for n in unresolved_names:
-                    if n in llm_name_res:
-                        final_name_results[n] = llm_name_res[n]
-                    else:
-                        final_name_results[n] = {"is_indian": False, "reason": "Global Name preserved"}
+        conn.commit()
 
-    print(f"\n[ContactChecker] 50-Threshold LLM Batch: Evaluated {len(titles_to_eval)} titles and {len(names_to_eval)} names via {OPENAI_DOMAIN_MODEL}.", flush=True)
+    print(
+        f"\n[ContactChecker] Pending queue flush: {queued_titles} title(s), {queued_names} name(s) "
+        f"stored in DB (no LLM). Run manage_batches [5]/[6] to classify.",
+        flush=True,
+    )
     return {
         "status": "ok",
         "results": final_title_results,
@@ -1486,7 +2957,9 @@ def evaluate_pending_titles(request: EvaluatePendingTitlesRequest):
         "name_results": final_name_results,
         "total_titles_evaluated": len(titles_to_eval),
         "total_names_evaluated": len(names_to_eval),
-        "token_stats": total_token_stats
+        "queued_titles": queued_titles,
+        "queued_names": queued_names,
+        "token_stats": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
 
@@ -1509,7 +2982,7 @@ def get_detected_companies_list(limit: int = 100):
         ensure_detected_companies_table(conn)
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT `id`, `company_name`, `normalized_company`, `website_link`, `domain`, `created_at`
+                SELECT `id`, `company_name`, `normalized_company`, `website_link`, `domain`, `source`, `created_at`
                 FROM `detected_companies`
                 ORDER BY `id` DESC
                 LIMIT %s;
@@ -1524,7 +2997,8 @@ def get_detected_companies_list(limit: int = 100):
                         "normalized_company": r[2],
                         "website_link": r[3],
                         "domain": r[4],
-                        "created_at": str(r[5]),
+                        "source": r[5] or "",
+                        "created_at": str(r[6]),
                     }
                     for r in rows
                 ]
@@ -1535,62 +3009,760 @@ def ensure_apollo_saved_leads_table(conn):
     """Ensure the apollo_saved_leads table exists with batch and website_link columns."""
     try:
         with conn.cursor() as cur:
-            if is_mysql_conn(conn):
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS `apollo_saved_leads` (
-                        `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                        `batch` VARCHAR(64) NOT NULL DEFAULT 'batch_1',
-                        `apollo_id` VARCHAR(128) DEFAULT '',
-                        `name` VARCHAR(255) NOT NULL DEFAULT '',
-                        `first_name` VARCHAR(128) DEFAULT '',
-                        `last_name` VARCHAR(128) DEFAULT '',
-                        `job_title` VARCHAR(255) DEFAULT '',
-                        `company` VARCHAR(255) DEFAULT '',
-                        `company_domain` VARCHAR(255) DEFAULT '',
-                        `website_link` VARCHAR(512) DEFAULT '',
-                        `location` VARCHAR(255) DEFAULT '',
-                        `linkedin_url` VARCHAR(512) DEFAULT '',
-                        `apollo_profile_url` VARCHAR(512) DEFAULT '',
-                        `segment` VARCHAR(128) DEFAULT 'Required_Lead',
-                        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        INDEX `idx_batch` (`batch`),
-                        INDEX `idx_company_domain` (`company_domain`),
-                        UNIQUE KEY `unique_batch_lead` (`batch`(64), `apollo_id`(64), `company_domain`(128))
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-                """)
-                try:
-                    cur.execute("ALTER TABLE `apollo_saved_leads` ADD COLUMN `website_link` VARCHAR(512) DEFAULT '' AFTER `company_domain`;")
-                except Exception:
-                    pass
-            else:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS apollo_saved_leads (
-                        id SERIAL PRIMARY KEY,
-                        batch VARCHAR(64) NOT NULL DEFAULT 'batch_1',
-                        apollo_id VARCHAR(128) DEFAULT '',
-                        name VARCHAR(255) NOT NULL DEFAULT '',
-                        first_name VARCHAR(128) DEFAULT '',
-                        last_name VARCHAR(128) DEFAULT '',
-                        job_title VARCHAR(255) DEFAULT '',
-                        company VARCHAR(255) DEFAULT '',
-                        company_domain VARCHAR(255) DEFAULT '',
-                        website_link VARCHAR(512) DEFAULT '',
-                        location VARCHAR(255) DEFAULT '',
-                        linkedin_url VARCHAR(512) DEFAULT '',
-                        apollo_profile_url VARCHAR(512) DEFAULT '',
-                        segment VARCHAR(128) DEFAULT 'Required_Lead',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        CONSTRAINT unique_batch_lead UNIQUE (batch, apollo_id, company_domain)
-                    );
-                """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS `apollo_saved_leads` (
+                    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    `batch` VARCHAR(64) NOT NULL DEFAULT 'batch_1',
+                    `apollo_id` VARCHAR(128) DEFAULT '',
+                    `name` VARCHAR(255) NOT NULL DEFAULT '',
+                    `first_name` VARCHAR(128) DEFAULT '',
+                    `last_name` VARCHAR(128) DEFAULT '',
+                    `job_title` VARCHAR(255) DEFAULT '',
+                    `company` VARCHAR(255) DEFAULT '',
+                    `company_domain` VARCHAR(255) DEFAULT '',
+                    `website_link` VARCHAR(512) DEFAULT '',
+                    `location` VARCHAR(255) DEFAULT '',
+                    `linkedin_url` VARCHAR(512) DEFAULT '',
+                    `apollo_profile_url` VARCHAR(512) DEFAULT '',
+                    `segment` VARCHAR(128) DEFAULT 'Required_Lead',
+                    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX `idx_batch` (`batch`),
+                    INDEX `idx_company_domain` (`company_domain`),
+                    UNIQUE KEY `unique_batch_lead` (`batch`(64), `apollo_id`(64), `company_domain`(128))
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD COLUMN `website_link` VARCHAR(512) DEFAULT '' AFTER `company_domain`;")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD COLUMN `cycle` VARCHAR(64) NOT NULL DEFAULT '' AFTER `account_used`;")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD INDEX `idx_cycle` (`cycle`);")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD INDEX `idx_account_cycle` (`account_used`, `cycle`);")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD COLUMN `page_number` INT NULL DEFAULT NULL AFTER `batch`;")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD INDEX `idx_batch_page` (`batch`, `page_number`);")
+            except Exception:
+                pass
     except Exception as e:
         print(f"[ContactChecker] Notice: ensure apollo_saved_leads table: {e}", flush=True)
+
+
+def ensure_batch_enrichment_ledger_table(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `batch_enrichment_ledger` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `batch` VARCHAR(64) NOT NULL,
+                `saved_lead_id` BIGINT UNSIGNED NOT NULL,
+                `apollo_id` VARCHAR(128) DEFAULT '',
+                `company_domain` VARCHAR(255) DEFAULT '',
+                `login_email` VARCHAR(255) NOT NULL DEFAULT '',
+                `account_name` VARCHAR(128) DEFAULT '',
+                `session_id` VARCHAR(36) NOT NULL DEFAULT '',
+                `outcome` ENUM('email_found', 'no_email', 'no_match', 'api_error') NOT NULL,
+                `email` VARCHAR(255) DEFAULT '',
+                `email_status` VARCHAR(64) DEFAULT '',
+                `credits_charged` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+                `attempted_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY `uq_batch_lead` (`batch`, `saved_lead_id`),
+                INDEX `idx_batch_login` (`batch`, `login_email`),
+                INDEX `idx_batch_outcome` (`batch`, `outcome`),
+                INDEX `idx_company_domain_outcome` (`company_domain`, `outcome`),
+                INDEX `idx_session` (`session_id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """
+        )
+        try:
+            cur.execute("ALTER TABLE `batch_enrichment_ledger` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
+        except Exception:
+            pass
+
+
+def ensure_enrichment_run_audit_table(conn) -> None:
+    """Create the run-level audit table used by the interactive enricher."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `enrichment_run_audit` (
+                `run_id` CHAR(36) PRIMARY KEY,
+                `login_name` VARCHAR(255) NOT NULL,
+                `batch_tag` VARCHAR(64) NOT NULL,
+                `attempted_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `number_enriched` INT UNSIGNED NOT NULL DEFAULT 0,
+                `number_not_enriched` INT UNSIGNED NOT NULL DEFAULT 0,
+                `credits_used` DECIMAL(12,2) NOT NULL DEFAULT 0,
+                `credits_remaining_before` DECIMAL(12,2) DEFAULT NULL,
+                `run_status` VARCHAR(24) NOT NULL DEFAULT 'running',
+                `started_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `completed_at` DATETIME DEFAULT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX `idx_enrichment_run_login` (`login_name`, `started_at`),
+                INDEX `idx_enrichment_run_batch` (`batch_tag`, `started_at`),
+                INDEX `idx_enrichment_run_status` (`run_status`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """
+        )
+
+
+def start_enrichment_run(
+    conn,
+    login_name: str,
+    batch_tag: str,
+    credits_remaining_before: float | int | None,
+    run_id: str | None = None,
+) -> str:
+    """Insert a running audit record before any paid request is made."""
+    ensure_enrichment_run_audit_table(conn)
+    resolved_run_id = run_id or str(uuid.uuid4())
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO `enrichment_run_audit` (
+                `run_id`, `login_name`, `batch_tag`, `credits_remaining_before`, `run_status`
+            ) VALUES (%s, %s, %s, %s, 'running')
+            """,
+            (
+                resolved_run_id,
+                str(login_name or "")[:255],
+                str(batch_tag or "")[:64],
+                credits_remaining_before,
+            ),
+        )
+    return resolved_run_id
+
+
+def update_enrichment_run(
+    conn,
+    run_id: str,
+    attempted_leads: int,
+    number_enriched: int,
+    credits_used: float | int,
+    run_status: str = "running",
+) -> None:
+    """Persist the latest run totals; safe to call after every chunk."""
+    attempted = max(0, int(attempted_leads or 0))
+    enriched = max(0, min(attempted, int(number_enriched or 0)))
+    status = run_status if run_status in {"running", "completed", "partial", "failed", "cancelled"} else "failed"
+    completed = status != "running"
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE `enrichment_run_audit`
+            SET `attempted_leads` = %s,
+                `number_enriched` = %s,
+                `number_not_enriched` = %s,
+                `credits_used` = %s,
+                `run_status` = %s,
+                `completed_at` = IF(%s, COALESCE(`completed_at`, NOW()), NULL)
+            WHERE `run_id` = %s
+            """,
+            (attempted, enriched, attempted - enriched, credits_used, status, completed, run_id),
+        )
+
+
+def ensure_lead_enrichment_state_table(conn) -> None:
+    """Create non-destructive scheduling state for carry-forward/later decisions."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `lead_enrichment_state` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `source_table` VARCHAR(32) NOT NULL,
+                `batch` VARCHAR(64) NOT NULL,
+                `saved_lead_id` BIGINT UNSIGNED NOT NULL,
+                `decision` VARCHAR(24) NOT NULL,
+                `target_cycle` VARCHAR(64) NOT NULL DEFAULT '',
+                `decided_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY `uq_lead_enrichment_state` (`source_table`, `batch`, `saved_lead_id`),
+                INDEX `idx_enrichment_state_cycle` (`decision`, `target_cycle`),
+                INDEX `idx_enrichment_state_batch` (`batch`, `decision`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """
+        )
+
+
+def record_lead_enrichment_decisions(
+    conn,
+    source_table: str,
+    batch: str,
+    saved_lead_ids: list[int],
+    decision: str,
+    target_cycle: str = "",
+) -> int:
+    """Persist a batch decision without changing the lead's source batch/cycle."""
+    if decision not in {"carry_forward", "decide_later"}:
+        raise ValueError(f"Unsupported enrichment decision: {decision}")
+    ids = sorted({int(lead_id) for lead_id in saved_lead_ids if lead_id})
+    if not ids:
+        return 0
+    ensure_lead_enrichment_state_table(conn)
+    rows = [
+        (str(source_table or "")[:32], str(batch or "")[:64], lead_id, decision, str(target_cycle or "")[:64])
+        for lead_id in ids
+    ]
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `lead_enrichment_state` (
+                `source_table`, `batch`, `saved_lead_id`, `decision`, `target_cycle`
+            ) VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                `decision` = VALUES(`decision`),
+                `target_cycle` = VALUES(`target_cycle`),
+                `decided_at` = CURRENT_TIMESTAMP
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def fetch_lead_enrichment_decisions(
+    conn,
+    source_table: str,
+    batch: str,
+    ensure_table: bool = True,
+) -> dict[int, dict[str, str]]:
+    if ensure_table:
+        ensure_lead_enrichment_state_table(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT `saved_lead_id`, `decision`, `target_cycle`
+            FROM `lead_enrichment_state`
+            WHERE `source_table` = %s AND `batch` = %s
+            """,
+            (source_table, batch),
+        )
+        rows = cur.fetchall()
+    return {
+        int(row[0]): {"decision": str(row[1] or ""), "target_cycle": str(row[2] or "")}
+        for row in rows
+    }
+
+
+def ensure_million_verifier_log_table(conn) -> None:
+    """Create the MillionVerifier log table to track verification batches, cycles, and outcomes."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `million_verifier_log` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `log_name` VARCHAR(255) NOT NULL DEFAULT '',
+                `login_name` VARCHAR(255) NOT NULL DEFAULT '',
+                `account_name` VARCHAR(128) NOT NULL DEFAULT '',
+                `batch_name` VARCHAR(128) NOT NULL DEFAULT '',
+                `cycle` VARCHAR(64) NOT NULL DEFAULT '',
+                `leads_entered` INT UNSIGNED NOT NULL DEFAULT 0,
+                `good_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `discarded_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `bad_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `catch_all_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `risky_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `file_id` VARCHAR(64) NOT NULL DEFAULT '',
+                `file_name` VARCHAR(255) NOT NULL DEFAULT '',
+                `status` VARCHAR(32) NOT NULL DEFAULT 'completed',
+                `crm_created` INT UNSIGNED NOT NULL DEFAULT 0,
+                `crm_updated` INT UNSIGNED NOT NULL DEFAULT 0,
+                `crm_tag` VARCHAR(128) NOT NULL DEFAULT '',
+                `file_path` VARCHAR(512) NOT NULL DEFAULT '',
+                `verified_at` DATETIME DEFAULT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX `idx_mv_login_cycle` (`login_name`, `cycle`),
+                INDEX `idx_mv_log_name` (`log_name`),
+                INDEX `idx_mv_batch` (`batch_name`),
+                INDEX `idx_mv_file_id` (`file_id`),
+                INDEX `idx_mv_status` (`status`),
+                INDEX `idx_mv_created_at` (`created_at`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """
+        )
+        try:
+            cur.execute("ALTER TABLE `million_verifier_log` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
+        except Exception:
+            pass
+
+
+def record_million_verifier_log(
+    conn,
+    log_name: str = "",
+    batch_name: str = "",
+    cycle: str = "",
+    leads_entered: int = 0,
+    good_leads: int = 0,
+    discarded_leads: int = 0,
+    bad_leads: int = 0,
+    login_name: str = "",
+    account_name: str = "",
+    catch_all_leads: int = 0,
+    risky_leads: int = 0,
+    file_id: str = "",
+    file_name: str = "",
+    status: str = "completed",
+    crm_created: int = 0,
+    crm_updated: int = 0,
+    crm_tag: str = "",
+    file_path: str = "",
+    verified_at: Any = None,
+    created_at: Any = None,
+) -> int:
+    """Insert or update a verification run record in million_verifier_log."""
+    ensure_million_verifier_log_table(conn)
+    resolved_login = (login_name or log_name or "").strip()
+    resolved_log_name = (log_name or login_name or "").strip()
+
+    with conn.cursor() as cur:
+        # Check if record with same file_id exists (if file_id is provided and non-empty)
+        if file_id and str(file_id).strip():
+            cur.execute(
+                "SELECT `id` FROM `million_verifier_log` WHERE `file_id` = %s LIMIT 1",
+                (str(file_id).strip(),),
+            )
+            existing = cur.fetchone()
+            if existing:
+                row_id = existing[0]
+                cur.execute(
+                    """
+                    UPDATE `million_verifier_log`
+                    SET `log_name` = %s,
+                        `login_name` = %s,
+                        `account_name` = COALESCE(NULLIF(%s, ''), `account_name`),
+                        `batch_name` = %s,
+                        `cycle` = %s,
+                        `leads_entered` = %s,
+                        `good_leads` = %s,
+                        `discarded_leads` = %s,
+                        `bad_leads` = %s,
+                        `catch_all_leads` = %s,
+                        `risky_leads` = %s,
+                        `file_name` = %s,
+                        `status` = %s,
+                        `crm_created` = GREATEST(`crm_created`, %s),
+                        `crm_updated` = GREATEST(`crm_updated`, %s),
+                        `crm_tag` = COALESCE(NULLIF(%s, ''), `crm_tag`),
+                        `file_path` = COALESCE(NULLIF(%s, ''), `file_path`),
+                        `verified_at` = COALESCE(%s, `verified_at`)
+                    WHERE `id` = %s
+                    """,
+                    (
+                        resolved_log_name[:255],
+                        resolved_login[:255],
+                        account_name[:128],
+                        str(batch_name or "")[:128],
+                        str(cycle or "")[:64],
+                        int(leads_entered or 0),
+                        int(good_leads or 0),
+                        int(discarded_leads or 0),
+                        int(bad_leads or 0),
+                        int(catch_all_leads or 0),
+                        int(risky_leads or 0),
+                        str(file_name or "")[:255],
+                        str(status or "completed")[:32],
+                        int(crm_created or 0),
+                        int(crm_updated or 0),
+                        str(crm_tag or "")[:128],
+                        str(file_path or "")[:512],
+                        verified_at,
+                        row_id,
+                    ),
+                )
+                conn.commit()
+                return row_id
+
+        # Insert new record
+        cur.execute(
+            """
+            INSERT INTO `million_verifier_log` (
+                `log_name`, `login_name`, `account_name`, `batch_name`, `cycle`,
+                `leads_entered`, `good_leads`, `discarded_leads`, `bad_leads`,
+                `catch_all_leads`, `risky_leads`, `file_id`, `file_name`, `status`,
+                `crm_created`, `crm_updated`, `crm_tag`, `file_path`,
+                `verified_at`, `created_at`
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, COALESCE(%s, NOW())
+            )
+            """,
+            (
+                resolved_log_name[:255],
+                resolved_login[:255],
+                str(account_name or "")[:128],
+                str(batch_name or "")[:128],
+                str(cycle or "")[:64],
+                int(leads_entered or 0),
+                int(good_leads or 0),
+                int(discarded_leads or 0),
+                int(bad_leads or 0),
+                int(catch_all_leads or 0),
+                int(risky_leads or 0),
+                str(file_id or "")[:64],
+                str(file_name or "")[:255],
+                str(status or "completed")[:32],
+                int(crm_created or 0),
+                int(crm_updated or 0),
+                str(crm_tag or "")[:128],
+                str(file_path or "")[:512],
+                verified_at,
+                created_at,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+
+def backfill_enrichment_ledger_from_saved_leads(conn, table_name: str = "apollo_saved_leads") -> int:
+    """Seed ledger from rows that already have enriched_at (one-time / idempotent)."""
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
+    ensure_batch_enrichment_ledger_table(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO `batch_enrichment_ledger` (
+                `batch`, `saved_lead_id`, `apollo_id`, `company_domain`,
+                `login_email`, `account_name`, `session_id`, `outcome`,
+                `email`, `email_status`, `credits_charged`, `attempted_at`
+            )
+            SELECT
+                `batch`,
+                `id`,
+                COALESCE(`apollo_id`, ''),
+                COALESCE(`company_domain`, ''),
+                COALESCE(NULLIF(`account_used`, ''), 'unknown'),
+                COALESCE(`account_used`, ''),
+                'backfill',
+                IF(COALESCE(`email`, '') != '', 'email_found', 'no_email'),
+                COALESCE(`email`, ''),
+                COALESCE(`email_status`, ''),
+                COALESCE(`credits_charged`, 0),
+                COALESCE(`enriched_at`, NOW())
+            FROM `{target_table}`
+            WHERE `enriched_at` IS NOT NULL
+            ON DUPLICATE KEY UPDATE `saved_lead_id` = `saved_lead_id`
+            """
+        )
+        inserted = cur.rowcount
+    conn.commit()
+    return int(inserted or 0)
+
+
+def record_enrichment_ledger_attempts(
+    conn,
+    batch: str,
+    session_id: str,
+    login_email: str,
+    account_name: str,
+    chunk_leads: list[dict],
+    api_results: list[dict],
+) -> int:
+    """Write one ledger row per lead in chunk (matched or not)."""
+    if not chunk_leads:
+        return 0
+    ensure_batch_enrichment_ledger_table(conn)
+    by_db_id = {r["db_id"]: r for r in api_results if r.get("db_id")}
+    rows = []
+    for lead in chunk_leads:
+        db_id = lead.get("id")
+        if not db_id:
+            continue
+        match = by_db_id.get(db_id)
+        if match:
+            email = (match.get("email") or "").strip()
+            email_status = (match.get("email_status") or "").strip()
+            credits = int(match.get("credits_charged") or 0)
+            outcome = "email_found" if email and email_status != "unavailable" else "no_email"
+        else:
+            email = ""
+            email_status = ""
+            credits = 0
+            outcome = "no_match"
+        rows.append(
+            (
+                str(batch or "")[:64],
+                int(db_id),
+                str(lead.get("apollo_id") or "")[:128],
+                str(lead.get("company_domain") or "")[:255],
+                str(login_email or "")[:255],
+                str(account_name or "")[:128],
+                str(session_id or "")[:36],
+                outcome,
+                email[:255],
+                email_status[:64],
+                credits,
+            )
+        )
+    if not rows:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `batch_enrichment_ledger` (
+                `batch`, `saved_lead_id`, `apollo_id`, `company_domain`,
+                `login_email`, `account_name`, `session_id`, `outcome`,
+                `email`, `email_status`, `credits_charged`
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                `login_email` = VALUES(`login_email`),
+                `account_name` = VALUES(`account_name`),
+                `session_id` = VALUES(`session_id`),
+                `outcome` = VALUES(`outcome`),
+                `email` = VALUES(`email`),
+                `email_status` = VALUES(`email_status`),
+                `credits_charged` = VALUES(`credits_charged`),
+                `attempted_at` = CURRENT_TIMESTAMP
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def fetch_unattempted_leads_for_batch(conn, batch: str, table_name: str = "apollo_saved_leads") -> list[dict[str, Any]]:
+    """Leads in batch with no row in batch_enrichment_ledger."""
+    target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
+    ensure_batch_enrichment_ledger_table(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT l.id, l.apollo_id, l.name, l.first_name, l.last_name,
+                   l.job_title, l.company, l.company_domain, l.website_link, l.segment, l.email
+            FROM `{target_table}` l
+            LEFT JOIN `batch_enrichment_ledger` e
+              ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
+            WHERE l.batch = %s AND e.id IS NULL
+            ORDER BY l.id ASC
+            """,
+            (batch,),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "id": r[0],
+            "apollo_id": r[1],
+            "name": r[2],
+            "first_name": r[3],
+            "last_name": r[4],
+            "job_title": r[5],
+            "company": r[6],
+            "company_domain": r[7],
+            "website_link": r[8],
+            "segment": r[9],
+            "email": r[10],
+        }
+        for r in rows
+    ]
+
+
+def get_batch_enrichment_summary(conn, batch: str) -> dict[str, Any]:
+    ensure_batch_enrichment_ledger_table(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                COUNT(*) AS attempted,
+                SUM(`credits_charged`) AS credits,
+                SUM(`outcome` = 'email_found') AS emails_found,
+                SUM(`outcome` IN ('no_email', 'no_match')) AS no_email
+            FROM `batch_enrichment_ledger`
+            WHERE `batch` = %s
+            """,
+            (batch,),
+        )
+        row = cur.fetchone() or (0, 0, 0, 0)
+    return {
+        "attempted": int(row[0] or 0),
+        "credits_spent": int(row[1] or 0),
+        "emails_found": int(row[2] or 0),
+        "no_email": int(row[3] or 0),
+    }
+
+
+def _filter_sync_contacts_one_per_domain(contacts: list, batch_tag: str, cur) -> list:
+    """One lead per canonical domain per batch; highest seniority wins (matches extension election)."""
+    winners: dict[str, tuple[int, Any]] = {}
+    no_domain: list[Any] = []
+
+    for c in contacts:
+        target_dom = canonical_lookup_domain(ApolloContact(
+            key="sync_filter",
+            company_domain=(getattr(c, "company_domain", None) or getattr(c, "domain", None) or "").strip(),
+            website_link=(c.website_link or "").strip(),
+            email=(c.email or "").strip(),
+        ))
+        if not target_dom:
+            no_domain.append(c)
+            continue
+        dom_l = target_dom.lower()
+        score = get_seniority_score(c.job_title or "")
+        prev = winners.get(dom_l)
+        if not prev or score > prev[0]:
+            winners[dom_l] = (score, c)
+
+    accepted: list[Any] = []
+    for dom_l, (score, c) in winners.items():
+        cur.execute(
+            "SELECT `job_title` FROM `apollo_saved_leads` WHERE `batch` = %s AND LOWER(`company_domain`) = %s",
+            (batch_tag, dom_l),
+        )
+        existing = cur.fetchall()
+        if existing:
+            best_db = max(get_seniority_score(str(r[0] or "")) for r in existing)
+            if score < best_db:
+                continue
+            cur.execute(
+                "DELETE FROM `apollo_saved_leads` WHERE `batch` = %s AND LOWER(`company_domain`) = %s",
+                (batch_tag, dom_l),
+            )
+        accepted.append(c)
+
+    return accepted + no_domain
+
+
+class ExtensionActivityRequest(BaseModel):
+    event_type: str
+    account_email: str | None = ""
+    cycle_tag: str | None = ""
+    batch: str | None = ""
+    search_word: str | None = ""
+    search_bar_word: str | None = ""
+    page_number: int | None = None
+    total_on_page: int | None = 0
+    required_on_page: int | None = 0
+    not_required_on_page: int | None = 0
+    existing_on_page: int | None = 0
+    guardrail_rejected_on_page: int | None = 0
+    collected_total: int | None = None
+    page_url: str | None = ""
+    breakdown_json: Any = None
+
+
+def ensure_extension_activity_log_table(conn):
+    """Ensure the extension_activity_log table exists."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS `extension_activity_log` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `event_type` VARCHAR(32) NOT NULL,
+                `account_email` VARCHAR(255) NOT NULL DEFAULT '',
+                `cycle_tag` VARCHAR(64) NOT NULL DEFAULT '',
+                `batch` VARCHAR(128) NOT NULL DEFAULT '',
+                `search_word` VARCHAR(255) NOT NULL DEFAULT '',
+                `search_bar_word` VARCHAR(255) NOT NULL DEFAULT '',
+                `page_number` INT NULL,
+                `total_on_page` INT NULL DEFAULT 0,
+                `required_on_page` INT NULL DEFAULT 0,
+                `not_required_on_page` INT NULL DEFAULT 0,
+                `existing_on_page` INT NULL DEFAULT 0,
+                `guardrail_rejected_on_page` INT NULL DEFAULT 0,
+                `collected_total` INT NULL,
+                `page_url` VARCHAR(512) NOT NULL DEFAULT '',
+                `breakdown_json` LONGTEXT NULL,
+                `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX `idx_account_cycle` (`account_email`, `cycle_tag`),
+                INDEX `idx_event_created` (`event_type`, `created_at`),
+                INDEX `idx_batch_page` (`batch`, `page_number`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """)
+        for col_name, col_def in [
+            ("search_word", "VARCHAR(255) NOT NULL DEFAULT '' AFTER `batch`"),
+            ("search_bar_word", "VARCHAR(255) NOT NULL DEFAULT '' AFTER `search_word`"),
+            ("total_on_page", "INT NULL DEFAULT 0 AFTER `page_number`"),
+            ("not_required_on_page", "INT NULL DEFAULT 0 AFTER `required_on_page`"),
+            ("existing_on_page", "INT NULL DEFAULT 0 AFTER `not_required_on_page`"),
+            ("guardrail_rejected_on_page", "INT NULL DEFAULT 0 AFTER `existing_on_page`"),
+            ("breakdown_json", "LONGTEXT NULL AFTER `page_url`"),
+        ]:
+            try:
+                cur.execute(f"ALTER TABLE `extension_activity_log` ADD COLUMN `{col_name}` {col_def};")
+            except Exception:
+                pass
+        try:
+            cur.execute("ALTER TABLE `extension_activity_log` ADD INDEX `idx_batch_page` (`batch`, `page_number`);")
+        except Exception:
+            pass
+
+
+@app.post("/log-extension-activity")
+def log_extension_activity(request: ExtensionActivityRequest):
+    """Record an extension event (start, login selected, page loaded/advanced, page evaluated) with login, cycle, search word, search bar word and lead counts."""
+    with get_connection() as conn:
+        ensure_extension_activity_log_table(conn)
+
+        breakdown_str = None
+        if request.breakdown_json is not None:
+            if isinstance(request.breakdown_json, str):
+                breakdown_str = request.breakdown_json
+            else:
+                try:
+                    breakdown_str = json.dumps(request.breakdown_json)
+                except Exception:
+                    breakdown_str = str(request.breakdown_json)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO `extension_activity_log`
+                    (`event_type`, `account_email`, `cycle_tag`, `batch`,
+                     `search_word`, `search_bar_word`, `page_number`,
+                     `total_on_page`, `required_on_page`, `not_required_on_page`,
+                     `existing_on_page`, `guardrail_rejected_on_page`,
+                     `collected_total`, `page_url`, `breakdown_json`)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    (request.event_type or "")[:32],
+                    (request.account_email or "").strip()[:255],
+                    (request.cycle_tag or "").strip()[:64],
+                    (request.batch or "").strip()[:128],
+                    (request.search_word or "").strip()[:255],
+                    (request.search_bar_word or "").strip()[:255],
+                    request.page_number,
+                    request.total_on_page or 0,
+                    request.required_on_page or 0,
+                    request.not_required_on_page or 0,
+                    request.existing_on_page or 0,
+                    request.guardrail_rejected_on_page or 0,
+                    request.collected_total,
+                    (request.page_url or "")[:512],
+                    breakdown_str,
+                ),
+            )
+        conn.commit()
+    return {"status": "ok"}
 
 
 @app.post("/sync-saved-leads")
 def sync_saved_leads(request: SyncSavedLeadsRequest):
     """Direct sync endpoint: immediately persists all collected required leads into MySQL apollo_saved_leads with batch name and website_link."""
     batch_tag = str(request.batch or "batch_1").strip()[:64]
+    cycle_val = (request.cycle or "").strip()
+    account_used_val = (request.account_used or "").strip()
+
+    # If not passed explicitly, infer account_used and cycle if batch_tag matches: login(cycle)
+    if not cycle_val or not account_used_val:
+        m = re.match(r"^([^()]+)\s*\(([^)]+)\)", batch_tag)
+        if m:
+            if not account_used_val:
+                account_used_val = m.group(1).strip()
+            if not cycle_val:
+                cycle_val = m.group(2).strip()
 
     with get_connection() as conn:
         ensure_apollo_saved_leads_table(conn)
@@ -1599,35 +3771,53 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
             if not request.contacts:
                 return {"status": "ok", "synced": 0}
 
-            rows_to_insert = []
-            for c in request.contacts:
-                w_link = _s(c.website_link, 512)
-                if not w_link and c.domain:
-                    w_link = f"https://{_s(c.domain, 250)}"
+            contacts_to_sync = _filter_sync_contacts_one_per_domain(request.contacts, batch_tag, cur)
 
+            rows_to_insert = []
+            for idx, c in enumerate(contacts_to_sync):
+                target_dom = canonical_lookup_domain(ApolloContact(
+                    key=f"sync_{idx}",
+                    company_domain=(getattr(c, "company_domain", None) or getattr(c, "domain", None) or "").strip(),
+                    website_link=(c.website_link or "").strip(),
+                    email=(c.email or "").strip(),
+                ))
+                w_link = _s(c.website_link, 512)
+                if not w_link and target_dom:
+                    w_link = f"https://{_s(target_dom, 250)}"
+
+                apollo_id_val = str(c.apollo_id or "").strip()
+                if not apollo_id_val or apollo_id_val.startswith("apollo-row-"):
+                    norm_n = normalize_text(c.name or "")
+                    apollo_id_val = f"name_{norm_n}" if norm_n else f"lead_{int(time.time() * 1000)}_{idx}"
+
+                lead_page = getattr(c, "page_number", None) if getattr(c, "page_number", None) is not None else request.page_number
                 rows_to_insert.append((
                     batch_tag,
-                    _s(c.apollo_id, 128),
+                    lead_page,
+                    _s(apollo_id_val, 128),
                     _s(c.name, 250),
                     _s(c.first_name, 128),
                     _s(c.last_name, 128),
                     _s(c.job_title, 250),
                     _s(c.company, 250),
-                    _s(c.domain, 250),
+                    _s(target_dom, 250),
                     w_link,
                     _s(c.location, 250),
                     _s(c.linkedin_url, 512),
                     _s(c.apollo_profile_url, 512),
-                    _s(c.segment or "Required_Lead", 128)
+                    _s(c.segment or "Required_Lead", 128),
+                    _s(account_used_val, 128),
+                    _s(cycle_val, 64),
                 ))
 
             sql = """
                 INSERT INTO `apollo_saved_leads` (
-                    `batch`, `apollo_id`, `name`, `first_name`, `last_name`,
+                    `batch`, `page_number`, `apollo_id`, `name`, `first_name`, `last_name`,
                     `job_title`, `company`, `company_domain`, `website_link`, `location`,
-                    `linkedin_url`, `apollo_profile_url`, `segment`
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    `linkedin_url`, `apollo_profile_url`, `segment`, `account_used`, `cycle`
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
+                    `page_number` = IF(VALUES(`page_number`) IS NOT NULL, VALUES(`page_number`), `page_number`),
                     `name` = VALUES(`name`),
                     `first_name` = VALUES(`first_name`),
                     `last_name` = VALUES(`last_name`),
@@ -1635,9 +3825,31 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
                     `company` = VALUES(`company`),
                     `company_domain` = VALUES(`company_domain`),
                     `website_link` = VALUES(`website_link`),
-                    `segment` = VALUES(`segment`);
+                    `segment` = VALUES(`segment`),
+                    `account_used` = IF(VALUES(`account_used`) != '', VALUES(`account_used`), `account_used`),
+                    `cycle` = IF(VALUES(`cycle`) != '', VALUES(`cycle`), `cycle`);
             """
             cur.executemany(sql, rows_to_insert)
+
+    # Immediately update in-memory trie, CRM domain cache and person cache so re-scrapes are caught instantly
+    for c in contacts_to_sync:
+        target_dom = (getattr(c, "company_domain", None) or getattr(c, "domain", None) or "").strip().lower()
+        if target_dom:
+            slug = _strip_tld(target_dom)
+            cslug = _clean_slug(target_dom)
+            if slug:
+                _domain_trie.insert(slug, target_dom)
+            if cslug and cslug != slug:
+                _domain_trie.insert(cslug, target_dom)
+            with _crm_domain_cache_lock:
+                _crm_domain_cache[target_dom] = True
+            if c.name:
+                norm_nm = normalize_text(c.name)
+                with _person_domain_cache_lock:
+                    if norm_nm not in _person_domain_cache:
+                        _person_domain_cache[norm_nm] = []
+                    if target_dom not in _person_domain_cache[norm_nm]:
+                        _person_domain_cache[norm_nm].append(target_dom)
 
     print(f"\n[ContactChecker] Synced {len(rows_to_insert)} lead(s) with website links into MySQL table `apollo_saved_leads` under batch '{batch_tag}'.", flush=True)
     return {"status": "ok", "synced": len(rows_to_insert)}
@@ -1668,6 +3880,19 @@ def get_saved_leads_batches():
             }
 
 
+@app.post("/invalidate-batch-cache")
+def invalidate_batch_cache(batch: str | None = None):
+    """Clear in-memory company election cache for a batch (or all batches) after external database changes."""
+    with _batch_seen_companies_lock:
+        if batch:
+            b_tag = str(batch).strip()
+            _batch_seen_companies.pop(b_tag, None)
+            return {"status": "ok", "invalidated_batch": b_tag}
+        else:
+            _batch_seen_companies.clear()
+            return {"status": "ok", "invalidated_all": True}
+
+
 @app.post("/match-apollo")
 def match_apollo(request: ApolloMatchRequest):
     global _batch_counter
@@ -1685,9 +3910,11 @@ def match_apollo(request: ApolloMatchRequest):
 
     batch_tag = str(request.batch or "batch_1").strip()
     with _batch_seen_companies_lock:
-        if batch_tag not in _batch_seen_companies:
-            _batch_seen_companies[batch_tag] = {}
-        seen_required_companies = _batch_seen_companies[batch_tag]
+        if len(_batch_seen_companies) > 100 and batch_tag not in _batch_seen_companies:
+            # Keep the 50 most recent batches to protect RAM over long-running periods
+            oldest_keys = list(_batch_seen_companies.keys())[:50]
+            for k in oldest_keys:
+                _batch_seen_companies.pop(k, None)
 
     max_contacts_per_comp = int(os.getenv("MAX_CONTACTS_PER_COMPANY", "1"))
 
@@ -1710,6 +3937,39 @@ def match_apollo(request: ApolloMatchRequest):
         # Pre-initialize table schema
         get_target_table_schema(conn)
 
+        # Preload existing batch saved leads into memory if not already cached
+        with _batch_seen_companies_lock:
+            if batch_tag not in _batch_seen_companies:
+                _batch_seen_companies[batch_tag] = {}
+                try:
+                    ensure_apollo_saved_leads_table(conn)
+                    with conn.cursor() as pre_cur:
+                        pre_cur.execute(
+                            "SELECT apollo_id, name, job_title, company, company_domain FROM apollo_saved_leads WHERE batch = %s",
+                            (batch_tag,)
+                        )
+                        for r_id, r_name, r_title, r_comp, r_dom in pre_cur.fetchall():
+                            ckey = normalize_text(r_dom or "") or normalize_text(r_comp or "")
+                            if ckey:
+                                if ckey not in _batch_seen_companies[batch_tag]:
+                                    _batch_seen_companies[batch_tag][ckey] = []
+                                _batch_seen_companies[batch_tag][ckey].append({
+                                    "key": r_id or r_name or r_comp,
+                                    "apollo_id": r_id or "",
+                                    "name": r_name,
+                                    "title": r_title,
+                                    "score": get_seniority_score(r_title or ""),
+                                    "company": r_comp,
+                                    "domain": r_dom
+                                })
+                except Exception as ex_preload:
+                    print(f"[ContactChecker] WARNING: Could not preload batch_seen_companies for {batch_tag}: {ex_preload}", flush=True)
+            seen_required_companies = _batch_seen_companies[batch_tag]
+
+        # Load domain prefix trie on first request (lazy, thread-safe, ~2-5 seconds once)
+        if not _domain_trie.loaded:
+            threading.Thread(target=load_domain_trie, daemon=True).start()
+
         # --------------------------------------------------------
         # STEP 1: REFINED DOMAIN LOOKUP CHAIN (company_domains)
         # --------------------------------------------------------
@@ -1722,7 +3982,7 @@ def match_apollo(request: ApolloMatchRequest):
         # --------------------------------------------------------
         # STEP 2: DUAL DEDUPLICATION: FULL NAME + DOMAIN & DOMAIN IN CRM
         # --------------------------------------------------------
-        crm_matches = check_person_and_domains_in_crm_batch(contacts, contact_primary_domain, connection=conn)
+        crm_matches = check_person_and_domains_in_crm_batch(contacts, contact_primary_domain, connection=conn, active_batch=batch_tag)
 
         net_new_contacts: list[ApolloContact] = []
 
@@ -1732,6 +3992,18 @@ def match_apollo(request: ApolloMatchRequest):
                 existing_count += 1
                 ignored_count += 1
                 results[contact.key] = crm_matches[contact.key]
+            elif not contact_primary_domain.get(contact.key):
+                ignored_count += 1
+                results[contact.key] = {
+                    "exists": False,
+                    "required": False,
+                    "ignored": True,
+                    "guardrail_status": "no_domain_source",
+                    "guardrail_reason": (
+                        "No Apollo domain column, website link, or email available for CRM lookup."
+                    ),
+                    "matched_domain": "",
+                }
             else:
                 net_new_domain_contacts += 1
                 net_new_contacts.append(contact)
@@ -1743,7 +4015,6 @@ def match_apollo(request: ApolloMatchRequest):
         batch_title_results = lookup_job_titles_batch(titles_to_check, connection=conn)
 
         contact_title_eval: dict[str, dict] = {}
-        novel_titles_to_eval: dict[str, str] = {}
 
         for contact in net_new_contacts:
             title_name = contact.job_title.strip()
@@ -1777,6 +4048,12 @@ def match_apollo(request: ApolloMatchRequest):
         # --------------------------------------------------------
         # STEP 4: DECISION LOGIC, DEMOGRAPHIC & 1/COMPANY LIMIT
         # --------------------------------------------------------
+        prefetched_indian_db = {}
+        if indian_filter_active and net_new_contacts:
+            all_names_to_check = [c.name.strip() for c in net_new_contacts if c.name and c.name.strip()]
+            if all_names_to_check:
+                prefetched_indian_db = lookup_indian_names_batch(all_names_to_check, connection=conn)
+
         for idx, contact in enumerate(net_new_contacts, 1):
             comp_name = contact.company.strip()
             prim_d = contact_primary_domain.get(contact.key, "")
@@ -1784,7 +4061,9 @@ def match_apollo(request: ApolloMatchRequest):
 
             # 4.1 Option 2 Pure Indian Name Demographic Filter
             if indian_filter_active:
-                is_ind, ind_reason = is_unambiguous_pure_indian_name(contact.name or "", connection=conn)
+                is_ind, ind_reason = is_unambiguous_pure_indian_name(
+                    contact.name or "", connection=conn, prefetched_db_hits=prefetched_indian_db
+                )
                 if is_ind:
                     ignored_count += 1
                     results[contact.key] = {
@@ -1816,88 +4095,134 @@ def match_apollo(request: ApolloMatchRequest):
                     "matched_domain": prim_d,
                 }
             else:
-                # 4.3 Check 1 Contact per Company Limit with Seniority-Based Election
-                already_selected = seen_required_companies.get(comp_key, [])
-                is_same_contact = any(isinstance(item, dict) and item.get("key") == contact.key for item in already_selected)
-                incoming_score = get_seniority_score(contact.job_title)
-                current_elected = already_selected[0] if already_selected and isinstance(already_selected[0], dict) else {}
-                current_score = current_elected.get("score", 0) if current_elected else 0
+                # 4.3 Check Contact per Company Limit with Seniority-Based Election (Thread-Safe)
+                with _batch_seen_companies_lock:
+                    already_selected = seen_required_companies.get(comp_key, [])
+                    incoming_score = get_seniority_score(contact.job_title)
 
-                if is_same_contact:
-                    # Contact is ALREADY the elected lead for this company across page sorts
-                    required_count += 1
-                    results[contact.key] = {
-                        "exists": False,
-                        "required": True,
-                        "ignored": False,
-                        "guardrail_status": "qualified",
-                        "segment": title_seg,
-                        "guardrail_reason": title_reason,
-                        "matched_domain": prim_d,
-                    }
-                elif already_selected and incoming_score > current_score:
-                    # Seniority Election: incoming higher-ranking lead (e.g. CTO/CEO) outranks previous lead (e.g. Manager)
-                    prev_key = current_elected.get("key")
-                    if prev_key and prev_key in results:
-                        results[prev_key] = {
+                    # Check if contact is already selected (by key, non-synthetic apollo_id, or normalized name)
+                    is_same_contact = False
+                    c_norm_name = normalize_text(contact.name or "")
+                    c_apollo_id = (contact.apollo_id or "").strip()
+                    if c_apollo_id.startswith("apollo-row-"):
+                        c_apollo_id = ""
+
+                    for item in already_selected:
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("key") and item.get("key") == contact.key:
+                            is_same_contact = True
+                            break
+                        it_apollo_id = (item.get("apollo_id") or "").strip()
+                        if it_apollo_id and c_apollo_id and it_apollo_id == c_apollo_id:
+                            is_same_contact = True
+                            break
+                        it_norm_name = normalize_text(item.get("name") or "")
+                        if it_norm_name and c_norm_name and it_norm_name == c_norm_name:
+                            is_same_contact = True
+                            break
+
+                    emp_val = getattr(contact, "employee_count", None)
+                    role_t = "decision_maker" if (incoming_score >= 60 or (emp_val is not None and emp_val <= 50)) else "evaluator"
+
+                    if is_same_contact:
+                        # Contact is ALREADY the elected lead for this company across page sorts
+                        required_count += 1
+                        results[contact.key] = {
                             "exists": False,
-                            "required": False,
-                            "ignored": True,
-                            "guardrail_status": "company_limit_reached",
-                            "guardrail_reason": f"Replaced by higher-ranking decision maker ({contact.name} - {contact.job_title})",
+                            "required": True,
+                            "ignored": False,
+                            "guardrail_status": "qualified",
+                            "segment": title_seg,
+                            "role_type": role_t,
+                            "guardrail_reason": title_reason,
                             "matched_domain": prim_d,
                         }
+                    elif len(already_selected) < max_contacts_per_comp:
+                        # Under company limit: admit contact
+                        required_count += 1
+                        new_entry = {
+                            "key": contact.key,
+                            "apollo_id": c_apollo_id,
+                            "name": contact.name,
+                            "title": contact.job_title,
+                            "score": incoming_score,
+                            "company": comp_name,
+                            "domain": prim_d
+                        }
+                        if comp_key not in seen_required_companies:
+                            seen_required_companies[comp_key] = []
+                        seen_required_companies[comp_key].append(new_entry)
 
-                    # Elect the new higher-ranking contact
-                    seen_required_companies[comp_key] = [{
-                        "key": contact.key,
-                        "name": contact.name,
-                        "title": contact.job_title,
-                        "score": incoming_score,
-                        "company": comp_name,
-                        "domain": prim_d
-                    }]
-                    required_count += 1
-                    results[contact.key] = {
-                        "exists": False,
-                        "required": True,
-                        "ignored": False,
-                        "guardrail_status": "qualified",
-                        "segment": title_seg,
-                        "guardrail_reason": title_reason,
-                        "matched_domain": prim_d,
-                    }
-                elif len(already_selected) >= max_contacts_per_comp:
-                    elected_names = ", ".join(item.get("name", "") if isinstance(item, dict) else str(item) for item in already_selected)
-                    ignored_count += 1
-                    results[contact.key] = {
-                        "exists": False,
-                        "required": False,
-                        "ignored": True,
-                        "guardrail_status": "company_limit_reached",
-                        "guardrail_reason": f"Company '{comp_name}' already has lead selected ({elected_names}). Max {max_contacts_per_comp} per company allowed.",
-                        "matched_domain": prim_d,
-                        "segment": title_seg,
-                    }
-                else:
-                    required_count += 1
-                    seen_required_companies[comp_key] = [{
-                        "key": contact.key,
-                        "name": contact.name,
-                        "title": contact.job_title,
-                        "score": incoming_score,
-                        "company": comp_name,
-                        "domain": prim_d
-                    }]
-                    results[contact.key] = {
-                        "exists": False,
-                        "required": True,
-                        "ignored": False,
-                        "guardrail_status": "qualified",
-                        "segment": title_seg,
-                        "guardrail_reason": title_reason,
-                        "matched_domain": prim_d,
-                    }
+                        results[contact.key] = {
+                            "exists": False,
+                            "required": True,
+                            "ignored": False,
+                            "guardrail_status": "qualified",
+                            "segment": title_seg,
+                            "role_type": role_t,
+                            "guardrail_reason": title_reason,
+                            "matched_domain": prim_d,
+                        }
+                    else:
+                        # At or over limit: find the contact in already_selected with the lowest seniority score
+                        min_idx = -1
+                        min_score = float("inf")
+                        for idx, item in enumerate(already_selected):
+                            sc = item.get("score", 0) if isinstance(item, dict) else 0
+                            if sc < min_score:
+                                min_score = sc
+                                min_idx = idx
+
+                        if min_idx >= 0 and incoming_score > min_score:
+                            # Seniority Election: incoming higher-ranking lead outranks lowest previously selected lead
+                            replaced_contact = already_selected[min_idx]
+                            prev_key = replaced_contact.get("key") if isinstance(replaced_contact, dict) else None
+                            if prev_key and prev_key in results:
+                                results[prev_key] = {
+                                    "exists": False,
+                                    "required": False,
+                                    "ignored": True,
+                                    "guardrail_status": "company_limit_reached",
+                                    "guardrail_reason": f"Replaced by higher-ranking decision maker ({contact.name} - {contact.job_title})",
+                                    "matched_domain": prim_d,
+                                }
+                                required_count = max(0, required_count - 1)
+
+                            # Replace lowest-scoring lead
+                            already_selected[min_idx] = {
+                                "key": contact.key,
+                                "apollo_id": c_apollo_id,
+                                "name": contact.name,
+                                "title": contact.job_title,
+                                "score": incoming_score,
+                                "company": comp_name,
+                                "domain": prim_d
+                            }
+                            required_count += 1
+                            results[contact.key] = {
+                                "exists": False,
+                                "required": True,
+                                "ignored": False,
+                                "guardrail_status": "qualified",
+                                "segment": title_seg,
+                                "role_type": role_t,
+                                "guardrail_reason": title_reason,
+                                "matched_domain": prim_d,
+                            }
+                        else:
+                            # Cannot replace: limit reached
+                            elected_names = ", ".join(item.get("name", "") if isinstance(item, dict) else str(item) for item in already_selected)
+                            ignored_count += 1
+                            results[contact.key] = {
+                                "exists": False,
+                                "required": False,
+                                "ignored": True,
+                                "guardrail_status": "company_limit_reached",
+                                "guardrail_reason": f"Company '{comp_name}' already has lead selected ({elected_names}). Max {max_contacts_per_comp} per company allowed.",
+                                "matched_domain": prim_d,
+                                "segment": title_seg,
+                            }
 
         # --------------------------------------------------------
         # STEP 5: AUTO-PERSIST REQUIRED LEADS TO MYSQL BATCH TABLE
@@ -1905,29 +4230,41 @@ def match_apollo(request: ApolloMatchRequest):
         required_leads_to_save = []
         batch_tag = str(request.batch or "batch_1").strip()
 
-        for contact in net_new_contacts:
+        for idx, contact in enumerate(net_new_contacts):
             r = results.get(contact.key)
             if r and r.get("required") is True:
-                apollo_id_val = (contact.apollo_id or (contact.key.replace("apollo-", "") if contact.key.startswith("apollo-") else contact.key) or "")
+                # Sanitize apollo_id: ignore synthetic temporary keys like 'apollo-row-3'
+                apollo_id_val = (contact.apollo_id or "").strip()
+                if not apollo_id_val and contact.key and contact.key.startswith("apollo-") and not contact.key.startswith("apollo-row-"):
+                    apollo_id_val = contact.key.replace("apollo-", "").strip()
+                if not apollo_id_val or apollo_id_val.startswith("apollo-row-"):
+                    norm_n = normalize_text(contact.name or "")
+                    apollo_id_val = f"name_{norm_n}" if norm_n else f"lead_{contact.key or idx}"
+
                 name_parts = (contact.name or "").strip().split(None, 1)
                 first_name_val = contact.first_name or (name_parts[0] if name_parts else "")
                 last_name_val = contact.last_name or (name_parts[1] if len(name_parts) > 1 else "")
-                domain_val = contact_primary_domain.get(contact.key) or contact.company_domain or ""
-                apollo_url_val = contact.apollo_profile_url or (f"https://app.apollo.io/#/people/{apollo_id_val}" if apollo_id_val else "")
+                raw_dom = contact_primary_domain.get(contact.key) or contact.company_domain or ""
+                domain_val = extract_root_domain(raw_dom) or raw_dom
+                web_link_val = contact_website_link.get(contact.key) or getattr(contact, "website_link", "") or (f"https://{domain_val}" if domain_val else "")
+                apollo_url_val = contact.apollo_profile_url or (f"https://app.apollo.io/#/people/{apollo_id_val}" if (contact.apollo_id and not contact.apollo_id.startswith("apollo-row-")) else "")
 
+                lead_page = request.page_number
                 required_leads_to_save.append((
-                    batch_tag[:64],
-                    apollo_id_val[:128],
-                    (contact.name or "")[:255],
-                    first_name_val[:128],
-                    last_name_val[:128],
-                    (contact.job_title or "")[:255],
-                    (contact.company or "")[:255],
-                    domain_val[:255],
-                    (contact.location or "")[:255],
-                    (contact.linkedin_url or "")[:512],
-                    apollo_url_val[:512],
-                    (r.get("segment") or "Required_Lead")[:128]
+                    _s(batch_tag, 64),
+                    lead_page,
+                    _s(apollo_id_val, 128),
+                    _s(contact.name, 250),
+                    _s(first_name_val, 128),
+                    _s(last_name_val, 128),
+                    _s(contact.job_title, 250),
+                    _s(contact.company, 250),
+                    _s(domain_val, 250),
+                    _s(web_link_val, 512),
+                    _s(contact.location, 250),
+                    _s(contact.linkedin_url, 512),
+                    _s(apollo_url_val, 512),
+                    _s(r.get("segment") or "Required_Lead", 128)
                 ))
 
         if required_leads_to_save:
@@ -1935,13 +4272,15 @@ def match_apollo(request: ApolloMatchRequest):
                 with conn.cursor() as cur:
                     sql = """
                         INSERT INTO `apollo_saved_leads` (
-                            `batch`, `apollo_id`, `name`, `first_name`, `last_name`,
-                            `job_title`, `company`, `company_domain`, `location`,
+                            `batch`, `page_number`, `apollo_id`, `name`, `first_name`, `last_name`,
+                            `job_title`, `company`, `company_domain`, `website_link`, `location`,
                             `linkedin_url`, `apollo_profile_url`, `segment`
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE
+                            `page_number` = IF(VALUES(`page_number`) IS NOT NULL, VALUES(`page_number`), `page_number`),
                             `job_title` = VALUES(`job_title`),
                             `company_domain` = VALUES(`company_domain`),
+                            `website_link` = VALUES(`website_link`),
                             `segment` = VALUES(`segment`);
                     """
                     cur.executemany(sql, required_leads_to_save)
@@ -1960,8 +4299,9 @@ def match_apollo(request: ApolloMatchRequest):
     # --------------------------------------------------------
     # STEP 6: PER-PAGE DASHBOARD LOG
     # --------------------------------------------------------
+    display_page = request.page_number if request.page_number is not None else batch_num
     print("\n" + "=" * 80, flush=True)
-    print(f">>> [APOLLO PAGE #{batch_num} DASHBOARD] Ingested {total_received} Contacts | Title Filter: {'ON' if request.title_guardrail_enabled else 'OFF'} | Indian Filter: {'ON' if request.indian_name_guardrail_enabled else 'OFF'}", flush=True)
+    print(f">>> [APOLLO PAGE #{display_page} DASHBOARD] Ingested {total_received} Contacts | Title Filter: {'ON' if request.title_guardrail_enabled else 'OFF'} | Indian Filter: {'ON' if request.indian_name_guardrail_enabled else 'OFF'}", flush=True)
     print("=" * 80, flush=True)
     print(f"Contacts Summary : Total: {total_received} | 🟢 Required: {required_count} | ⚪ Existing/Ignored: {ignored_count}", flush=True)
     print(f"Domain Breakdown : Unique Domains: {len(unique_domains_seen)} | In CRM: {existing_domain_contacts} | Net-New: {net_new_domain_contacts}", flush=True)
@@ -2004,9 +4344,97 @@ def get_batch_worker_status():
         "worker": background_batch_worker.get_status()
     }
 
+@app.get("/api/account-cycle")
+@app.get("/account-cycle")
+def get_account_cycle_api(email: str, target_date: str | None = None):
+    """
+    Returns exact timezone-aware cycle window and tag for an account respecting expiration instant.
+    """
+    from scripts.apollo_saved_search_inspector import get_account_cycle_window
+    target_dt = None
+    if target_date:
+        try:
+            target_dt = datetime.fromisoformat(target_date.replace("Z", "+00:00"))
+        except Exception:
+            pass
+    start_dt, end_dt, cycle_tag = get_account_cycle_window(email, target_date=target_dt)
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    return {
+        "status": "ok",
+        "email": email,
+        "cycle_tag": cycle_tag,
+        "cycle_start_utc": start_dt.isoformat(),
+        "cycle_end_utc": end_dt.isoformat(),
+        "cycle_start_ist": start_dt.astimezone(ist_tz).strftime("%d %b %Y, %I:%M %p IST"),
+        "cycle_end_ist": end_dt.astimezone(ist_tz).strftime("%d %b %Y, %I:%M %p IST"),
+    }
+
+
+@app.get("/api/account-cycles")
+@app.get("/account-cycles")
+def get_account_cycles_api(target_date: str | None = None):
+    """
+    Returns exact timezone-aware cycle window and tag for all 19 Apollo accounts.
+    """
+    from scripts.apollo_saved_search_inspector import get_account_cycle_window
+    target_dt = None
+    if target_date:
+        try:
+            target_dt = datetime.fromisoformat(target_date.replace("Z", "+00:00"))
+        except Exception:
+            pass
+    report_path = os.path.join(PROJECT_ROOT, "config", "apollo_live_account_report.json")
+    results = []
+    if os.path.exists(report_path):
+        with open(report_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for acc in data.get("accounts", []):
+            em = acc.get("email", "")
+            s_dt, e_dt, tag = get_account_cycle_window(em, target_date=target_dt)
+            results.append({
+                "email": em,
+                "name": acc.get("name", ""),
+                "cycle_tag": tag,
+                "expiry_ist": acc.get("expiry_ist", ""),
+                "expiry_utc": acc.get("expiry_utc", ""),
+                "cycle_start_utc": s_dt.isoformat(),
+                "cycle_end_utc": e_dt.isoformat(),
+            })
+    return {"status": "ok", "count": len(results), "accounts": results}
+
+
+# Include standalone Enrich.so Lead Finder router
+try:
+    try:
+        from backend.enrich_api import enrich_router
+    except ModuleNotFoundError:
+        from enrich_api import enrich_router
+    app.include_router(enrich_router)
+    print("[ContactChecker] Successfully loaded Enrich.so router (/match-enrich, /enrich-batches)", flush=True)
+except Exception as _ex_enrich:
+    print(f"[ContactChecker] Notice: enrich_router import: {_ex_enrich}", flush=True)
+
+# Mount Multi-Page Dashboard Static Assets & Router
+try:
+    from pathlib import Path
+    _static_dir = Path(__file__).resolve().parent / "static"
+    _static_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+    try:
+        from backend.dashboard_routes import dashboard_router
+    except ModuleNotFoundError:
+        from dashboard_routes import dashboard_router
+    app.include_router(dashboard_router)
+    print("[ContactChecker] Successfully loaded Multi-Page Operations Hub router", flush=True)
+except Exception as _ex_dash:
+    print(f"[ContactChecker] Notice: dashboard_router import: {_ex_dash}", flush=True)
+
+
 
 if __name__ == "__main__":
     print("\n" + "=" * 70)
     print(">>> [ContactChecker API] Starting Lead Processing Engine (Port 8000)")
     print("=" * 70 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

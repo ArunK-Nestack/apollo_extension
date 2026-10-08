@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Enrich.so Lead Finder Matcher & Auto-Paginator",
+  "version": "1.0.0",
+  "description": "Automated direct domain matching against local CRM with 64K title guardrails and undetectable hardware-level auto-pagination for Enrich.so.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "debugger",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    "https://dash.enrich.so/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://dash.enrich.so/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Toggle Enrich.so Matcher (ON / OFF)"
+  }
+}
