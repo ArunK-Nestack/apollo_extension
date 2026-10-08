@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import time
 import copy
 import argparse
@@ -47,36 +47,74 @@ from scripts.apollo_export_formatter import APOLLO_75_HEADERS, format_apollo_lea
 from backend.api import get_connection, ensure_apollo_saved_leads_table
 
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def format_cycle_tag(start_dt: datetime, end_dt: datetime) -> str:
+    start_ist = start_dt.astimezone(IST)
+    end_ist = end_dt.astimezone(IST)
+    return f"{start_ist.strftime('%b %d').lower()} - {end_ist.strftime('%b %d').lower()}"
+
+
 def get_account_cycle_window(account_email: str, target_date: Optional[datetime] = None) -> Tuple[datetime, datetime, str]:
     """
-    Returns (cycle_start, cycle_end, cycle_tag) for a given account.
-    Example: (2026-09-20 00:00:00 UTC, 2026-10-20 00:00:00 UTC, 'sep 20 - oct 20')
+    Returns (cycle_start, cycle_end, cycle_tag) for a given account respecting exact expiration instant.
+    Example: If expiration is Oct 8 18:01:15 IST:
+      Before 18:01:15 IST -> ('2026-09-08 12:31:15 UTC', '2026-10-08 12:31:15 UTC', 'sep 08 - oct 08')
+      At/After 18:01:15 IST -> ('2026-10-08 12:31:15 UTC', '2026-11-08 12:31:15 UTC', 'oct 08 - nov 08')
     """
     now = target_date or datetime.now(timezone.utc)
-    renewal_day = 20  # default
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+
+    acc = None
     report_path = os.path.join(PROJECT_ROOT, "config", "apollo_live_account_report.json")
     if os.path.exists(report_path):
         try:
             with open(report_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            for acc in data.get("accounts", []):
-                if acc.get("email", "").strip().lower() == account_email.strip().lower():
-                    exp_str = acc.get("expiry_utc")
-                    if exp_str:
-                        exp_dt = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
-                        renewal_day = exp_dt.day
-                        break
+            for a in data.get("accounts", []):
+                if a.get("email", "").strip().lower() == account_email.strip().lower():
+                    acc = a
+                    break
         except Exception:
             pass
 
-    if now.day >= renewal_day:
-        start_dt = now.replace(day=renewal_day, hour=0, minute=0, second=0, microsecond=0)
-        end_dt = start_dt + relativedelta(months=1)
+    exp_raw = (acc.get("expiry_utc") or acc.get("billing_end")) if acc else None
+    if not acc or not exp_raw:
+        renewal_day = 20
+        base_dt = datetime(now.year, now.month, renewal_day, 0, 0, 0, tzinfo=timezone.utc)
+        if now < base_dt:
+            end_dt = base_dt
+            start_dt = end_dt - relativedelta(months=1)
+        else:
+            start_dt = base_dt
+            end_dt = start_dt + relativedelta(months=1)
     else:
-        end_dt = now.replace(day=renewal_day, hour=0, minute=0, second=0, microsecond=0)
-        start_dt = end_dt - relativedelta(months=1)
+        base_exp = datetime.fromisoformat(str(exp_raw).replace("Z", "+00:00"))
+        if base_exp.tzinfo is None:
+            base_exp = base_exp.replace(tzinfo=timezone.utc)
+        else:
+            base_exp = base_exp.astimezone(timezone.utc)
 
-    cycle_tag = f"{start_dt.strftime('%b %d').lower()} - {end_dt.strftime('%b %d').lower()}"
+        if now < base_exp:
+            cur_end = base_exp
+            cur_start = cur_end - relativedelta(months=1)
+            while now < cur_start:
+                cur_end = cur_start
+                cur_start = cur_end - relativedelta(months=1)
+            start_dt, end_dt = cur_start, cur_end
+        else:
+            cur_start = base_exp
+            cur_end = cur_start + relativedelta(months=1)
+            while now >= cur_end:
+                cur_start = cur_end
+                cur_end = cur_start + relativedelta(months=1)
+            start_dt, end_dt = cur_start, cur_end
+
+    cycle_tag = format_cycle_tag(start_dt, end_dt)
     return start_dt, end_dt, cycle_tag
 from backend.enrich_api import ensure_enrich_saved_leads_table
 

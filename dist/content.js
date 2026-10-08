@@ -15,82 +15,133 @@
     "contactCheckerExtensionEnabled";
 
   const APOLLO_19_LOGINS = [
-    { name: "Abel Abraham", email: "abel.abraham@nestacktechnologies.com", renewalDay: 10 },
-    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACKTECHNOLOGIES.COM", renewalDay: 22 },
-    { name: "Rahul Chandran", email: "RAHUL.CHANDRAN@NESTACK-TECH.COM", renewalDay: 3 },
-    { name: "Vijay", email: "VIJAY@NESTACKTECH.COM", renewalDay: 8 },
-    { name: "Jith", email: "JITH@NESTACK.INFO", renewalDay: 10 },
-    { name: "Rahul", email: "RAHUL@NESTACK.CO.IN", renewalDay: 13 },
-    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACK.COM", renewalDay: 14 },
-    { name: "Recruiting", email: "RECRUITING@NESTACK.COM", renewalDay: 16 },
-    { name: "Rahul", email: "RAHUL@NESTAKTECHNOLOGY.COM", renewalDay: 18 },
-    { name: "Rahul", email: "RAHUL@NESTACK-TECH.COM", renewalDay: 30 },
-    { name: "R Chandran", email: "RCHANDRAN@NESTACK.BIZ", renewalDay: 19 },
-    { name: "V Raghavan", email: "VRAGHAVAN@NESTACK.COM", renewalDay: 20 },
-    { name: "V Raghavan", email: "VRAGHAVAN@NESTACKTECH.COM", renewalDay: 20 },
-    { name: "Madhava Reddy", email: "MADHAVA.REDDY@NESTACK-TECH.COM", renewalDay: 20 },
-    { name: "R Chandran", email: "RCHANDRAN@NESTACK.INFO", renewalDay: 21 },
-    { name: "Madhava Reddy", email: "MADHAVA.REDDY@NESTACKTECH.COM", renewalDay: 21 },
-    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACKTECH.COM", renewalDay: 24 },
-    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACK.NET", renewalDay: 26 },
-    { name: "V Raghav", email: "VRAGHAV@NESTACKTECHNOLOGY.COM", renewalDay: 27 },
+    { name: "Abel Abraham", email: "abel.abraham@nestacktechnologies.com", renewalDay: 10, expiryUtc: "2026-10-10T04:51:32+00:00" },
+    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACKTECHNOLOGIES.COM", renewalDay: 22, expiryUtc: "2026-10-22T12:05:00+00:00" },
+    { name: "Rahul Chandran", email: "RAHUL.CHANDRAN@NESTACK-TECH.COM", renewalDay: 3, expiryUtc: "2026-11-03T04:16:40+00:00" },
+    { name: "Vijay", email: "VIJAY@NESTACKTECH.COM", renewalDay: 8, expiryUtc: "2026-10-08T12:31:15+00:00" },
+    { name: "Jith", email: "JITH@NESTACK.INFO", renewalDay: 10, expiryUtc: "2026-10-10T17:14:27+00:00" },
+    { name: "Rahul", email: "RAHUL@NESTACK.CO.IN", renewalDay: 13, expiryUtc: "2026-10-13T11:58:27+00:00" },
+    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACK.COM", renewalDay: 14, expiryUtc: "2026-10-14T08:43:05+00:00" },
+    { name: "Recruiting", email: "RECRUITING@NESTACK.COM", renewalDay: 16, expiryUtc: "2026-10-16T14:15:47+00:00" },
+    { name: "Rahul", email: "RAHUL@NESTAKTECHNOLOGY.COM", renewalDay: 18, expiryUtc: "2026-10-18T19:06:10+00:00" },
+    { name: "Rahul", email: "RAHUL@NESTACK-TECH.COM", renewalDay: 30, expiryUtc: "2026-10-30T05:18:10+00:00" },
+    { name: "R Chandran", email: "RCHANDRAN@NESTACK.BIZ", renewalDay: 19, expiryUtc: "2026-10-19T16:46:27+00:00" },
+    { name: "V Raghavan", email: "VRAGHAVAN@NESTACK.COM", renewalDay: 20, expiryUtc: "2026-10-20T07:44:54+00:00" },
+    { name: "V Raghavan", email: "VRAGHAVAN@NESTACKTECH.COM", renewalDay: 20, expiryUtc: "2026-10-20T17:05:51+00:00" },
+    { name: "Madhava Reddy", email: "MADHAVA.REDDY@NESTACK-TECH.COM", renewalDay: 20, expiryUtc: "2026-10-20T17:07:16+00:00" },
+    { name: "R Chandran", email: "RCHANDRAN@NESTACK.INFO", renewalDay: 21, expiryUtc: "2026-10-21T02:23:59+00:00" },
+    { name: "Madhava Reddy", email: "MADHAVA.REDDY@NESTACKTECH.COM", renewalDay: 21, expiryUtc: "2026-10-21T10:27:32+00:00" },
+    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACKTECH.COM", renewalDay: 24, expiryUtc: "2026-10-24T18:06:22+00:00" },
+    { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACK.NET", renewalDay: 26, expiryUtc: "2026-10-26T01:24:52+00:00" },
+    { name: "V Raghav", email: "VRAGHAV@NESTACKTECHNOLOGY.COM", renewalDay: 27, expiryUtc: "2026-10-27T03:44:43+00:00" },
   ];
 
-  function computeAccountActiveCycle(renewalDay, targetDate = new Date()) {
-    const d = new Date(targetDate);
-    let start, end;
-    if (d.getUTCDate() >= renewalDay) {
-      start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), renewalDay));
-      end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, renewalDay));
-    } else {
-      end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), renewalDay));
-      start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, renewalDay));
+  function resolveAccount(arg) {
+    if (!arg && arg !== 0) return null;
+    if (typeof arg === "object") {
+      if (arg.expiryUtc) return arg;
+      if (arg.email) {
+        const found = APOLLO_19_LOGINS.find(a => a.email.toLowerCase() === arg.email.toLowerCase());
+        if (found) return found;
+      }
+      if (typeof arg.renewalDay === "number") {
+        const found = APOLLO_19_LOGINS.find(a => a.renewalDay === arg.renewalDay);
+        if (found) return found;
+      }
+      return arg;
     }
-    const sMonth = start.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
-    const eMonth = end.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
-    const sDay = String(start.getUTCDate()).padStart(2, "0");
-    const eDay = String(end.getUTCDate()).padStart(2, "0");
+    if (typeof arg === "string") {
+      const q = arg.toLowerCase().trim();
+      return APOLLO_19_LOGINS.find(a => a.email.toLowerCase() === q || q.includes(a.email.toLowerCase())) || null;
+    }
+    if (typeof arg === "number") {
+      return APOLLO_19_LOGINS.find(a => a.renewalDay === arg) || null;
+    }
+    return null;
+  }
+
+  function stepCycleMonth(baseDate, monthOffset) {
+    const y = baseDate.getUTCFullYear();
+    const m = baseDate.getUTCMonth();
+    const targetMonthIndex = m + monthOffset;
+    const targetYear = y + Math.floor(targetMonthIndex / 12);
+    const targetMonth = ((targetMonthIndex % 12) + 12) % 12;
+    const origDay = baseDate.getUTCDate();
+    const maxDays = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+    const targetDay = Math.min(origDay, maxDays);
+    return new Date(Date.UTC(
+      targetYear,
+      targetMonth,
+      targetDay,
+      baseDate.getUTCHours(),
+      baseDate.getUTCMinutes(),
+      baseDate.getUTCSeconds(),
+      baseDate.getUTCMilliseconds()
+    ));
+  }
+
+  function formatAccountCycleTag(startDt, endDt) {
+    const opt = { month: "short", day: "2-digit", timeZone: "Asia/Kolkata" };
+    const sParts = new Intl.DateTimeFormat("en-US", opt).formatToParts(startDt);
+    const eParts = new Intl.DateTimeFormat("en-US", opt).formatToParts(endDt);
+    const sMonth = (sParts.find(p => p.type === "month")?.value || "").toLowerCase();
+    const sDay = sParts.find(p => p.type === "day")?.value || "";
+    const eMonth = (eParts.find(p => p.type === "month")?.value || "").toLowerCase();
+    const eDay = eParts.find(p => p.type === "day")?.value || "";
     return `${sMonth} ${sDay} - ${eMonth} ${eDay}`;
   }
 
-  function computeAccountCycleDetails(renewalDay, targetDate = new Date()) {
-    const d = new Date(targetDate);
-    const targetUtcYear = d.getUTCFullYear();
-    const targetUtcMonth = d.getUTCMonth();
-    const targetUtcDate = d.getUTCDate();
+  function computeAccountCycleDetails(accountOrEmailOrDay, targetDate = new Date()) {
+    const acc = resolveAccount(accountOrEmailOrDay);
+    const target = new Date(targetDate);
 
     let start, end;
-    // When targetUtcDate <= renewalDay:
-    // Today is within or at the final day of the cycle that started last month on renewalDay!
-    // Example: If renewalDay is 3, on Oct 3rd the cycle is sep 03 - oct 03 and today is Day 30 or Day 31.
-    // If targetUtcDate > renewalDay: the cycle started this month on renewalDay and ends next month on renewalDay.
-    if (targetUtcDate <= renewalDay) {
-      end = new Date(Date.UTC(targetUtcYear, targetUtcMonth, renewalDay));
-      start = new Date(Date.UTC(targetUtcYear, targetUtcMonth - 1, renewalDay));
+    if (acc && acc.expiryUtc) {
+      const anchor = new Date(acc.expiryUtc);
+      if (target.getTime() < anchor.getTime()) {
+        let offset = 0;
+        while (stepCycleMonth(anchor, offset).getTime() > target.getTime()) {
+          offset -= 1;
+        }
+        start = stepCycleMonth(anchor, offset);
+        end = stepCycleMonth(anchor, offset + 1);
+      } else {
+        let offset = 0;
+        while (stepCycleMonth(anchor, offset + 1).getTime() <= target.getTime()) {
+          offset += 1;
+        }
+        start = stepCycleMonth(anchor, offset);
+        end = stepCycleMonth(anchor, offset + 1);
+      }
     } else {
-      start = new Date(Date.UTC(targetUtcYear, targetUtcMonth, renewalDay));
-      end = new Date(Date.UTC(targetUtcYear, targetUtcMonth + 1, renewalDay));
+      const rDay = typeof accountOrEmailOrDay === "number" ? accountOrEmailOrDay : (acc?.renewalDay || 1);
+      const targetUtcYear = target.getUTCFullYear();
+      const targetUtcMonth = target.getUTCMonth();
+      const targetUtcDate = target.getUTCDate();
+      if (targetUtcDate <= rDay) {
+        end = new Date(Date.UTC(targetUtcYear, targetUtcMonth, rDay));
+        start = new Date(Date.UTC(targetUtcYear, targetUtcMonth - 1, rDay));
+      } else {
+        start = new Date(Date.UTC(targetUtcYear, targetUtcMonth, rDay));
+        end = new Date(Date.UTC(targetUtcYear, targetUtcMonth + 1, rDay));
+      }
     }
 
-    const sMonth = start.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
-    const eMonth = end.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
-    const sDay = String(start.getUTCDate()).padStart(2, "0");
-    const eDay = String(end.getUTCDate()).padStart(2, "0");
-    const cycleTag = `${sMonth} ${sDay} - ${eMonth} ${eDay}`;
-
+    const cycleTag = formatAccountCycleTag(start, end);
     const msPerDay = 86400000;
-    const totalDays = Math.round((end.getTime() - start.getTime()) / msPerDay);
+    const totalDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / msPerDay));
 
-    const targetMidnight = new Date(Date.UTC(targetUtcYear, targetUtcMonth, targetUtcDate));
-    let currentDayNum = Math.floor((targetMidnight.getTime() - start.getTime()) / msPerDay) + 1;
+    let currentDayNum = Math.floor((target.getTime() - start.getTime()) / msPerDay) + 1;
     if (currentDayNum < 1) currentDayNum = 1;
     if (currentDayNum > totalDays) currentDayNum = totalDays;
 
     const daysList = [];
     for (let i = 1; i <= totalDays; i++) {
       const dt = new Date(start.getTime() + (i - 1) * msPerDay);
-      const mName = dt.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
-      const dayNumStr = String(dt.getUTCDate()).padStart(2, "0");
+      const opt = { month: "short", day: "2-digit", timeZone: "Asia/Kolkata" };
+      const parts = new Intl.DateTimeFormat("en-US", opt).formatToParts(dt);
+      const mName = (parts.find(p => p.type === "month")?.value || "").toLowerCase();
+      const dayNumStr = parts.find(p => p.type === "day")?.value || "";
       daysList.push({
         dayNum: i,
         dayLabel: `Day ${i}`,
@@ -105,19 +156,25 @@
       totalDays,
       currentDayNum,
       currentDayLabel: `Day ${currentDayNum}`,
-      daysList
+      daysList,
+      start,
+      end
     };
+  }
+
+  function computeAccountActiveCycle(accountOrEmailOrDay, targetDate = new Date()) {
+    return computeAccountCycleDetails(accountOrEmailOrDay, targetDate).cycleTag;
   }
 
   function renderLoginCycleOptions(currentBatch) {
     let html = `<option value="" disabled ${!currentBatch ? "selected" : ""}>-- Select Login & Cycle (19 Accounts) --</option>`;
     for (const acc of APOLLO_19_LOGINS) {
-      const cycle = computeAccountActiveCycle(acc.renewalDay);
+      const cycle = computeAccountActiveCycle(acc);
       const val = `${acc.email}(${cycle})`;
       const isSel = currentBatch === val;
       html += `<option value="${val}" ${isSel ? "selected" : ""}>${acc.name} (${cycle})</option>`;
     }
-    const isKnown = APOLLO_19_LOGINS.some(a => `${a.email}(${computeAccountActiveCycle(a.renewalDay)})` === currentBatch);
+    const isKnown = APOLLO_19_LOGINS.some(a => `${a.email}(${computeAccountActiveCycle(a)})` === currentBatch);
     const isCustom = currentBatch && currentBatch !== "batch_1" && !isKnown;
     html += `<option value="__CUSTOM__" ${isCustom ? "selected" : ""}>➕ Custom Batch Tag...</option>`;
     return html;
@@ -149,7 +206,7 @@
   }
 
   const _defaultAcc = APOLLO_19_LOGINS[0];
-  const _defaultCycle = computeAccountActiveCycle(_defaultAcc.renewalDay);
+  const _defaultCycle = computeAccountActiveCycle(_defaultAcc);
   const _defaultBatch = `${_defaultAcc.email}(${_defaultCycle})`;
 
   // ============================================================
@@ -1023,13 +1080,96 @@
     return m ? parseInt(m[1], 10) : 1;
   }
 
+  function getApolloSearchContext() {
+    let searchWord = "";
+    let searchBarWord = "";
+
+    try {
+      // 1. Detect "search_word" (The search / saved search we are in)
+      const viewTitleEl = document.querySelector(
+        '[data-cy="search-name"], [data-cy="saved-search-name"], .view-title, ' +
+        '[class*="SearchHeader"] [class*="title"], [data-testid="search-name"], ' +
+        '[class*="viewName"], [class*="savedSearchName"], .apollo-saved-search-title'
+      );
+      if (viewTitleEl && viewTitleEl.textContent) {
+        const text = viewTitleEl.textContent.trim();
+        if (text && !/^(people|saved searches|search|all|filters)$/i.test(text)) {
+          searchWord = text;
+        }
+      }
+
+      if (!searchWord) {
+        const savedSearchBtn = document.querySelector(
+          'button[id*="saved-search"], [data-cy*="saved-search-select"], ' +
+          'div[class*="saved-search-select"] span, div[class*="SavedSearch"] button'
+        );
+        if (savedSearchBtn && savedSearchBtn.textContent) {
+          const btnText = savedSearchBtn.textContent.trim();
+          if (btnText && !/^(saved searches|save search|new search)$/i.test(btnText)) {
+            searchWord = btnText;
+          }
+        }
+      }
+
+      const fullUrl = location.href || "";
+      if (!searchWord) {
+        const mFinder = /[?&]finderViewId=([a-zA-Z0-9_-]+)/.exec(fullUrl);
+        if (mFinder) {
+          searchWord = mFinder[1];
+        }
+      }
+
+      // 2. Detect "search_bar_word" (The word entered in the Apollo web search bar)
+      // Refers strictly to the words typed in the Apollo web search bar
+      const searchBarInputs = document.querySelectorAll(
+        'input[placeholder*="Search Apollo" i], ' +
+        'input[placeholder*="Search people" i], ' +
+        'input[placeholder*="Search contacts" i], ' +
+        'input[placeholder*="Search by name" i], ' +
+        'input[data-cy*="global-search" i], ' +
+        'input[data-cy*="search-input" i], ' +
+        'input[aria-label*="Search Apollo" i], ' +
+        'input[aria-label*="Search people" i], ' +
+        'input[type="search"]'
+      );
+
+      for (const input of searchBarInputs) {
+        if (input.id && input.id.startsWith("cc-")) continue;
+        if (input.classList && input.classList.contains("cc-search-input")) continue;
+        const val = (input.value || "").trim();
+        if (val) {
+          searchBarWord = val;
+          break;
+        }
+      }
+
+      if (!searchBarWord) {
+        const mKw = /[?&](?:qKeywords|q|query)=([^&#]+)/.exec(fullUrl);
+        if (mKw) {
+          try {
+            searchBarWord = decodeURIComponent(mKw[1].replace(/\+/g, " ")).trim();
+          } catch (_) {
+            searchBarWord = mKw[1].trim();
+          }
+        }
+      }
+    } catch (_) {
+      // Safe fallback
+    }
+
+    return { searchWord, searchBarWord };
+  }
+
   function logExtensionActivity(eventType, extra = {}) {
     if (!chrome?.runtime?.sendMessage) return;
+    const { searchWord, searchBarWord } = getApolloSearchContext();
     const entry = {
       event_type: eventType,
       account_email: state.accountEmail || "",
       cycle_tag: state.cycleTag || "",
       batch: state.batchName || "",
+      search_word: extra.search_word !== undefined ? extra.search_word : searchWord,
+      search_bar_word: extra.search_bar_word !== undefined ? extra.search_bar_word : searchBarWord,
       page_number: getApolloPageNumber(),
       collected_total: state.requiredContactsAll.size,
       page_url: location.href.slice(0, 500),
@@ -3115,7 +3255,7 @@
         for (const acc of APOLLO_19_LOGINS) {
           if (currentBatch.includes(acc.email)) {
             matched = acc;
-            matchedDetails = computeAccountCycleDetails(acc.renewalDay);
+            matchedDetails = computeAccountCycleDetails(acc);
             break;
           }
         }
@@ -3134,7 +3274,7 @@
       }
 
       function selectAccount(acc) {
-        const details = computeAccountCycleDetails(acc.renewalDay);
+        const details = computeAccountCycleDetails(acc);
         const val = `${acc.email}(${details.cycleTag})`;
         state.batchName = val;
         state.accountEmail = acc.email;
@@ -3176,7 +3316,7 @@
 
         let visibleCount = 0;
         for (const acc of APOLLO_19_LOGINS) {
-          const details = computeAccountCycleDetails(acc.renewalDay);
+          const details = computeAccountCycleDetails(acc);
           const initials = getInitials(acc.name);
           const grad = getAvatarGradient(acc.name);
           const isSelected = currentBatch.includes(acc.email);
@@ -3404,7 +3544,7 @@
       for (const acc of APOLLO_19_LOGINS) {
         if (currentBatch.includes(acc.email)) {
           matched = acc;
-          matchedDetails = computeAccountCycleDetails(acc.renewalDay);
+          matchedDetails = computeAccountCycleDetails(acc);
           break;
         }
       }

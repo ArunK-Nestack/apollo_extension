@@ -7,7 +7,8 @@ import sys
 import threading
 import time
 import unicodedata
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 try:
@@ -40,6 +41,8 @@ import uvicorn
 # ============================================================
 
 load_dotenv()
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 _batch_counter = 0
 
@@ -3088,6 +3091,344 @@ def ensure_batch_enrichment_ledger_table(conn) -> None:
             pass
 
 
+def ensure_enrichment_run_audit_table(conn) -> None:
+    """Create the run-level audit table used by the interactive enricher."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `enrichment_run_audit` (
+                `run_id` CHAR(36) PRIMARY KEY,
+                `login_name` VARCHAR(255) NOT NULL,
+                `batch_tag` VARCHAR(64) NOT NULL,
+                `attempted_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `number_enriched` INT UNSIGNED NOT NULL DEFAULT 0,
+                `number_not_enriched` INT UNSIGNED NOT NULL DEFAULT 0,
+                `credits_used` DECIMAL(12,2) NOT NULL DEFAULT 0,
+                `credits_remaining_before` DECIMAL(12,2) DEFAULT NULL,
+                `run_status` VARCHAR(24) NOT NULL DEFAULT 'running',
+                `started_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `completed_at` DATETIME DEFAULT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX `idx_enrichment_run_login` (`login_name`, `started_at`),
+                INDEX `idx_enrichment_run_batch` (`batch_tag`, `started_at`),
+                INDEX `idx_enrichment_run_status` (`run_status`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """
+        )
+
+
+def start_enrichment_run(
+    conn,
+    login_name: str,
+    batch_tag: str,
+    credits_remaining_before: float | int | None,
+    run_id: str | None = None,
+) -> str:
+    """Insert a running audit record before any paid request is made."""
+    ensure_enrichment_run_audit_table(conn)
+    resolved_run_id = run_id or str(uuid.uuid4())
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO `enrichment_run_audit` (
+                `run_id`, `login_name`, `batch_tag`, `credits_remaining_before`, `run_status`
+            ) VALUES (%s, %s, %s, %s, 'running')
+            """,
+            (
+                resolved_run_id,
+                str(login_name or "")[:255],
+                str(batch_tag or "")[:64],
+                credits_remaining_before,
+            ),
+        )
+    return resolved_run_id
+
+
+def update_enrichment_run(
+    conn,
+    run_id: str,
+    attempted_leads: int,
+    number_enriched: int,
+    credits_used: float | int,
+    run_status: str = "running",
+) -> None:
+    """Persist the latest run totals; safe to call after every chunk."""
+    attempted = max(0, int(attempted_leads or 0))
+    enriched = max(0, min(attempted, int(number_enriched or 0)))
+    status = run_status if run_status in {"running", "completed", "partial", "failed", "cancelled"} else "failed"
+    completed = status != "running"
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE `enrichment_run_audit`
+            SET `attempted_leads` = %s,
+                `number_enriched` = %s,
+                `number_not_enriched` = %s,
+                `credits_used` = %s,
+                `run_status` = %s,
+                `completed_at` = IF(%s, COALESCE(`completed_at`, NOW()), NULL)
+            WHERE `run_id` = %s
+            """,
+            (attempted, enriched, attempted - enriched, credits_used, status, completed, run_id),
+        )
+
+
+def ensure_lead_enrichment_state_table(conn) -> None:
+    """Create non-destructive scheduling state for carry-forward/later decisions."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `lead_enrichment_state` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `source_table` VARCHAR(32) NOT NULL,
+                `batch` VARCHAR(64) NOT NULL,
+                `saved_lead_id` BIGINT UNSIGNED NOT NULL,
+                `decision` VARCHAR(24) NOT NULL,
+                `target_cycle` VARCHAR(64) NOT NULL DEFAULT '',
+                `decided_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY `uq_lead_enrichment_state` (`source_table`, `batch`, `saved_lead_id`),
+                INDEX `idx_enrichment_state_cycle` (`decision`, `target_cycle`),
+                INDEX `idx_enrichment_state_batch` (`batch`, `decision`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """
+        )
+
+
+def record_lead_enrichment_decisions(
+    conn,
+    source_table: str,
+    batch: str,
+    saved_lead_ids: list[int],
+    decision: str,
+    target_cycle: str = "",
+) -> int:
+    """Persist a batch decision without changing the lead's source batch/cycle."""
+    if decision not in {"carry_forward", "decide_later"}:
+        raise ValueError(f"Unsupported enrichment decision: {decision}")
+    ids = sorted({int(lead_id) for lead_id in saved_lead_ids if lead_id})
+    if not ids:
+        return 0
+    ensure_lead_enrichment_state_table(conn)
+    rows = [
+        (str(source_table or "")[:32], str(batch or "")[:64], lead_id, decision, str(target_cycle or "")[:64])
+        for lead_id in ids
+    ]
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO `lead_enrichment_state` (
+                `source_table`, `batch`, `saved_lead_id`, `decision`, `target_cycle`
+            ) VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                `decision` = VALUES(`decision`),
+                `target_cycle` = VALUES(`target_cycle`),
+                `decided_at` = CURRENT_TIMESTAMP
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def fetch_lead_enrichment_decisions(
+    conn,
+    source_table: str,
+    batch: str,
+    ensure_table: bool = True,
+) -> dict[int, dict[str, str]]:
+    if ensure_table:
+        ensure_lead_enrichment_state_table(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT `saved_lead_id`, `decision`, `target_cycle`
+            FROM `lead_enrichment_state`
+            WHERE `source_table` = %s AND `batch` = %s
+            """,
+            (source_table, batch),
+        )
+        rows = cur.fetchall()
+    return {
+        int(row[0]): {"decision": str(row[1] or ""), "target_cycle": str(row[2] or "")}
+        for row in rows
+    }
+
+
+def ensure_million_verifier_log_table(conn) -> None:
+    """Create the MillionVerifier log table to track verification batches, cycles, and outcomes."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS `million_verifier_log` (
+                `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                `log_name` VARCHAR(255) NOT NULL DEFAULT '',
+                `login_name` VARCHAR(255) NOT NULL DEFAULT '',
+                `account_name` VARCHAR(128) NOT NULL DEFAULT '',
+                `batch_name` VARCHAR(128) NOT NULL DEFAULT '',
+                `cycle` VARCHAR(64) NOT NULL DEFAULT '',
+                `leads_entered` INT UNSIGNED NOT NULL DEFAULT 0,
+                `good_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `discarded_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `bad_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `catch_all_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `risky_leads` INT UNSIGNED NOT NULL DEFAULT 0,
+                `file_id` VARCHAR(64) NOT NULL DEFAULT '',
+                `file_name` VARCHAR(255) NOT NULL DEFAULT '',
+                `status` VARCHAR(32) NOT NULL DEFAULT 'completed',
+                `crm_created` INT UNSIGNED NOT NULL DEFAULT 0,
+                `crm_updated` INT UNSIGNED NOT NULL DEFAULT 0,
+                `crm_tag` VARCHAR(128) NOT NULL DEFAULT '',
+                `file_path` VARCHAR(512) NOT NULL DEFAULT '',
+                `verified_at` DATETIME DEFAULT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX `idx_mv_login_cycle` (`login_name`, `cycle`),
+                INDEX `idx_mv_log_name` (`log_name`),
+                INDEX `idx_mv_batch` (`batch_name`),
+                INDEX `idx_mv_file_id` (`file_id`),
+                INDEX `idx_mv_status` (`status`),
+                INDEX `idx_mv_created_at` (`created_at`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """
+        )
+        try:
+            cur.execute("ALTER TABLE `million_verifier_log` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
+        except Exception:
+            pass
+
+
+def record_million_verifier_log(
+    conn,
+    log_name: str = "",
+    batch_name: str = "",
+    cycle: str = "",
+    leads_entered: int = 0,
+    good_leads: int = 0,
+    discarded_leads: int = 0,
+    bad_leads: int = 0,
+    login_name: str = "",
+    account_name: str = "",
+    catch_all_leads: int = 0,
+    risky_leads: int = 0,
+    file_id: str = "",
+    file_name: str = "",
+    status: str = "completed",
+    crm_created: int = 0,
+    crm_updated: int = 0,
+    crm_tag: str = "",
+    file_path: str = "",
+    verified_at: Any = None,
+    created_at: Any = None,
+) -> int:
+    """Insert or update a verification run record in million_verifier_log."""
+    ensure_million_verifier_log_table(conn)
+    resolved_login = (login_name or log_name or "").strip()
+    resolved_log_name = (log_name or login_name or "").strip()
+
+    with conn.cursor() as cur:
+        # Check if record with same file_id exists (if file_id is provided and non-empty)
+        if file_id and str(file_id).strip():
+            cur.execute(
+                "SELECT `id` FROM `million_verifier_log` WHERE `file_id` = %s LIMIT 1",
+                (str(file_id).strip(),),
+            )
+            existing = cur.fetchone()
+            if existing:
+                row_id = existing[0]
+                cur.execute(
+                    """
+                    UPDATE `million_verifier_log`
+                    SET `log_name` = %s,
+                        `login_name` = %s,
+                        `account_name` = COALESCE(NULLIF(%s, ''), `account_name`),
+                        `batch_name` = %s,
+                        `cycle` = %s,
+                        `leads_entered` = %s,
+                        `good_leads` = %s,
+                        `discarded_leads` = %s,
+                        `bad_leads` = %s,
+                        `catch_all_leads` = %s,
+                        `risky_leads` = %s,
+                        `file_name` = %s,
+                        `status` = %s,
+                        `crm_created` = GREATEST(`crm_created`, %s),
+                        `crm_updated` = GREATEST(`crm_updated`, %s),
+                        `crm_tag` = COALESCE(NULLIF(%s, ''), `crm_tag`),
+                        `file_path` = COALESCE(NULLIF(%s, ''), `file_path`),
+                        `verified_at` = COALESCE(%s, `verified_at`)
+                    WHERE `id` = %s
+                    """,
+                    (
+                        resolved_log_name[:255],
+                        resolved_login[:255],
+                        account_name[:128],
+                        str(batch_name or "")[:128],
+                        str(cycle or "")[:64],
+                        int(leads_entered or 0),
+                        int(good_leads or 0),
+                        int(discarded_leads or 0),
+                        int(bad_leads or 0),
+                        int(catch_all_leads or 0),
+                        int(risky_leads or 0),
+                        str(file_name or "")[:255],
+                        str(status or "completed")[:32],
+                        int(crm_created or 0),
+                        int(crm_updated or 0),
+                        str(crm_tag or "")[:128],
+                        str(file_path or "")[:512],
+                        verified_at,
+                        row_id,
+                    ),
+                )
+                conn.commit()
+                return row_id
+
+        # Insert new record
+        cur.execute(
+            """
+            INSERT INTO `million_verifier_log` (
+                `log_name`, `login_name`, `account_name`, `batch_name`, `cycle`,
+                `leads_entered`, `good_leads`, `discarded_leads`, `bad_leads`,
+                `catch_all_leads`, `risky_leads`, `file_id`, `file_name`, `status`,
+                `crm_created`, `crm_updated`, `crm_tag`, `file_path`,
+                `verified_at`, `created_at`
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, COALESCE(%s, NOW())
+            )
+            """,
+            (
+                resolved_log_name[:255],
+                resolved_login[:255],
+                str(account_name or "")[:128],
+                str(batch_name or "")[:128],
+                str(cycle or "")[:64],
+                int(leads_entered or 0),
+                int(good_leads or 0),
+                int(discarded_leads or 0),
+                int(bad_leads or 0),
+                int(catch_all_leads or 0),
+                int(risky_leads or 0),
+                str(file_id or "")[:64],
+                str(file_name or "")[:255],
+                str(status or "completed")[:32],
+                int(crm_created or 0),
+                int(crm_updated or 0),
+                str(crm_tag or "")[:128],
+                str(file_path or "")[:512],
+                verified_at,
+                created_at,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+
 def backfill_enrichment_ledger_from_saved_leads(conn, table_name: str = "apollo_saved_leads") -> int:
     """Seed ledger from rows that already have enriched_at (one-time / idempotent)."""
     target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
@@ -3299,6 +3640,8 @@ class ExtensionActivityRequest(BaseModel):
     account_email: str | None = ""
     cycle_tag: str | None = ""
     batch: str | None = ""
+    search_word: str | None = ""
+    search_bar_word: str | None = ""
     page_number: int | None = None
     total_on_page: int | None = 0
     required_on_page: int | None = 0
@@ -3320,6 +3663,8 @@ def ensure_extension_activity_log_table(conn):
                 `account_email` VARCHAR(255) NOT NULL DEFAULT '',
                 `cycle_tag` VARCHAR(64) NOT NULL DEFAULT '',
                 `batch` VARCHAR(128) NOT NULL DEFAULT '',
+                `search_word` VARCHAR(255) NOT NULL DEFAULT '',
+                `search_bar_word` VARCHAR(255) NOT NULL DEFAULT '',
                 `page_number` INT NULL,
                 `total_on_page` INT NULL DEFAULT 0,
                 `required_on_page` INT NULL DEFAULT 0,
@@ -3336,6 +3681,8 @@ def ensure_extension_activity_log_table(conn):
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """)
         for col_name, col_def in [
+            ("search_word", "VARCHAR(255) NOT NULL DEFAULT '' AFTER `batch`"),
+            ("search_bar_word", "VARCHAR(255) NOT NULL DEFAULT '' AFTER `search_word`"),
             ("total_on_page", "INT NULL DEFAULT 0 AFTER `page_number`"),
             ("not_required_on_page", "INT NULL DEFAULT 0 AFTER `required_on_page`"),
             ("existing_on_page", "INT NULL DEFAULT 0 AFTER `not_required_on_page`"),
@@ -3354,7 +3701,7 @@ def ensure_extension_activity_log_table(conn):
 
 @app.post("/log-extension-activity")
 def log_extension_activity(request: ExtensionActivityRequest):
-    """Record an extension event (start, login selected, page loaded/advanced, page evaluated) with login, cycle and lead counts."""
+    """Record an extension event (start, login selected, page loaded/advanced, page evaluated) with login, cycle, search word, search bar word and lead counts."""
     with get_connection() as conn:
         ensure_extension_activity_log_table(conn)
 
@@ -3372,17 +3719,20 @@ def log_extension_activity(request: ExtensionActivityRequest):
             cur.execute(
                 """
                 INSERT INTO `extension_activity_log`
-                    (`event_type`, `account_email`, `cycle_tag`, `batch`, `page_number`,
+                    (`event_type`, `account_email`, `cycle_tag`, `batch`,
+                     `search_word`, `search_bar_word`, `page_number`,
                      `total_on_page`, `required_on_page`, `not_required_on_page`,
                      `existing_on_page`, `guardrail_rejected_on_page`,
                      `collected_total`, `page_url`, `breakdown_json`)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     (request.event_type or "")[:32],
                     (request.account_email or "").strip()[:255],
                     (request.cycle_tag or "").strip()[:64],
                     (request.batch or "").strip()[:128],
+                    (request.search_word or "").strip()[:255],
+                    (request.search_bar_word or "").strip()[:255],
                     request.page_number,
                     request.total_on_page or 0,
                     request.required_on_page or 0,
@@ -3993,6 +4343,64 @@ def get_batch_worker_status():
         "status": "active",
         "worker": background_batch_worker.get_status()
     }
+
+@app.get("/api/account-cycle")
+@app.get("/account-cycle")
+def get_account_cycle_api(email: str, target_date: str | None = None):
+    """
+    Returns exact timezone-aware cycle window and tag for an account respecting expiration instant.
+    """
+    from scripts.apollo_saved_search_inspector import get_account_cycle_window
+    target_dt = None
+    if target_date:
+        try:
+            target_dt = datetime.fromisoformat(target_date.replace("Z", "+00:00"))
+        except Exception:
+            pass
+    start_dt, end_dt, cycle_tag = get_account_cycle_window(email, target_date=target_dt)
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    return {
+        "status": "ok",
+        "email": email,
+        "cycle_tag": cycle_tag,
+        "cycle_start_utc": start_dt.isoformat(),
+        "cycle_end_utc": end_dt.isoformat(),
+        "cycle_start_ist": start_dt.astimezone(ist_tz).strftime("%d %b %Y, %I:%M %p IST"),
+        "cycle_end_ist": end_dt.astimezone(ist_tz).strftime("%d %b %Y, %I:%M %p IST"),
+    }
+
+
+@app.get("/api/account-cycles")
+@app.get("/account-cycles")
+def get_account_cycles_api(target_date: str | None = None):
+    """
+    Returns exact timezone-aware cycle window and tag for all 19 Apollo accounts.
+    """
+    from scripts.apollo_saved_search_inspector import get_account_cycle_window
+    target_dt = None
+    if target_date:
+        try:
+            target_dt = datetime.fromisoformat(target_date.replace("Z", "+00:00"))
+        except Exception:
+            pass
+    report_path = os.path.join(PROJECT_ROOT, "config", "apollo_live_account_report.json")
+    results = []
+    if os.path.exists(report_path):
+        with open(report_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for acc in data.get("accounts", []):
+            em = acc.get("email", "")
+            s_dt, e_dt, tag = get_account_cycle_window(em, target_date=target_dt)
+            results.append({
+                "email": em,
+                "name": acc.get("name", ""),
+                "cycle_tag": tag,
+                "expiry_ist": acc.get("expiry_ist", ""),
+                "expiry_utc": acc.get("expiry_utc", ""),
+                "cycle_start_utc": s_dt.isoformat(),
+                "cycle_end_utc": e_dt.isoformat(),
+            })
+    return {"status": "ok", "count": len(results), "accounts": results}
 
 
 # Include standalone Enrich.so Lead Finder router

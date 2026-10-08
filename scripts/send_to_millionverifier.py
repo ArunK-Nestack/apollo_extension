@@ -427,6 +427,13 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
         original_headers=original_headers,
     )
 
+    cycle_tag = ""
+    try:
+        from scripts.apollo_saved_search_inspector import get_account_cycle_window
+        _, _, cycle_tag = get_account_cycle_window(selected_login)
+    except Exception:
+        pass
+
     try:
         from scripts.freshsales_bridge import save_millionverifier_job
         save_millionverifier_job({
@@ -435,6 +442,7 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
             "login": selected_login,
             "account_name": selected_acc_name,
             "batch": selected_batch,
+            "cycle": cycle_tag,
             "status": "finished",
             "total_rows": len(df_clean),
             "good_count": cat_summary.good_count,

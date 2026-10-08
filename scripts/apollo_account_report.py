@@ -42,9 +42,9 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-load_dotenv()
-
 CONFIG_PATH = PROJECT_ROOT / "config" / "apollo_accounts.json"
+CACHE_PATH = PROJECT_ROOT / "config" / "apollo_live_account_report.json"
+load_dotenv(PROJECT_ROOT / ".env")
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -109,29 +109,106 @@ def _probe_account(acc: Dict[str, Any]) -> Dict[str, Any]:
         return base
 
 
-def fetch_all_accounts_live() -> List[Dict[str, Any]]:
-    """Load config and probe all accounts concurrently."""
-    if not CONFIG_PATH.exists():
-        print(f"[!] Config not found: {CONFIG_PATH}")
-        return []
+def _load_cached_report() -> Dict[str, Any]:
+    try:
+        payload = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
 
+
+def merge_probe_results_with_cache(
+    live_results: List[Dict[str, Any]],
+    cached_report: Optional[Dict[str, Any]] = None,
+    successful_at: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Keep the last known good expiry and credits when a free probe fails."""
+    cached_report = cached_report or {}
+    cached_generated_at = str(cached_report.get("generated_at") or "")
+    cached_map = {
+        str(row.get("email") or "").strip().lower(): row
+        for row in cached_report.get("accounts", [])
+        if isinstance(row, dict) and row.get("email")
+    }
+    success_time = successful_at or datetime.now(timezone.utc).astimezone(IST).strftime(
+        "%d %b %Y %I:%M:%S %p IST"
+    )
+    merged: List[Dict[str, Any]] = []
+    for live in live_results:
+        email_key = str(live.get("email") or "").strip().lower()
+        if live.get("status") == "active" and live.get("billing_end"):
+            merged.append({
+                **live,
+                "source": "live",
+                "is_stale": False,
+                "last_success_at": success_time,
+            })
+            continue
+
+        cached = cached_map.get(email_key, {})
+        cached_expiry = cached.get("expiry_utc") or cached.get("billing_end")
+        if cached_expiry:
+            merged.append({
+                **cached,
+                "id": live.get("id", cached.get("id")),
+                "name": live.get("name") or cached.get("name", ""),
+                "email": live.get("email") or cached.get("email", ""),
+                "status": "active",
+                "billing_end": cached_expiry,
+                "source": "last_good_cache",
+                "is_stale": True,
+                "probe_status": live.get("status", "error"),
+                "last_success_at": cached.get("last_success_at") or cached_generated_at,
+            })
+        else:
+            merged.append({
+                **live,
+                "source": "unavailable",
+                "is_stale": True,
+                "probe_status": live.get("status", "error"),
+            })
+    return merged
+
+
+def fetch_raw_accounts_probe() -> List[Dict[str, Any]]:
+    """Probe accounts in a standalone worker pool."""
+    if not CONFIG_PATH.exists():
+        return []
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         accounts: List[Dict[str, Any]] = json.load(f)
-
     results: List[Dict[str, Any]] = []
-    print(f"\n  Probing {len(accounts)} accounts (parallel)...", end="", flush=True)
-
     with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {pool.submit(_probe_account, acc): acc for acc in accounts}
         for future in as_completed(futures):
             results.append(future.result())
-            print(".", end="", flush=True)
-
-    print("  done.\n")
-
-    # Preserve original account order (by id)
     results.sort(key=lambda x: x.get("id") or 999)
     return results
+
+
+def fetch_all_accounts_live() -> List[Dict[str, Any]]:
+    """Probe all accounts, preserving last-good values for failed probes."""
+    results = fetch_raw_accounts_probe()
+
+    # If all probes failed due to socket restrictions (e.g. WinError 10013 in background process)
+    if not any(r.get("status") == "active" for r in results):
+        try:
+            import subprocess
+            cmd = [
+                sys.executable,
+                "-c",
+                "import json; from scripts.apollo_account_report import fetch_raw_accounts_probe; "
+                "print('__PROBE_JSON_START__' + json.dumps(fetch_raw_accounts_probe()) + '__PROBE_JSON_END__')",
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+            if proc.returncode == 0 and "__PROBE_JSON_START__" in proc.stdout:
+                raw_part = proc.stdout.split("__PROBE_JSON_START__")[1].split("__PROBE_JSON_END__")[0]
+                sub_results = json.loads(raw_part)
+                if any(r.get("status") == "active" for r in sub_results):
+                    results = sub_results
+        except Exception:
+            pass
+
+    return merge_probe_results_with_cache(results, _load_cached_report())
 
 
 # ── Time Helpers ─────────────────────────────────────────────────────────────
@@ -198,6 +275,7 @@ def run_account_report(accounts: Optional[List[Dict[str, Any]]] = None) -> None:
                 dt_ist = dt_utc.astimezone(IST)
                 diff   = dt_utc - now_utc
                 row["expiry_ist"]  = dt_ist.strftime("%d %b %Y  %I:%M %p")
+                row["expiry_utc"]  = dt_utc.isoformat()
                 row["time_left"]   = _time_left_str(diff)
                 row["diff"]        = diff
                 row["color"]       = _urgency_color(diff)
@@ -214,6 +292,29 @@ def run_account_report(accounts: Optional[List[Dict[str, Any]]] = None) -> None:
 
         total_credits += acc.get("credits_remaining", 0)
         rows.append(row)
+
+    # Persist live probe results to cache
+    try:
+        clean_rows = []
+        for r in rows:
+            clean_r = {k: v for k, v in r.items() if k not in ("color", "diff")}
+            clean_rows.append(clean_r)
+
+        payload = {
+            "status": "ok",
+            "generated_at": now_ist.strftime("%d %b %Y %I:%M:%S %p IST"),
+            "total_credits": total_credits,
+            "total_accounts": len(clean_rows),
+            "fresh_accounts": sum(1 for a in clean_rows if not a.get("is_stale")),
+            "stale_accounts": sum(1 for a in clean_rows if a.get("is_stale")),
+            "accounts": clean_rows,
+        }
+        tmp_cache = CACHE_PATH.with_suffix(".json.tmp")
+        with open(tmp_cache, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        tmp_cache.replace(CACHE_PATH)
+    except Exception:
+        pass
 
     # ── Header ───────────────────────────────────────────────────────────────
     W = 114

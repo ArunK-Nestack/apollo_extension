@@ -24,7 +24,8 @@ def view_logs(batch=None, page=None, limit=50, show_details=False):
         ensure_extension_activity_log_table(conn)
         with conn.cursor() as cur:
             query = """
-                SELECT id, event_type, account_email, cycle_tag, batch, page_number,
+                SELECT id, event_type, account_email, cycle_tag, batch,
+                       search_word, search_bar_word, page_number,
                        total_on_page, required_on_page, not_required_on_page,
                        existing_on_page, guardrail_rejected_on_page, collected_total,
                        created_at, breakdown_json
@@ -49,15 +50,18 @@ def view_logs(batch=None, page=None, limit=50, show_details=False):
         print("[!] No page logs found matching the criteria.")
         return
 
-    print("=" * 110)
-    print(f"{'TIME':19} | {'EVENT':14} | {'PAGE':5} | {'BATCH':15} | {'TOTAL':5} | {'REQ':4} | {'NOT REQ':7} | {'EXIST':5} | {'REJ':4} | {'CUMULATIVE':10}")
-    print("-" * 110)
+    print("=" * 140)
+    print(f"{'TIME':19} | {'EVENT':14} | {'PAGE':5} | {'SEARCH IN':16} | {'SEARCH BAR':14} | {'BATCH':15} | {'TOT':4} | {'REQ':4} | {'NOT':4} | {'EXI':4} | {'REJ':4} | {'CUMULATIVE':10}")
+    print("-" * 140)
 
     for r in reversed(rows):
-        (log_id, event_type, account, cycle, b_name, pg,
+        (log_id, event_type, account, cycle, b_name,
+         s_word, sb_word, pg,
          tot, req, not_req, exist, rej, collected, created, b_json) = r
         
         t_str = str(created)[:19]
+        s_disp = (s_word or "-")[:16]
+        sb_disp = (sb_word or "-")[:14]
         b_disp = (b_name or "")[:15]
         pg_disp = str(pg if pg is not None else "-")
         tot_disp = str(tot or 0)
@@ -67,7 +71,7 @@ def view_logs(batch=None, page=None, limit=50, show_details=False):
         rej_disp = str(rej or 0)
         coll_disp = str(collected if collected is not None else "-")
 
-        print(f"{t_str:19} | {event_type:14} | {pg_disp:5} | {b_disp:15} | {tot_disp:5} | {req_disp:4} | {not_req_disp:7} | {exist_disp:5} | {rej_disp:4} | {coll_disp:10}")
+        print(f"{t_str:19} | {event_type:14} | {pg_disp:5} | {s_disp:16} | {sb_disp:14} | {b_disp:15} | {tot_disp:4} | {req_disp:4} | {not_req_disp:4} | {exist_disp:4} | {rej_disp:4} | {coll_disp:10}")
 
         if show_details and b_json:
             try:

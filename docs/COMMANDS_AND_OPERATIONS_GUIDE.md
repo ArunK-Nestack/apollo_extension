@@ -224,6 +224,42 @@ python scripts/apollo_search_direct.py
 
 ---
 
+## 10. Apollo Enrichment Cycle Manager
+
+Run the interactive account, batch, credit, and enrichment decision workflow:
+
+```powershell
+python scripts/enrich_batch_interactive.py
+```
+
+The CLI displays all configured logins with their current cycle, locally saved leads,
+pending leads, and credits from the latest free account report. By default, counts and
+the batch picker include only the canonical `login-email(active-cycle)` batch, excluding
+legacy, test, and historical batches even if they were stamped with the same login or
+cycle. Use `--all-cycles` only when historical inspection is intentional. After selecting a batch
+and login it applies the one-company policy and CRM guardrails, refreshes the selected
+login's balance using non-enrichment account endpoints, and offers:
+
+1. Enrich those
+2. Carry forward to the next cycle
+3. Decide later
+
+Real enrichment runs are capped at `credits remaining - 10` by default. Change the
+reserve with `--credit-reserve NUMBER`. Carry-forward and decide-later decisions do not
+change the original batch or source cycle.
+
+To validate the workflow without calling Apollo enrichment or changing database rows:
+
+```powershell
+python scripts/enrich_batch_interactive.py --dry-run
+```
+
+Each real execution is summarized in `enrichment_run_audit`; individual lead outcomes
+remain in `batch_enrichment_ledger`. Deferred decisions are stored in
+`lead_enrichment_state`.
+
+---
+
 ## Operational Workflow Cheat Sheet
 
 ```

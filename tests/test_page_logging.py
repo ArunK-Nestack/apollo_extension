@@ -53,6 +53,8 @@ def test_page_logging_endpoint():
         account_email="test_user@example.com",
         cycle_tag="oct_test",
         batch="qa_page_test_batch",
+        search_word="Director IT/Others/NA EST",
+        search_bar_word="fintech",
         page_number=5,
         total_on_page=3,
         required_on_page=1,
@@ -72,7 +74,7 @@ def test_page_logging_endpoint():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT event_type, batch, page_number, total_on_page,
+                SELECT event_type, batch, search_word, search_bar_word, page_number, total_on_page,
                        required_on_page, not_required_on_page, existing_on_page,
                        guardrail_rejected_on_page, breakdown_json
                 FROM extension_activity_log
@@ -82,8 +84,11 @@ def test_page_logging_endpoint():
             )
             row = cur.fetchone()
             assert row is not None
-            ev, b, pg, tot, req_cnt, not_req_cnt, exist_cnt, rej_cnt, b_json = row
+            ev, b, s_w, sb_w, pg, tot, req_cnt, not_req_cnt, exist_cnt, rej_cnt, b_json = row
             assert ev == "PAGE_EVALUATED"
+            assert b == "qa_page_test_batch"
+            assert s_w == "Director IT/Others/NA EST"
+            assert sb_w == "fintech"
             assert pg == 5
             assert tot == 3
             assert req_cnt == 1

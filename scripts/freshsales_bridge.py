@@ -159,6 +159,43 @@ def save_millionverifier_job(job_data: Dict[str, Any]) -> None:
     except Exception:
         pass
 
+    # Persist to MySQL million_verifier_log table
+    try:
+        from backend.api import get_connection, record_million_verifier_log
+        login = str(job_data.get("login", "")).strip()
+        batch = str(job_data.get("batch", "")).strip()
+        fname = str(job_data.get("file_name") or job_data.get("filename") or "").strip()
+        cycle = str(job_data.get("cycle", "")).strip()
+        if not cycle:
+            m = re.search(r"([a-z]{3})[\s_]*(\d{1,2})[\s_]*(?:-|_|to|\s)+[\s_]*([a-z]{3})[\s_]*(\d{1,2})", f"{fname} {batch}".lower())
+            if m:
+                cycle = f"{m.group(1)} {int(m.group(2)):02d} - {m.group(3)} {int(m.group(4)):02d}"
+
+        with get_connection() as conn:
+            record_million_verifier_log(
+                conn=conn,
+                log_name=login,
+                login_name=login,
+                account_name=str(job_data.get("account_name", "")),
+                batch_name=batch,
+                cycle=cycle,
+                leads_entered=int(job_data.get("total_rows") or 0),
+                good_leads=int(job_data.get("good_count") or 0),
+                discarded_leads=int(job_data.get("risky_count") or 0) + int(job_data.get("catch_all_count") or 0),
+                bad_leads=int(job_data.get("bad_count") or 0),
+                catch_all_leads=int(job_data.get("catch_all_count") or 0),
+                risky_leads=int(job_data.get("risky_count") or 0),
+                file_id=file_id,
+                file_name=fname,
+                status=str(job_data.get("status") or "completed"),
+                crm_created=int(job_data.get("crm_created") or 0),
+                crm_updated=int(job_data.get("crm_updated") or 0),
+                crm_tag=str(job_data.get("crm_tag") or ""),
+                file_path=str(job_data.get("good_csv_path") or ""),
+            )
+    except Exception:
+        pass
+
 
 def ensure_millionverifier_api_key() -> str:
     """Check and ensure MillionVerifier API key is configured."""
@@ -764,8 +801,14 @@ def sync_good_file_to_freshsales(
     print(f"  • Freshly Created     : {res_data.get('freshly_created_count', 0):,d} new contacts")
     print(f"  • Non-Overwrite Update: {res_data.get('updated_in_crm_count', 0):,d} existing contacts (tag merged)")
     print(f"  • Errors / Failures   : {res_data.get('failed_errors_count', 0):,d}")
-    print(f"  • Audit CSV Report    : {res_data.get('report_file_path', 'None')}")
     print("=" * 95)
+
+    res_data["tld_blocked"] = res_data.get("tld_filtered_count", 0)
+    res_data["created"] = res_data.get("freshly_created_count", 0)
+    res_data["updated"] = res_data.get("updated_in_crm_count", 0)
+    res_data["tag"] = applied_tag
+    if "status" not in res_data:
+        res_data["status"] = "completed" if proc.returncode == 0 else "failed"
 
     return res_data
 

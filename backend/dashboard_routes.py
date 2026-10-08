@@ -222,6 +222,387 @@ def get_logins():
 
 
 # =====================================================================
+# 2a. REST API: EXTENSION ACTIVITY ANALYTICS
+# =====================================================================
+
+def _analytics_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _analytics_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _analytics_normalized(value: Any) -> str:
+    return _analytics_text(value).casefold()
+
+
+def _analytics_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        parsed = value
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+    except (TypeError, ValueError):
+        return None
+
+
+def _analytics_iso(value: Any) -> str:
+    parsed = _analytics_datetime(value)
+    return parsed.isoformat(sep=" ", timespec="seconds") if parsed else ""
+
+
+def _aggregate_extension_analytics(rows: List[Dict[str, Any]], saved_leads: int = 0) -> Dict[str, Any]:
+    """Aggregate extension logs without depending on a live database (also used by tests)."""
+    ordered = sorted(rows, key=lambda row: (_analytics_datetime(row.get("created_at")) or datetime.min, _analytics_int(row.get("id"))))
+    evaluated = [row for row in ordered if str(row.get("event_type") or "").upper() == "PAGE_EVALUATED"]
+
+    # Collapse only near-identical retry events emitted within two minutes. A later
+    # rerun of the same Apollo page remains a legitimate analytics event.
+    deduped: List[Dict[str, Any]] = []
+    last_seen: Dict[tuple, tuple[int, Optional[datetime]]] = {}
+    duplicate_retries = 0
+    for row in evaluated:
+        fingerprint = (
+            _analytics_normalized(row.get("batch")),
+            _analytics_normalized(row.get("search_word")),
+            _analytics_normalized(row.get("search_bar_word")),
+            row.get("page_number"),
+            _analytics_int(row.get("total_on_page")),
+            _analytics_int(row.get("required_on_page")),
+            _analytics_int(row.get("not_required_on_page")),
+            _analytics_int(row.get("existing_on_page")),
+            _analytics_int(row.get("guardrail_rejected_on_page")),
+        )
+        created = _analytics_datetime(row.get("created_at"))
+        previous = last_seen.get(fingerprint)
+        if previous and created and previous[1] and abs((created - previous[1]).total_seconds()) <= 120:
+            deduped[previous[0]] = row
+            last_seen[fingerprint] = (previous[0], created)
+            duplicate_retries += 1
+        else:
+            last_seen[fingerprint] = (len(deduped), created)
+            deduped.append(row)
+
+    totals = {
+        "pages": len(deduped),
+        "evaluated": sum(_analytics_int(row.get("total_on_page")) for row in deduped),
+        "required": sum(_analytics_int(row.get("required_on_page")) for row in deduped),
+        "not_required": sum(_analytics_int(row.get("not_required_on_page")) for row in deduped),
+        "existing": sum(_analytics_int(row.get("existing_on_page")) for row in deduped),
+        "rejected": sum(_analytics_int(row.get("guardrail_rejected_on_page")) for row in deduped),
+        "saved": _analytics_int(saved_leads),
+    }
+    denominator = max(1, totals["evaluated"])
+    totals.update({
+        "required_rate": round(totals["required"] * 100 / denominator, 1),
+        "existing_rate": round(totals["existing"] * 100 / denominator, 1),
+        "rejection_rate": round(totals["rejected"] * 100 / denominator, 1),
+    })
+
+    search_groups: Dict[tuple, Dict[str, Any]] = {}
+    trend_groups: Dict[str, Dict[str, Any]] = {}
+    page_groups: Dict[int, Dict[str, int]] = {}
+    context_captured = 0
+    keyword_captured = 0
+    finder_ids = 0
+
+    for row in deduped:
+        context = _analytics_text(row.get("search_word"))
+        keyword = _analytics_text(row.get("search_bar_word"))
+        if context:
+            context_captured += 1
+        if keyword:
+            keyword_captured += 1
+        if context and re.fullmatch(r"[A-Za-z0-9_-]{12,}", context):
+            finder_ids += 1
+
+        key = (_analytics_normalized(context), _analytics_normalized(keyword))
+        group = search_groups.setdefault(key, {
+            "search_word": context or "Unknown / Not captured",
+            "search_bar_word": keyword or "No keyword",
+            "pages": 0, "evaluated": 0, "required": 0, "existing": 0, "rejected": 0,
+            "first_seen": row.get("created_at"), "last_seen": row.get("created_at"), "max_page": 0,
+        })
+        group["pages"] += 1
+        group["evaluated"] += _analytics_int(row.get("total_on_page"))
+        group["required"] += _analytics_int(row.get("required_on_page"))
+        group["existing"] += _analytics_int(row.get("existing_on_page"))
+        group["rejected"] += _analytics_int(row.get("guardrail_rejected_on_page"))
+        group["last_seen"] = row.get("created_at")
+        group["max_page"] = max(group["max_page"], _analytics_int(row.get("page_number")))
+
+        created = _analytics_datetime(row.get("created_at"))
+        day = created.strftime("%Y-%m-%d") if created else "Unknown"
+        trend = trend_groups.setdefault(day, {"date": day, "pages": 0, "evaluated": 0, "required": 0, "existing": 0})
+        trend["pages"] += 1
+        trend["evaluated"] += _analytics_int(row.get("total_on_page"))
+        trend["required"] += _analytics_int(row.get("required_on_page"))
+        trend["existing"] += _analytics_int(row.get("existing_on_page"))
+
+        page_number = _analytics_int(row.get("page_number"))
+        if page_number:
+            page_group = page_groups.setdefault(page_number, {"page": page_number, "runs": 0, "evaluated": 0, "required": 0, "existing": 0})
+            page_group["runs"] += 1
+            page_group["evaluated"] += _analytics_int(row.get("total_on_page"))
+            page_group["required"] += _analytics_int(row.get("required_on_page"))
+            page_group["existing"] += _analytics_int(row.get("existing_on_page"))
+
+    searches = []
+    for group in search_groups.values():
+        denominator = max(1, group["evaluated"])
+        group["required_rate"] = round(group["required"] * 100 / denominator, 1)
+        group["existing_rate"] = round(group["existing"] * 100 / denominator, 1)
+        group["first_seen"] = _analytics_iso(group["first_seen"])
+        group["last_seen"] = _analytics_iso(group["last_seen"])
+        if group["pages"] >= 3 and group["required_rate"] < 10 and group["existing_rate"] >= 70:
+            group["recommendation"] = "Likely exhausted"
+            group["health"] = "danger"
+        elif group["required_rate"] >= 25:
+            group["recommendation"] = "Strong — continue"
+            group["health"] = "good"
+        else:
+            group["recommendation"] = "Monitor"
+            group["health"] = "watch"
+        searches.append(group)
+    searches.sort(key=lambda item: (item["required"], item["required_rate"]), reverse=True)
+
+    daily_trend = sorted(trend_groups.values(), key=lambda item: item["date"])[-30:]
+    for item in daily_trend:
+        item["required_rate"] = round(item["required"] * 100 / max(1, item["evaluated"]), 1)
+
+    page_saturation = sorted(page_groups.values(), key=lambda item: item["page"])
+    for item in page_saturation:
+        item["required_rate"] = round(item["required"] * 100 / max(1, item["evaluated"]), 1)
+        item["existing_rate"] = round(item["existing"] * 100 / max(1, item["evaluated"]), 1)
+
+    page_rows = []
+    for row in reversed(deduped[-150:]):
+        evaluated_count = _analytics_int(row.get("total_on_page"))
+        page_rows.append({
+            "id": _analytics_int(row.get("id")),
+            "created_at": _analytics_iso(row.get("created_at")),
+            "batch": _analytics_text(row.get("batch")) or "—",
+            "search_word": _analytics_text(row.get("search_word")) or "Unknown / Not captured",
+            "search_bar_word": _analytics_text(row.get("search_bar_word")) or "No keyword",
+            "page_number": row.get("page_number"),
+            "total": evaluated_count,
+            "required": _analytics_int(row.get("required_on_page")),
+            "existing": _analytics_int(row.get("existing_on_page")),
+            "rejected": _analytics_int(row.get("guardrail_rejected_on_page")),
+            "required_rate": round(_analytics_int(row.get("required_on_page")) * 100 / max(1, evaluated_count), 1),
+        })
+
+    timeline = []
+    for row in reversed(ordered[-30:]):
+        timeline.append({
+            "id": _analytics_int(row.get("id")),
+            "event_type": _analytics_text(row.get("event_type")),
+            "created_at": _analytics_iso(row.get("created_at")),
+            "page_number": row.get("page_number"),
+            "batch": _analytics_text(row.get("batch")),
+            "search_word": _analytics_text(row.get("search_word")),
+            "search_bar_word": _analytics_text(row.get("search_bar_word")),
+        })
+
+    total_pages = max(1, len(deduped))
+    summary_funnel = {
+        "evaluated": totals["evaluated"],
+        "required": totals["required"],
+        "saved": totals["saved"],
+        "existing": totals["existing"],
+        "rejected": totals["rejected"],
+    }
+    return {
+        "summary": totals,
+        "funnel": summary_funnel,
+        "searches": searches,
+        "daily_trend": daily_trend,
+        "page_saturation": page_saturation,
+        "pages": page_rows,
+        "timeline": timeline,
+        "filters": {
+            "batches": sorted({_analytics_text(row.get("batch")) for row in evaluated if _analytics_text(row.get("batch"))}),
+            "search_words": sorted({_analytics_text(row.get("search_word")) for row in evaluated if _analytics_text(row.get("search_word"))}),
+            "search_bar_words": sorted({_analytics_text(row.get("search_bar_word")) for row in evaluated if _analytics_text(row.get("search_bar_word"))}),
+        },
+        "data_quality": {
+            "context_capture_rate": round(context_captured * 100 / total_pages, 1) if deduped else 0,
+            "keyword_capture_rate": round(keyword_captured * 100 / total_pages, 1) if deduped else 0,
+            "both_missing": sum(1 for row in deduped if not _analytics_text(row.get("search_word")) and not _analytics_text(row.get("search_bar_word"))),
+            "finder_ids": finder_ids,
+            "duplicate_retries_removed": duplicate_retries,
+        },
+    }
+
+
+@dashboard_router.get("/api/v1/extension-analytics/log/{log_id}")
+def get_extension_analytics_log(log_id: int):
+    """Return one page's contact decision breakdown on demand."""
+    try:
+        from backend.api import get_connection
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, account_email, cycle_tag, batch, search_word, search_bar_word,
+                           page_number, total_on_page, required_on_page, existing_on_page,
+                           guardrail_rejected_on_page, created_at, breakdown_json
+                    FROM extension_activity_log WHERE id = %s LIMIT 1
+                    """,
+                    (log_id,),
+                )
+                row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Extension log not found")
+        breakdown = []
+        if row[12]:
+            try:
+                parsed = json.loads(row[12]) if isinstance(row[12], str) else row[12]
+                breakdown = parsed if isinstance(parsed, list) else []
+            except (TypeError, ValueError, json.JSONDecodeError):
+                breakdown = []
+        return {
+            "status": "ok",
+            "log": {
+                "id": row[0], "account_email": row[1], "cycle_tag": row[2], "batch": row[3],
+                "search_word": row[4], "search_bar_word": row[5], "page_number": row[6],
+                "total": row[7] or 0, "required": row[8] or 0, "existing": row[9] or 0,
+                "rejected": row[10] or 0, "created_at": _analytics_iso(row[11]), "contacts": breakdown,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Extension analytics unavailable: {exc}") from exc
+
+
+@dashboard_router.get("/api/v1/extension-analytics/{account_email}")
+def get_extension_analytics(
+    account_email: str,
+    cycle_tag: str = "",
+    batch: str = "",
+    search_word: str = "",
+    search_bar_word: str = "",
+):
+    """Return login-isolated, cycle-aware extension activity analytics."""
+    email = urllib.parse.unquote(account_email).strip()
+    if not email or len(email) > 255:
+        raise HTTPException(status_code=400, detail="A valid login email is required")
+
+    cycle_start = None
+    cycle_end = None
+    active_cycle = cycle_tag.strip()
+    if not active_cycle:
+        try:
+            from scripts.apollo_saved_search_inspector import get_account_cycle_window
+            cycle_start, cycle_end, active_cycle = get_account_cycle_window(email)
+        except Exception:
+            active_cycle = ""
+
+    conditions = ["LOWER(account_email) = LOWER(%s)"]
+    params: List[Any] = [email]
+    if active_cycle:
+        conditions.append("cycle_tag = %s")
+        params.append(active_cycle)
+    elif cycle_start and cycle_end:
+        conditions.append("created_at >= %s AND created_at < %s")
+        params.extend([cycle_start.replace(tzinfo=None), cycle_end.replace(tzinfo=None)])
+    if batch:
+        conditions.append("batch = %s")
+        params.append(batch)
+    if search_word:
+        conditions.append("LOWER(TRIM(search_word)) = LOWER(TRIM(%s))")
+        params.append(search_word)
+    if search_bar_word:
+        conditions.append("LOWER(TRIM(search_bar_word)) = LOWER(TRIM(%s))")
+        params.append(search_bar_word)
+
+    where_sql = " AND ".join(conditions)
+    try:
+        from backend.api import get_connection
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                activity_sql = f"""
+                    SELECT id, event_type, account_email, cycle_tag, batch, search_word,
+                           search_bar_word, page_number, total_on_page, required_on_page,
+                           not_required_on_page, existing_on_page, guardrail_rejected_on_page,
+                           collected_total, created_at
+                    FROM extension_activity_log
+                    WHERE {where_sql}
+                    ORDER BY created_at ASC, id ASC
+                    """
+                cur.execute(activity_sql, tuple(params))
+                columns = [column[0] for column in cur.description]
+                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+                cur.execute(
+                    """
+                    SELECT cycle_tag, MIN(created_at), MAX(created_at), COUNT(*)
+                    FROM extension_activity_log
+                    WHERE LOWER(account_email) = LOWER(%s) AND cycle_tag <> ''
+                    GROUP BY cycle_tag ORDER BY MAX(created_at) DESC
+                    """,
+                    (email,),
+                )
+                cycle_options = [
+                    {"cycle_tag": row[0], "first_seen": _analytics_iso(row[1]), "last_seen": _analytics_iso(row[2]), "events": row[3]}
+                    for row in cur.fetchall()
+                ]
+
+                # Some accounts do not yet have expiry metadata in the cycle
+                # resolver. If its computed tag has no logs, use this login's
+                # latest recorded cycle rather than presenting a false empty state.
+                if not rows and not cycle_tag.strip() and active_cycle and cycle_options:
+                    active_cycle = cycle_options[0]["cycle_tag"]
+                    params[1] = active_cycle
+                    cycle_start = cycle_end = None
+                    cur.execute(activity_sql, tuple(params))
+                    rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+                saved_conditions = ["LOWER(account_used) = LOWER(%s)"]
+                saved_params: List[Any] = [email]
+                if active_cycle:
+                    saved_conditions.append("cycle = %s")
+                    saved_params.append(active_cycle)
+                if batch:
+                    saved_conditions.append("batch = %s")
+                    saved_params.append(batch)
+                # Saved leads do not currently retain search fields, so only use
+                # the table count when the view is not narrowed to one search.
+                saved_leads = 0
+                if not search_word and not search_bar_word:
+                    try:
+                        cur.execute(
+                            f"SELECT COUNT(*) FROM apollo_saved_leads WHERE {' AND '.join(saved_conditions)}",
+                            tuple(saved_params),
+                        )
+                        saved_leads = _analytics_int(cur.fetchone()[0])
+                    except Exception:
+                        saved_leads = 0
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Extension analytics unavailable: {exc}") from exc
+
+    result = _aggregate_extension_analytics(rows, saved_leads=saved_leads)
+    result.update({
+        "status": "ok",
+        "login": email,
+        "cycle_tag": active_cycle,
+        "cycle_start": cycle_start.isoformat() if cycle_start else "",
+        "cycle_end": cycle_end.isoformat() if cycle_end else "",
+        "cycle_options": cycle_options,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return result
+
+
+# =====================================================================
 # 2b. REST API: LIVE ACCOUNT CREDIT & EXPIRY REPORT (Real API probe)
 # =====================================================================
 
@@ -312,11 +693,16 @@ def get_account_report():
             "generated_at": now_ist.strftime("%d %b %Y %I:%M:%S %p IST"),
             "total_credits": total_credits,
             "total_accounts": len(enriched),
+            "fresh_accounts": sum(1 for account in enriched if not account.get("is_stale")),
+            "stale_accounts": sum(1 for account in enriched if account.get("is_stale")),
             "accounts": enriched,
         }
         try:
-            with open(CONFIG_DIR / "apollo_live_account_report.json", "w", encoding="utf-8") as f:
+            report_path = CONFIG_DIR / "apollo_live_account_report.json"
+            temporary_path = report_path.with_suffix(".json.tmp")
+            with open(temporary_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
+            temporary_path.replace(report_path)
         except Exception:
             pass
         return payload
@@ -1681,137 +2067,148 @@ def get_saving_summary(
 
         try:
             from backend.api import get_connection
+            from scripts.apollo_saved_search_inspector import get_account_cycle_window
             conn = get_connection()
             with conn.cursor() as cur:
-                for a in accs:
-                    em = a["email"].strip().lower()
-                    nm = a["name"].strip()
-                    la = live_map.get(em, {})
-                    be = la.get("expiry_utc")
+                cur.execute("""
+                    SELECT 
+                        COALESCE(account_used, '') as acc,
+                        batch,
+                        COUNT(*) as cnt,
+                        COUNT(CASE WHEN email IS NOT NULL AND TRIM(email) != '' THEN 1 END) as emails_cnt,
+                        SUM(credits_charged) as creds,
+                        SUM(CASE WHEN credits_charged > 0 THEN 1 ELSE 0 END) as enriched_cnt,
+                        SUM(CASE WHEN credits_charged = 0 OR credits_charged IS NULL THEN 1 ELSE 0 END) as web_cnt,
+                        MAX(created_at) as last_saved
+                    FROM apollo_saved_leads
+                    WHERE created_at >= '2026-10-01 00:00:00'
+                    GROUP BY account_used, batch;
+                """)
+                all_apollo_rows = cur.fetchall()
 
-                    # Resolve renewal day & cycle
+                cur.execute("""
+                    SELECT 
+                        COALESCE(account_used, '') as acc,
+                        batch,
+                        COUNT(*), 
+                        COUNT(CASE WHEN email IS NOT NULL AND TRIM(email) != '' THEN 1 END),
+                        SUM(credits_charged)
+                    FROM enrich_saved_leads
+                    WHERE created_at >= '2026-10-01 00:00:00'
+                    GROUP BY account_used, batch;
+                """)
+                all_enrich_rows = cur.fetchall()
+
+            for a in accs:
+                em = a["email"].strip().lower()
+                nm = a["name"].strip()
+                la = live_map.get(em, {})
+                be = la.get("expiry_utc")
+
+                # Resolve renewal day & exact cycle window respecting exact timestamp
+                try:
+                    _, _, cycle_tag = get_account_cycle_window(em)
+                except Exception:
                     rday = a.get("renewalDay", 20)
-                    exp_dt = None
-                    if be:
-                        try:
-                            exp_dt = datetime.fromisoformat(be.replace("Z", "+00:00"))
-                            rday = exp_dt.day
-                        except Exception:
-                            pass
-                    if not exp_dt:
-                        exp_dt = datetime(2026, 10, rday, tzinfo=timezone.utc)
-
                     cycle_tag = f"sep {rday:02d} - oct {rday:02d}"
 
-                    # Query apollo_saved_leads for this login in active October cycle
-                    cur.execute("""
-                        SELECT 
-                            batch,
-                            COUNT(*) as cnt,
-                            COUNT(CASE WHEN email IS NOT NULL AND TRIM(email) != '' THEN 1 END) as emails_cnt,
-                            SUM(credits_charged) as creds,
-                            SUM(CASE WHEN credits_charged > 0 THEN 1 ELSE 0 END) as enriched_cnt,
-                            SUM(CASE WHEN credits_charged = 0 OR credits_charged IS NULL THEN 1 ELSE 0 END) as web_cnt,
-                            MAX(created_at) as last_saved
-                        FROM apollo_saved_leads
-                        WHERE created_at >= '2026-10-01 00:00:00'
-                          AND (LOWER(account_used) = %s OR LOWER(account_used) = %s OR LOWER(batch) LIKE %s)
-                        GROUP BY batch;
-                    """, (
-                        em,
-                        nm.lower(),
-                        f"%{em}%"
-                    ))
-                    batch_rows = cur.fetchall()
+                rday = a.get("renewalDay", 20)
+                exp_dt = None
+                if be:
+                    try:
+                        exp_dt = datetime.fromisoformat(be.replace("Z", "+00:00"))
+                        rday = exp_dt.day
+                    except Exception:
+                        pass
 
-                    # Query enrich_saved_leads for this login in active October cycle
-                    cur.execute("""
-                        SELECT 
-                            COUNT(*), 
-                            COUNT(CASE WHEN email IS NOT NULL AND TRIM(email) != '' THEN 1 END),
-                            SUM(credits_charged)
-                        FROM enrich_saved_leads
-                        WHERE created_at >= '2026-10-01 00:00:00'
-                          AND (LOWER(account_used) = %s OR LOWER(account_used) = %s OR LOWER(batch) LIKE %s);
-                    """, (
-                        em,
-                        nm.lower(),
-                        f"%{em}%"
-                    ))
-                    enrich_db_row = cur.fetchone()
-                    extra_leads = int(enrich_db_row[0] or 0) if enrich_db_row else 0
-                    extra_emails = int(enrich_db_row[1] or 0) if enrich_db_row else 0
-                    extra_creds = int(enrich_db_row[2] or 0) if enrich_db_row else 0
+                batch_rows = []
+                for r in all_apollo_rows:
+                    acc_val = (r[0] or "").strip().lower()
+                    batch_val = (r[1] or "").strip()
+                    batch_lower = batch_val.lower()
+                    if acc_val == em or acc_val == nm.lower() or em in batch_lower:
+                        batch_rows.append((batch_val, r[2], int(r[3] or 0), int(r[4] or 0), int(r[5] or 0), int(r[6] or 0), r[7]))
 
-                    tot_leads = sum(r[1] for r in batch_rows) + extra_leads
-                    tot_emails = sum(r[2] for r in batch_rows) + extra_emails
-                    tot_creds = sum(int(r[3] or 0) for r in batch_rows) + extra_creds
-                    tot_enriched = sum(int(r[4] or 0) for r in batch_rows) + extra_leads
-                    tot_web = sum(int(r[5] or 0) for r in batch_rows)
-                    dts = [r[6] for r in batch_rows if r[6]]
-                    last_dt = max(dts) if dts else None
+                extra_leads = 0
+                extra_emails = 0
+                extra_creds = 0
+                for r in all_enrich_rows:
+                    acc_val = (r[0] or "").strip().lower()
+                    batch_val = (r[1] or "").strip().lower()
+                    if acc_val == em or acc_val == nm.lower() or em in batch_val:
+                        extra_leads += int(r[2] or 0)
+                        extra_emails += int(r[3] or 0)
+                        extra_creds += int(r[4] or 0)
 
-                    avail = int(la.get("credits_avail", 0) or 0)
-                    rem = int(la.get("credits_remaining", 0) or 0)
-                    
-                    # If live account already renewed into November (e.g. today 03 Oct),
-                    # all credits in the October cycle were used on the web
-                    if exp_dt and exp_dt.month > 10:
-                        web_credits_used = avail if avail > 0 else 4010
-                    elif avail > 0 or rem > 0:
-                        web_credits_used = max(0, avail - rem)
-                    else:
-                        web_credits_used = tot_creds
+                tot_leads = sum(r[1] for r in batch_rows) + extra_leads
+                tot_emails = sum(r[2] for r in batch_rows) + extra_emails
+                tot_creds = sum(int(r[3] or 0) for r in batch_rows) + extra_creds
+                tot_enriched = sum(int(r[4] or 0) for r in batch_rows) + extra_leads
+                tot_web = sum(int(r[5] or 0) for r in batch_rows)
+                dts = [r[6] for r in batch_rows if r[6]]
+                last_dt = max(dts) if dts else None
 
-                    display_credits = max(web_credits_used, tot_creds)
+                avail = int(la.get("credits_avail", 0) or 0)
+                rem = int(la.get("credits_remaining", 0) or 0)
 
-                    # If at least one contact enriched or saved from web during that cycle's time period
-                    has_activity = (tot_leads > 0 or tot_enriched > 0 or tot_web > 0)
-                    if active_only and not has_activity:
-                        continue
+                # If live account already renewed into November (e.g. today 03 Oct),
+                # all credits in the October cycle were used on the web
+                if exp_dt and exp_dt.month > 10:
+                    web_credits_used = avail if avail > 0 else 4010
+                elif avail > 0 or rem > 0:
+                    web_credits_used = max(0, avail - rem)
+                else:
+                    web_credits_used = tot_creds
 
-                    source = "Hybrid (Web+API)" if (tot_web > 0 and tot_enriched > 0) else ("Apollo API" if tot_enriched > 0 else "Web Extension")
+                display_credits = max(web_credits_used, tot_creds)
 
-                    batch_list = [
-                        {"batch": r[0], "count": r[1], "emails": int(r[2] or 0), "credits": int(r[3] or 0), "enriched": int(r[4] or 0), "web": int(r[5] or 0)}
-                        for r in batch_rows
-                    ]
+                # If at least one contact enriched or saved from web during that cycle's time period
+                has_activity = (tot_leads > 0 or tot_enriched > 0 or tot_web > 0)
+                if active_only and not has_activity:
+                    continue
 
-                    if exp_dt and exp_dt.month > 10:
-                        expiry_display = f"{rday:02d} Oct 2026, 09:46 AM IST"
-                        time_left_display = "Renewed (03 Oct)"
-                        urgency_display = "safe"
-                    else:
-                        expiry_display = la.get("expiry_ist", exp_dt.strftime("%d %b %Y IST"))
-                        time_left_display = la.get("time_left", f"{rday} Oct")
-                        urgency_display = la.get("urgency", "safe")
+                source = "Hybrid (Web+API)" if (tot_web > 0 and tot_enriched > 0) else ("Apollo API" if tot_enriched > 0 else "Web Extension")
 
-                    records.append({
-                        "id": a["id"],
-                        "name": nm,
-                        "email": a["email"],
-                        "cycle": cycle_tag,
-                        "expiry_ist": expiry_display,
-                        "time_left": time_left_display,
-                        "urgency": urgency_display,
-                        "source": source,
-                        "saved_from_web": tot_web,
-                        "enriched_here": tot_enriched,
-                        "credits_used": display_credits,
-                        "enrichment_credits": tot_creds,
-                        "credits_avail": avail,
-                        "credits_remaining": rem,
-                        "saved_emails": tot_emails,
-                        "total_leads": tot_leads,
-                        "last_saved_str": last_dt.strftime("%Y-%m-%d %H:%M:%S") if last_dt else "—",
-                        "batches": batch_list
-                    })
+                batch_list = [
+                    {"batch": r[0], "count": r[1], "emails": int(r[2] or 0), "credits": int(r[3] or 0), "enriched": int(r[4] or 0), "web": int(r[5] or 0)}
+                    for r in batch_rows
+                ]
 
-                    total_saved_web += tot_web
-                    total_enriched += tot_enriched
-                    total_creds += display_credits
-                    total_emails += tot_emails
-                    total_all_leads += tot_leads
+                if exp_dt and exp_dt.month > 10:
+                    expiry_display = la.get("expiry_ist") or f"{rday:02d} Oct 2026, 09:46 AM IST"
+                    time_left_display = "Renewed (" + exp_dt.strftime("%d %b") + ")"
+                    urgency_display = "safe"
+                else:
+                    expiry_display = la.get("expiry_ist", exp_dt.strftime("%d %b %Y IST") if exp_dt else f"{rday} Oct 2026")
+                    time_left_display = la.get("time_left", f"{rday} Oct")
+                    urgency_display = la.get("urgency", "safe")
+
+                records.append({
+                    "id": a["id"],
+                    "name": nm,
+                    "email": a["email"],
+                    "cycle": cycle_tag,
+                    "expiry_ist": expiry_display,
+                    "time_left": time_left_display,
+                    "urgency": urgency_display,
+                    "source": source,
+                    "saved_from_web": tot_web,
+                    "enriched_here": tot_enriched,
+                    "credits_used": display_credits,
+                    "enrichment_credits": tot_creds,
+                    "credits_avail": avail,
+                    "credits_remaining": rem,
+                    "saved_emails": tot_emails,
+                    "total_leads": tot_leads,
+                    "last_saved_str": last_dt.strftime("%Y-%m-%d %H:%M:%S") if last_dt else "—",
+                    "batches": batch_list
+                })
+
+                total_saved_web += tot_web
+                total_enriched += tot_enriched
+                total_creds += display_credits
+                total_emails += tot_emails
+                total_all_leads += tot_leads
 
             records.sort(key=lambda x: x["total_leads"], reverse=True)
 
@@ -1830,7 +2227,20 @@ def get_saving_summary(
             }
         except Exception as e:
             print(f"[Reports] Error querying saving summary (October cycle): {e}", flush=True)
-            return {"status": "error", "message": str(e), "records": []}
+            return {
+                "status": "error",
+                "message": str(e),
+                "cycle_filter": "october",
+                "cycle_label": "Active October 2026 Cycle (Timer Filtered)",
+                "total_accounts": len(accs),
+                "active_accounts": 0,
+                "total_saved_leads": 0,
+                "total_saved_web": 0,
+                "total_enriched": 0,
+                "total_emails_saved": 0,
+                "total_credits_used": 0,
+                "records": []
+            }
 
     # 2. Historical All-Time (Optional fallback)
     acc_map = {}
@@ -1991,6 +2401,20 @@ def api_send_account_report():
         return {"status": "ok", "result": result}
     except Exception as e:
         print(f"[Reports] Error in send-account-report: {e}", flush=True)
+        return {"status": "error", "message": str(e)}
+
+
+@dashboard_router.post("/api/reports/send-extension-analytics-report")
+def api_send_extension_analytics_report():
+    """Email today's IST extension activity for only the logins active today."""
+    try:
+        from scripts.send_extension_analytics_report import run_extension_analytics_report_pipeline
+        result = run_extension_analytics_report_pipeline(channels=["email"])
+        if result.get("status") != "ok":
+            return {"status": "error", "message": result.get("message", "Report generation failed")}
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        print(f"[Reports] Error in send-extension-analytics-report: {e}", flush=True)
         return {"status": "error", "message": str(e)}
 
 
