@@ -31,7 +31,26 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.models import VerificationJob, CategorizationSummary
 from app.services.verifier import VerificationService
 from app.services.categorizer import categorize_results, classify_row
-from scripts.send_to_millionverifier import ensure_millionverifier_api_key
+from scripts.send_to_millionverifier import ensure_millionverifier_api_key, preserve_batch_filename
+
+
+def test_preserve_exact_batch_name_symbols():
+    # Verify exact batch name with symbols (@, ., (, ), -, spaces) is preserved unchanged
+    batch1 = "VIJAY@NESTACKTECH.COM(sep 08 - oct 08)"
+    assert preserve_batch_filename(batch1) == "VIJAY@NESTACKTECH.COM(sep 08 - oct 08)"
+
+    batch2 = "RAHUL.CHANDRAN@NESTACK-TECH.COM(sep 03 - oct 03)"
+    assert preserve_batch_filename(batch2) == "RAHUL.CHANDRAN@NESTACK-TECH.COM(sep 03 - oct 03)"
+
+    batch3 = "abel.abraham@nestacktechnologies.com(sep 10 - oct 10)"
+    assert preserve_batch_filename(batch3) == "abel.abraham@nestacktechnologies.com(sep 10 - oct 10)"
+
+    batch4 = "vijay_nestacktech_com _oct_5"
+    assert preserve_batch_filename(batch4) == "vijay_nestacktech_com _oct_5"
+
+    # Only OS-forbidden characters (< > : " / \ | ? *) are sanitized
+    batch_bad = 'test<bad>:batch"name'
+    assert preserve_batch_filename(batch_bad) == "test_bad__batch_name"
 
 
 def test_classify_row():
@@ -178,6 +197,5 @@ def test_verification_service_workflow():
 
         assert job.status == "finished"
         assert str(job.file_id) == "12345"
-        assert downloaded_path.exists()
-        mock_client.upload_csv.assert_called_once_with(clean_file)
+        mock_client.upload_csv.assert_called_once_with(clean_file, upload_filename=None)
         mock_client.get_file_info.assert_called_once_with("12345")

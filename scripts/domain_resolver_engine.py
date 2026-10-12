@@ -238,7 +238,8 @@ def _check_dns_mx_candidates(company_name: str) -> Optional[str]:
 
 def resolve_domain_multi_tier(
     company_name: str,
-    conn=None
+    conn=None,
+    allow_unverified_fallback: bool = True,
 ) -> Dict[str, Any]:
     """
     Full 5-tier zero-credit domain resolution pipeline:
@@ -258,7 +259,11 @@ def resolve_domain_multi_tier(
 
     # 0. Check in-memory session cache
     if cache_key in _SESSION_RESOLVED_CACHE:
-        return _SESSION_RESOLVED_CACHE[cache_key]
+        cached = _SESSION_RESOLVED_CACHE[cache_key]
+        if cached and (allow_unverified_fallback or cached.get("source") != "deterministic_candidate"):
+            return cached
+        if not cached and not allow_unverified_fallback:
+            return {}
 
     # Tier 1: Local MySQL detected_companies cache
     if conn:
@@ -275,7 +280,9 @@ def resolve_domain_multi_tier(
                     src = row[2] or "mysql_cache"
                     res = {"company_domain": dom, "website_link": web, "location": "", "source": src}
                     _SESSION_RESOLVED_CACHE[cache_key] = res
-                    return res
+                    if allow_unverified_fallback or src != "deterministic_candidate":
+                        return res
+                    # Strict callers ignore legacy guesses and continue to live verification.
         except Exception:
             pass
 
@@ -297,7 +304,7 @@ def resolve_domain_multi_tier(
             source = "dns_candidate"
 
     # Tier 5: Fallback deterministic candidate
-    if not found_domain:
+    if not found_domain and allow_unverified_fallback:
         cands = generate_candidate_domains(cleaned)
         if cands:
             found_domain = cands[0]
@@ -340,7 +347,8 @@ def resolve_domain_multi_tier(
 def batch_resolve_domains_high_accuracy(
     company_names: List[str],
     conn=None,
-    max_workers: int = 15
+    max_workers: int = 15,
+    allow_unverified_fallback: bool = True,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Batch-resolve company domains concurrently using the 5-tier high accuracy engine.
@@ -365,7 +373,10 @@ def batch_resolve_domains_high_accuracy(
     # 1. Check in-memory session cache
     missing_ckeys: List[str] = []
     for raw_name, ckey in cleaned_map.items():
-        if ckey in _SESSION_RESOLVED_CACHE:
+        if ckey in _SESSION_RESOLVED_CACHE and (
+            allow_unverified_fallback
+            or _SESSION_RESOLVED_CACHE[ckey].get("source") != "deterministic_candidate"
+        ):
             results[raw_name] = _SESSION_RESOLVED_CACHE[ckey]
         else:
             missing_ckeys.append(ckey)
@@ -396,7 +407,10 @@ def batch_resolve_domains_high_accuracy(
     # Update results from DB cache hits
     to_resolve_online: List[str] = []
     for raw_name, ckey in cleaned_map.items():
-        if ckey in _SESSION_RESOLVED_CACHE:
+        if ckey in _SESSION_RESOLVED_CACHE and (
+            allow_unverified_fallback
+            or _SESSION_RESOLVED_CACHE[ckey].get("source") != "deterministic_candidate"
+        ):
             results[raw_name] = _SESSION_RESOLVED_CACHE[ckey]
         else:
             to_resolve_online.append(ckey)
@@ -407,7 +421,11 @@ def batch_resolve_domains_high_accuracy(
 
     # 3. Concurrent worker execution for remaining missing companies
     def _worker(cname: str) -> Tuple[str, Dict[str, Any]]:
-        info = resolve_domain_multi_tier(cname, conn=None)
+        info = resolve_domain_multi_tier(
+            cname,
+            conn=None,
+            allow_unverified_fallback=allow_unverified_fallback,
+        )
         return cname, info
 
     newly_resolved_rows = []
@@ -450,7 +468,10 @@ def batch_resolve_domains_high_accuracy(
 
     # Final map back to input names
     for raw_name, ckey in cleaned_map.items():
-        if ckey in _SESSION_RESOLVED_CACHE:
+        if ckey in _SESSION_RESOLVED_CACHE and (
+            allow_unverified_fallback
+            or _SESSION_RESOLVED_CACHE[ckey].get("source") != "deterministic_candidate"
+        ):
             results[raw_name] = _SESSION_RESOLVED_CACHE[ckey]
 
     return results

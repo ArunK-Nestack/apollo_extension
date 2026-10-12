@@ -67,7 +67,16 @@ def ensure_millionverifier_api_key() -> str:
             os.environ["MILLIONVERIFIER_API_KEY"] = key_input
             return key_input
         raise RuntimeError("MillionVerifier API key is required to run verification.")
-    return key
+def preserve_batch_filename(name: str) -> str:
+    r"""
+    Ensures the exact batch name is used, preserving all symbols
+    (@, ., (, ), -, _, spaces, etc.) unchanged.
+    Only replaces characters that are strictly illegal in Windows paths (< > : " / \ | ? *).
+    """
+    if not name:
+        return "batch"
+    sanitized = re.sub(r'[<>:"/\\|?*]', '_', name.strip()).rstrip('. ')
+    return sanitized or "batch"
 
 
 def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
@@ -237,20 +246,32 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    acc_slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", selected_acc_name if selected_login != "__ALL__" else "All_Accounts").strip("_")
-    batch_slug = re.sub(r"[^a-zA-Z0-9_\-]", "_", selected_batch if selected_batch and selected_batch != "__ALL__" else "All_Batches").strip("_")
-    default_base_stem = f"{acc_slug}_{batch_slug}"
+    # Preserve exact batch name directly with all symbols (@, ., (, ), -, _, spaces) unchanged
+    if selected_batch and selected_batch != "__ALL__":
+        exact_batch_name = selected_batch.strip()
+    elif selected_login and selected_login != "__ALL__":
+        exact_batch_name = selected_login.strip()
+    else:
+        exact_batch_name = "All_Batches"
+
+    default_base_stem = preserve_batch_filename(exact_batch_name)
+    if default_base_stem.lower().endswith(".csv"):
+        default_base_stem = default_base_stem[:-4]
 
     print("\n" + "-" * 95)
     print("OUTPUT FILE NAMING:")
-    print(f"  Specify a file name for the outputs (Good, Bad, Risky CSVs).")
+    print(f"  Exact Batch Name: '{default_base_stem}' (symbols preserved unchanged)")
     custom_name_in = input(f"Enter File Name for this verification batch (default: '{default_base_stem}'): ").strip()
     if custom_name_in:
-        base_stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", custom_name_in).strip("_")
+        base_stem = preserve_batch_filename(custom_name_in)
     else:
         base_stem = default_base_stem
 
-    prep_csv_path = cache_dir / f"{base_stem}_{timestamp_str}_prepared.csv"
+    if base_stem.lower().endswith(".csv"):
+        base_stem = base_stem[:-4]
+
+    upload_file_name = f"{base_stem}.csv"
+    prep_csv_path = cache_dir / upload_file_name
 
     # Build email to original row dictionary to preserve ALL 75+ columns
     email_to_orig: Dict[str, Dict[str, str]] = {}
@@ -330,6 +351,7 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
                 clean_csv_path=prep_csv_path,
                 download_dir=results_dir,
                 on_progress=progress_callback,
+                upload_filename=upload_file_name,
             )
             actual_api_csv = downloaded_csv
             print(f"\n  ✓ MillionVerifier Job #{job.file_id} completed successfully in {time.perf_counter() - t_mv:.2f}s!")
@@ -436,12 +458,13 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
 
     try:
         from scripts.freshsales_bridge import save_millionverifier_job
+        effective_batch_name = base_stem if (not selected_batch or selected_batch == "__ALL__") else selected_batch
         save_millionverifier_job({
             "file_id": job.file_id,
-            "file_name": f"{base_stem}.csv",
+            "file_name": upload_file_name,
             "login": selected_login,
             "account_name": selected_acc_name,
-            "batch": selected_batch,
+            "batch": effective_batch_name,
             "cycle": cycle_tag,
             "status": "finished",
             "total_rows": len(df_clean),

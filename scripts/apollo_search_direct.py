@@ -55,6 +55,17 @@ from backend.api import (
     get_seniority_score,
     normalize_text,
 )
+from backend.company_identity import (
+    AMBIGUOUS,
+    EXISTING_CONFIRMED,
+    NO_COMPANY,
+    UNRESOLVED,
+    MySQLCompanyRepository,
+    TypeSafeJevCompanyDecider,
+    classify_companies,
+    partition_people_by_company_decision,
+)
+from backend.people_search_logger import log_people_search_call
 from scripts.apollo_export_formatter import APOLLO_75_HEADERS, format_apollo_lead_row
 
 def clean_domain(domain_str: str) -> str:
@@ -405,12 +416,14 @@ def format_filters_summary(filters: Dict[str, Any]) -> str:
     return "\n".join(lines) if lines else "  • No broad filters applied (Full Database Search)"
 
 
-def query_apollo_search(api_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def query_apollo_search(api_key: str, payload: Dict[str, Any], account_email: str = "") -> Dict[str, Any]:
     """
     Execute search query against Apollo REST API with 429 backoff.
     Automatically chooses the best endpoint:
       - /api/v1/contacts/search if searching contact_label_ids (saved contacts)
       - /api/v1/mixed_people/api_search if searching general directory / creator searches
+
+    Transparently logs every search query to files and database (credits_charged = 0).
     """
     headers = {
         "Content-Type": "application/json",
@@ -428,8 +441,11 @@ def query_apollo_search(api_key: str, payload: Dict[str, Any]) -> Dict[str, Any]
 
     max_retries = 3
     for attempt in range(max_retries):
+        t0 = time.time()
         try:
             res = requests.post(url, headers=headers, json=sanitized, timeout=25)
+            duration_ms = int((time.time() - t0) * 1000)
+
             if res.status_code == 200:
                 data = res.json()
                 total = data.get("total_entries")
@@ -438,33 +454,125 @@ def query_apollo_search(api_key: str, payload: Dict[str, Any]) -> Dict[str, Any]
                     total = pagination.get("total_entries", 0)
 
                 people = data.get("contacts") or data.get("people") or []
+                total_cnt = int(total or len(people))
+
+                try:
+                    log_people_search_call(
+                        endpoint=url,
+                        payload=sanitized,
+                        status_code=res.status_code,
+                        returned_count=len(people),
+                        total_entries=total_cnt,
+                        duration_ms=duration_ms,
+                        account_email=account_email,
+                        credits_charged=0,
+                    )
+                except Exception:
+                    pass
+
                 return {
-                    "total_entries": int(total or len(people)),
+                    "total_entries": total_cnt,
                     "people": people,
                     "pagination": data.get("pagination") or {"total_entries": total}
                 }
             elif res.status_code == 422:
                 # Fallback to alternate search endpoint
                 alt_url = "https://api.apollo.io/api/v1/contacts/search" if "mixed_people" in url else "https://api.apollo.io/api/v1/mixed_people/api_search"
+                alt_t0 = time.time()
                 alt_res = requests.post(alt_url, headers=headers, json=sanitized, timeout=25)
+                alt_duration_ms = int((time.time() - alt_t0) * 1000)
+
                 if alt_res.status_code == 200:
                     alt_data = alt_res.json()
                     alt_people = alt_data.get("contacts") or alt_data.get("people") or []
                     total = alt_data.get("total_entries") or len(alt_people)
+
+                    try:
+                        log_people_search_call(
+                            endpoint=alt_url,
+                            payload=sanitized,
+                            status_code=alt_res.status_code,
+                            returned_count=len(alt_people),
+                            total_entries=int(total),
+                            duration_ms=alt_duration_ms,
+                            account_email=account_email,
+                            credits_charged=0,
+                        )
+                    except Exception:
+                        pass
+
                     return {
                         "total_entries": int(total),
                         "people": alt_people,
                         "pagination": {"total_entries": total}
                     }
+
+                try:
+                    log_people_search_call(
+                        endpoint=alt_url,
+                        payload=sanitized,
+                        status_code=alt_res.status_code,
+                        returned_count=0,
+                        total_entries=0,
+                        duration_ms=alt_duration_ms,
+                        account_email=account_email,
+                        credits_charged=0,
+                    )
+                except Exception:
+                    pass
+
                 return {"error": f"HTTP {res.status_code}: {res.text[:200]}", "people": [], "pagination": {}, "total_entries": 0}
             elif res.status_code == 429:
                 retry_after = int(res.headers.get("Retry-After", "10"))
+                try:
+                    log_people_search_call(
+                        endpoint=url,
+                        payload=sanitized,
+                        status_code=res.status_code,
+                        returned_count=0,
+                        total_entries=0,
+                        duration_ms=duration_ms,
+                        account_email=account_email,
+                        credits_charged=0,
+                    )
+                except Exception:
+                    pass
+
                 print(f"\n[!] Rate limited (429). Pausing for {retry_after + 2}s backoff...", flush=True)
                 time.sleep(retry_after + 2)
                 continue
             else:
+                try:
+                    log_people_search_call(
+                        endpoint=url,
+                        payload=sanitized,
+                        status_code=res.status_code,
+                        returned_count=0,
+                        total_entries=0,
+                        duration_ms=duration_ms,
+                        account_email=account_email,
+                        credits_charged=0,
+                    )
+                except Exception:
+                    pass
+
                 return {"error": f"HTTP {res.status_code}: {res.text[:200]}", "people": [], "pagination": {}, "total_entries": 0}
         except Exception as ex:
+            duration_ms = int((time.time() - t0) * 1000)
+            try:
+                log_people_search_call(
+                    endpoint=url,
+                    payload=sanitized,
+                    status_code=0,
+                    returned_count=0,
+                    total_entries=0,
+                    duration_ms=duration_ms,
+                    account_email=account_email,
+                    credits_charged=0,
+                )
+            except Exception:
+                pass
+
             if attempt < max_retries - 1:
                 time.sleep(3)
                 continue
@@ -473,16 +581,16 @@ def query_apollo_search(api_key: str, payload: Dict[str, Any]) -> Dict[str, Any]
     return {"error": "Max retries exceeded", "people": [], "pagination": {}, "total_entries": 0}
 
 
-def probe_search_total_volume(api_key: str, base_payload: Dict[str, Any]) -> int:
-    """Instantly probe total data volume available in a search query."""
+def probe_search_total_volume(api_key: str, base_payload: Dict[str, Any], account_email: str = "") -> int:
+    """Instantly probe total data volume available in a search query (0 credits)."""
     probe_payload = sanitize_payload(base_payload)
     probe_payload["page"] = 1
     probe_payload["per_page"] = 1
-    data = query_apollo_search(api_key, probe_payload)
+    data = query_apollo_search(api_key, probe_payload, account_email=account_email)
     return int(data.get("total_entries", 0))
 
 
-def probe_searches_volume(api_key: str, searches: List[Dict[str, Any]], max_workers: int = 5, tab: Optional[str] = None):
+def probe_searches_volume(api_key: str, searches: List[Dict[str, Any]], max_workers: int = 5, tab: Optional[str] = None, account_email: str = ""):
     """Probe lead volume for multiple searches concurrently so the menu renders instantly."""
     to_probe = [s for s in searches if s.get("count") is None]
     if not to_probe:
@@ -493,7 +601,7 @@ def probe_searches_volume(api_key: str, searches: List[Dict[str, Any]], max_work
             filters = s.get("filters", {})
             if tab:
                 filters = apply_search_tab(filters, tab)
-            total = probe_search_total_volume(api_key, filters)
+            total = probe_search_total_volume(api_key, filters, account_email=account_email)
             s["count"] = total
         except Exception:
             s["count"] = 0
@@ -795,13 +903,19 @@ def batch_resolve_company_domains(
     api_key: str,
     company_names: List[str],
     conn=None,
-    max_workers: int = 15
+    max_workers: int = 15,
+    allow_unverified_fallback: bool = True,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Resolve company domains concurrently for a batch of company names using the 5-tier high accuracy engine.
     Guarantees 0 Apollo export credits are consumed during search.
     """
-    return batch_resolve_domains_high_accuracy(company_names, conn=conn, max_workers=max_workers)
+    return batch_resolve_domains_high_accuracy(
+        company_names,
+        conn=conn,
+        max_workers=max_workers,
+        allow_unverified_fallback=allow_unverified_fallback,
+    )
 
 
 # =====================================================================
@@ -932,7 +1046,8 @@ def qualify_contacts_batch(
     conn,
     session_seen_companies: Optional[Dict[str, ApolloContact]] = None,
     filter_indian: bool = False,
-    filter_titles: bool = True
+    filter_titles: bool = True,
+    skip_company_checks: bool = False,
 ) -> Tuple[List[ApolloContact], Dict[str, int]]:
     """
     Run the qualification pipeline focused on Unique Domains & 64K Job Title Guardrails (Zero LLM calls):
@@ -952,36 +1067,41 @@ def qualify_contacts_batch(
     if not contacts:
         return [], stats
 
-    # Layer 0: Direct Company Name Pre-Check in CRM `emails` table
-    # If company name already exists in emails, directly drop it before DNS/domain resolution!
-    all_companies = [c.company for c in contacts if getattr(c, "company", None)]
-    matched_crm_companies = check_company_names_in_crm_batch(all_companies, connection=conn) if all_companies else set()
+    if skip_company_checks:
+        # Company identity has already been decided by the conservative v3 engine.
+        net_new_contacts = list(contacts)
+    else:
+        # Legacy compatibility path used by API callers and existing tests.
+        all_companies = [c.company for c in contacts if getattr(c, "company", None)]
+        matched_crm_companies = check_company_names_in_crm_batch(all_companies, connection=conn) if all_companies else set()
 
-    contacts_after_company_check = []
-    for c in contacts:
-        raw_c = (c.company or "").strip().lower()
-        norm_c = clean_company_name(c.company or "").strip().lower()
-        stem_c = normalize_company_stem(c.company or "").strip().lower()
-        if (raw_c and raw_c in matched_crm_companies) or (norm_c and norm_c in matched_crm_companies) or (stem_c and stem_c in matched_crm_companies):
-            stats["existing_crm"] += 1
-        else:
-            contacts_after_company_check.append(c)
+        contacts_after_company_check = []
+        for c in contacts:
+            raw_c = (c.company or "").strip().lower()
+            norm_c = clean_company_name(c.company or "").strip().lower()
+            stem_c = normalize_company_stem(c.company or "").strip().lower()
+            if (raw_c and raw_c in matched_crm_companies) or (norm_c and norm_c in matched_crm_companies) or (stem_c and stem_c in matched_crm_companies):
+                stats["existing_crm"] += 1
+            else:
+                contacts_after_company_check.append(c)
 
-    if not contacts_after_company_check:
-        return [], stats
+        if not contacts_after_company_check:
+            return [], stats
 
-    # Layer 1: For remaining contacts, resolve company domains & check 4-Layer CRM Database
-    contact_primary_domain, _ = resolve_company_domains(contacts_after_company_check, connection=conn)
-    crm_matches = check_person_and_domains_in_crm_batch(contacts_after_company_check, contact_primary_domain, connection=conn, active_batch=batch_tag)
+        contact_primary_domain, _ = resolve_company_domains(contacts_after_company_check, connection=conn)
+        crm_matches = check_person_and_domains_in_crm_batch(
+            contacts_after_company_check,
+            contact_primary_domain,
+            connection=conn,
+            active_batch=batch_tag,
+        )
 
-    net_new_contacts = []
-    for c in contacts_after_company_check:
-        if c.key in crm_matches:
-            stats["existing_crm"] += 1
-        elif not contact_primary_domain.get(c.key):
-            stats["existing_crm"] += 1
-        else:
-            net_new_contacts.append(c)
+        net_new_contacts = []
+        for c in contacts_after_company_check:
+            if c.key in crm_matches or not contact_primary_domain.get(c.key):
+                stats["existing_crm"] += 1
+            else:
+                net_new_contacts.append(c)
 
     # Layer 2: Demographic Origin Guardrail (Optional, default False -> deferred to Manage Batches LLM)
     if filter_indian:
@@ -1447,7 +1567,7 @@ def interactive_filter_menu(base_payload: Dict[str, Any], active_key: str, activ
         print(format_filters_summary(base_payload))
         print("-" * 100)
         print("Probing Apollo Search Index for updated total volume...")
-        current_total = probe_search_total_volume(active_key, base_payload)
+        current_total = probe_search_total_volume(active_key, base_payload, account_email=active_email)
         print(f">> TOTAL CONTACTS AVAILABLE IN THIS SEARCH: {current_total:,d} leads (~{max(1, (current_total + 99) // 100)} pages)")
         print("-" * 100)
 
@@ -1525,7 +1645,7 @@ def main():
 
     # Probe lead volume for active account searches so the menu immediately displays data counts
     print(f">> Probing data volume for {active_email} searches in [NET NEW] mode...")
-    probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode)
+    probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode, account_email=active_email)
 
     base_payload: Dict[str, Any] = {}
     search_name = "Custom Search"
@@ -1592,7 +1712,7 @@ def main():
             for s in other_creator_searches:
                 s["count"] = None
             print(f">> Probing data volume for {active_email} searches in [{active_tab_mode.upper()}] mode...")
-            probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode)
+            probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode, account_email=active_email)
             continue
         elif cmd.lower() == "r":
             print(f"\n>> Refreshing live saved searches from Apollo for {active_email}...")
@@ -1602,7 +1722,7 @@ def main():
                     save_account_creator_search(active_email, ls["name"], ls["filters"], quiet=True, is_live=True)
                 print(f"[+] Refreshed {len(live)} live searches from Apollo!")
             account_creator_searches, all_creator_searches, other_creator_searches, selectable_searches = reload_catalog()
-            probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode)
+            probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode, account_email=active_email)
             continue
         elif cmd.lower() == "a":
             s_name = input("\nEnter name for this Creator Search: ").strip()
@@ -1649,7 +1769,7 @@ def main():
     print("-" * 100)
     current_tab = get_search_tab(base_payload)
     print(f"Probing Apollo Search Index for total volume in this search ({current_tab.upper()})...")
-    current_total = probe_search_total_volume(active_key, base_payload)
+    current_total = probe_search_total_volume(active_key, base_payload, account_email=active_email)
     print(f">> TOTAL CONTACTS AVAILABLE IN THIS SEARCH: {current_total:,d} leads (~{max(1, (current_total + 99) // 100)} pages)")
     print("-" * 100)
 
@@ -1658,11 +1778,11 @@ def main():
         switch_tab = input("[?] Switch to [1] Net New (unsaved leads) or [2] Total (all leads)? [1/2/N]: ").strip()
         if switch_tab == "1":
             base_payload = apply_search_tab(base_payload, "net_new")
-            current_total = probe_search_total_volume(active_key, base_payload)
+            current_total = probe_search_total_volume(active_key, base_payload, account_email=active_email)
             print(f">> Switched to NET NEW. Contacts available: {current_total:,d} leads (~{max(1, (current_total + 99) // 100)} pages)")
         elif switch_tab == "2":
             base_payload = apply_search_tab(base_payload, "total")
-            current_total = probe_search_total_volume(active_key, base_payload)
+            current_total = probe_search_total_volume(active_key, base_payload, account_email=active_email)
             print(f">> Switched to TOTAL. Contacts available: {current_total:,d} leads (~{max(1, (current_total + 99) // 100)} pages)")
 
     # Offer interactive web filter modification
@@ -1723,7 +1843,7 @@ def main():
 
     # Re-probe final base total
     print("\nProbing Apollo Search Index for finalized search volume...")
-    final_base_total = probe_search_total_volume(active_key, base_payload)
+    final_base_total = probe_search_total_volume(active_key, base_payload, account_email=active_email)
     print(f">> FINAL BASE SEARCH VOLUME: {final_base_total:,d} leads (~{max(1, (final_base_total + 99) // 100)} pages)")
 
     # Step 6: 10-Lead Data Schema Preview of Finalized Search
@@ -1731,7 +1851,7 @@ def main():
     preview_base_payload = dict(base_payload)
     preview_base_payload["page"] = 1
     preview_base_payload["per_page"] = 10
-    preview_data = query_apollo_search(active_key, preview_base_payload)
+    preview_data = query_apollo_search(active_key, preview_base_payload, account_email=active_email)
     people_sample = preview_data.get("people") or []
     render_10_lead_preview(people_sample, api_key=active_key)
 
@@ -1750,9 +1870,32 @@ def main():
     # Step 8 Parity: Session-wide seen companies for 1/company deduplication
     session_seen_companies: Dict[str, ApolloContact] = {}
 
+    print("\nCOMPANY IDENTITY MODE")
+    print("  Exact/alias and verified-domain decisions are automatic.")
+    print("  Similar-name and missing-domain cases remain ambiguous or unresolved.")
+    use_jev = input("Enable Jev for ambiguous company candidates? [y/N]: ").strip().lower() in ("y", "yes")
+    jev_decider = None
+    if use_jev:
+        typesafe_key = os.getenv("TYPESAFE_API_KEY", "").strip()
+        if not typesafe_key:
+            print("[!] TYPESAFE_API_KEY is not configured. Continuing without Jev.")
+        else:
+            try:
+                max_jev_cases = max(1, int(os.getenv("JEV_MAX_COMPANIES_PER_SESSION", "250") or 250))
+            except ValueError:
+                max_jev_cases = 250
+            jev_decider = TypeSafeJevCompanyDecider(typesafe_key, max_cases=max_jev_cases)
+            print(f">> Jev enabled for at most {max_jev_cases:,} ambiguous companies this session.")
+
+    with get_connection() as identity_conn:
+        MySQLCompanyRepository(identity_conn, session_batch_tag).ensure_schema()
+
     session_audit: Dict[str, Any] = {
         "scanned": 0,
         "existing_crm": 0,
+        "ambiguous": 0,
+        "unresolved": 0,
+        "no_company": 0,
         "indian_name": 0,
         "excluded_title": 0,
         "company_dup": 0,
@@ -1786,7 +1929,7 @@ def main():
         active_payload["per_page"] = 10
 
         print(f"\nQuerying Apollo Search API for {label_desc}...")
-        preview_data = query_apollo_search(active_key, active_payload)
+        preview_data = query_apollo_search(active_key, active_payload, account_email=active_email)
         pagination = preview_data.get("pagination") or {}
         refined_total = int(pagination.get("total_entries", 0))
         total_pages = min(100, max(1, (refined_total + 99) // 100))
@@ -1829,9 +1972,10 @@ def main():
                 page_payload["per_page"] = 100
 
                 # Safe rate pacing
+                print(f"  [Page {current_page:02d}/{total_pages:02d}] Fetching Apollo results...", flush=True)
                 time.sleep(API_PAGE_DELAY_SEC)
 
-                page_res = query_apollo_search(active_key, page_payload)
+                page_res = query_apollo_search(active_key, page_payload, account_email=active_email)
                 page_people = page_res.get("people") or []
                 if not page_people:
                     consecutive_empty += 1
@@ -1844,66 +1988,69 @@ def main():
 
                 # Borrow fresh pooled connection per page for ~5ms
                 with get_connection() as conn:
-                    # Step 1: Immediate Layer 0 Company Name Pre-Check (< 50ms)
-                    # Eliminates ~68% of duplicate companies BEFORE doing any network/domain resolution!
                     page_company_names = [
                         p.get("organization_name") or (p.get("organization") or {}).get("name") or ""
                         for p in page_people
-                        if (p.get("organization_name") or (p.get("organization") or {}).get("name"))
                     ]
-                    matched_crm_companies = check_company_names_in_crm_batch(page_company_names, connection=conn) if page_company_names else set()
+                    unique_company_names = list(dict.fromkeys(page_company_names))
+                    company_context: Dict[str, Dict[str, Any]] = {}
+                    for person, company_name in zip(page_people, page_company_names):
+                        organization = person.get("organization") or {}
+                        if company_name and company_name not in company_context:
+                            company_context[company_name] = {
+                                "industry": person.get("industry") or organization.get("industry") or "",
+                            }
+                    identity_repository = MySQLCompanyRepository(conn, session_batch_tag)
+                    print(
+                        f"  [Page {current_page:02d}/{total_pages:02d}] "
+                        f"Checking {len(unique_company_names):,} unique company names...",
+                        flush=True,
+                    )
+                    decisions = classify_companies(
+                        unique_company_names,
+                        identity_repository,
+                        resolver=lambda names: batch_resolve_company_domains(
+                            active_key,
+                            names,
+                            conn=conn,
+                            max_workers=15,
+                            allow_unverified_fallback=False,
+                        ),
+                        jev_decider=jev_decider,
+                        company_context=company_context,
+                    )
+                    identity_repository.record_decisions(decisions.values())
 
-                    # Step 2: Separate surviving leads from existing CRM duplicates
-                    surviving_people = []
-                    layer0_dropped = 0
-                    for p in page_people:
-                        c_raw = (p.get("organization_name") or (p.get("organization") or {}).get("name") or "").strip()
-                        raw_c = c_raw.lower()
-                        norm_c = clean_company_name(c_raw).lower()
-                        stem_c = normalize_company_stem(c_raw).lower()
-                        if (raw_c and raw_c in matched_crm_companies) or (norm_c and norm_c in matched_crm_companies) or (stem_c and stem_c in matched_crm_companies):
-                            layer0_dropped += 1
-                        else:
-                            surviving_people.append(p)
+                    confirmed_new_people, decision_counts = partition_people_by_company_decision(
+                        page_people, decisions
+                    )
 
-                    # Step 3: Only resolve domains for the SURVIVING net-new companies (15 workers concurrent)!
-                    if surviving_people:
-                        surviving_company_names = [
-                            p.get("organization_name") or (p.get("organization") or {}).get("name") or ""
-                            for p in surviving_people
-                        ]
-                        resolved_companies = batch_resolve_company_domains(active_key, surviving_company_names, conn=conn, max_workers=15)
-
-                        page_contacts = [
-                            map_apollo_person_to_contact(
-                                p,
-                                resolved_companies.get(
-                                    (p.get("organization_name") or (p.get("organization") or {}).get("name") or "").strip().lower()
-                                ) or resolved_companies.get(
-                                    clean_company_name(p.get("organization_name") or (p.get("organization") or {}).get("name") or "").strip().lower()
-                                )
-                            )
-                            for p in surviving_people
-                        ]
-
-                        qualified_leads, stats = qualify_contacts_batch(
-                            page_contacts,
-                            session_batch_tag,
-                            conn,
-                            session_seen_companies,
-                            filter_indian=False,
-                            filter_titles=True
+                    page_contacts = [
+                        map_apollo_person_to_contact(
+                            person,
+                            {
+                                "company_domain": decision.canonical_domain,
+                                "website_link": (
+                                    f"https://{decision.canonical_domain}"
+                                    if decision.canonical_domain else ""
+                                ),
+                            },
                         )
-                        stats["existing_crm"] += layer0_dropped
-                    else:
-                        qualified_leads = []
-                        stats = {
-                            "existing_crm": layer0_dropped,
-                            "indian_name": 0,
-                            "excluded_title": 0,
-                            "company_dup": 0,
-                            "required": 0
-                        }
+                        for person, decision in confirmed_new_people
+                    ]
+                    qualified_leads, stats = qualify_contacts_batch(
+                        page_contacts,
+                        session_batch_tag,
+                        conn,
+                        session_seen_companies,
+                        filter_indian=False,
+                        filter_titles=True,
+                        skip_company_checks=True,
+                    )
+                    stats["existing_crm"] = decision_counts[EXISTING_CONFIRMED]
+                    stats["ambiguous"] = decision_counts[AMBIGUOUS]
+                    stats["unresolved"] = decision_counts[UNRESOLVED]
+                    stats["no_company"] = decision_counts[NO_COMPANY]
 
                     # Enforce target leads limit if specified
                     hit_target = False
@@ -1924,6 +2071,9 @@ def main():
                 # Update stats
                 session_audit["scanned"] += len(page_people)
                 session_audit["existing_crm"] += stats["existing_crm"]
+                session_audit["ambiguous"] += stats.get("ambiguous", 0)
+                session_audit["unresolved"] += stats.get("unresolved", 0)
+                session_audit["no_company"] += stats.get("no_company", 0)
                 session_audit["indian_name"] += stats["indian_name"]
                 session_audit["excluded_title"] += stats["excluded_title"]
                 session_audit["company_dup"] += stats["company_dup"]
@@ -1937,6 +2087,8 @@ def main():
                     f"  [Page {current_page:02d}/{total_pages:02d}] "
                     f"Scanned: {len(page_people):<3} | "
                     f"⊘ CRM: {stats['existing_crm']:<2} | "
+                    f"? Review: {stats.get('ambiguous', 0):<2} | "
+                    f"? Unresolved: {stats.get('unresolved', 0):<2} | "
                     f"⊘ Titles: {stats['excluded_title']:<2} | "
                     f"⚪ 1/Comp: {stats['company_dup']:<2} | "
                     f"🟢 ★ Qualified Unique: {stats['required']:<2}{goal_str}"
@@ -1966,11 +2118,14 @@ def main():
     print(f"Keywords Processed:     {session_audit['keywords'] or ['[None]']}")
     print(f"Total Contacts Scanned: {session_audit['scanned']:,d} leads")
     print("-" * 100)
-    print("Filter Breakdown (Unique Domains + 64K Titles - 0 LLM Cost):")
-    print(f"  ├── ⊘ CRM Existing Domains Dropped  : {session_audit['existing_crm']:,d}")
+    print("Filter Breakdown (Conservative Company Identity + 64K Titles):")
+    print(f"  ├── ⊘ Confirmed Existing Dropped     : {session_audit['existing_crm']:,d}")
+    print(f"  ├── ? Ambiguous Held for Review      : {session_audit['ambiguous']:,d}")
+    print(f"  ├── ? Unresolved Held (Not Existing) : {session_audit['unresolved']:,d}")
+    print(f"  ├── ? Missing Company Held           : {session_audit['no_company']:,d}")
     print(f"  ├── ⊘ Excluded Titles Dropped (64K) : {session_audit['excluded_title']:,d} (Zero LLM Tokens Consumed)")
     print(f"  ├── ⚪ 1/Company Duplicate Dropped   : {session_audit['company_dup']:,d}")
-    print(f"  └── 🟢 TOTAL QUALIFIED LEADS SAVED   : {session_audit['required']:,d} (100% Net-New Domains, Target Titles, 1/Company)")
+    print(f"  └── 🟢 TOTAL QUALIFIED LEADS SAVED   : {session_audit['required']:,d} (Confirmed New, Target Titles, 1/Company)")
     print("=" * 100)
 
     if session_audit["required"] == 0:

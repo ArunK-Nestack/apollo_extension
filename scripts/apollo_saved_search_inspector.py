@@ -45,6 +45,7 @@ load_dotenv()
 
 from scripts.apollo_export_formatter import APOLLO_75_HEADERS, format_apollo_lead_row
 from backend.api import get_connection, ensure_apollo_saved_leads_table
+from backend.people_search_logger import log_people_search_call
 
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -235,12 +236,13 @@ def load_account_saved_searches(account_email: str) -> List[Dict[str, Any]]:
     return []
 
 
-def probe_search_metrics(api_key: str, filters: Dict[str, Any]) -> Dict[str, int]:
+def probe_search_metrics(api_key: str, filters: Dict[str, Any], account_email: str = "") -> Dict[str, int]:
     """
     Probe the 3 core Apollo Web metrics for a search:
       - total : Total contacts matching search
       - new   : Contacts not yet saved (prospected_by_current_team = ['no'])
       - saved : Contacts already saved in account (prospected_by_current_team = ['yes'])
+    Logs all search queries (credits_charged = 0).
     """
     headers = {"Content-Type": "application/json", "X-Api-Key": api_key}
     base = copy.deepcopy(filters) if isinstance(filters, dict) else {}
@@ -254,15 +256,32 @@ def probe_search_metrics(api_key: str, filters: Dict[str, Any]) -> Dict[str, int
         else:
             p.pop("prospected_by_current_team", None)
 
+        endpoint = "https://api.apollo.io/api/v1/mixed_people/api_search"
         for attempt in range(3):
+            t0 = time.time()
             try:
-                r = requests.post("https://api.apollo.io/api/v1/mixed_people/api_search", headers=headers, json=p, timeout=15)
+                r = requests.post(endpoint, headers=headers, json=p, timeout=15)
+                dur = int((time.time() - t0) * 1000)
                 if r.status_code == 200:
                     d = r.json()
                     tot = d.get("total_entries")
                     if tot is None:
                         tot = (d.get("pagination") or {}).get("total_entries", 0)
-                    return int(tot or 0)
+                    cnt = int(tot or 0)
+                    try:
+                        log_people_search_call(
+                            endpoint=endpoint,
+                            payload=p,
+                            status_code=200,
+                            returned_count=0,
+                            total_entries=cnt,
+                            duration_ms=dur,
+                            account_email=account_email,
+                            credits_charged=0
+                        )
+                    except Exception:
+                        pass
+                    return cnt
                 elif r.status_code == 429:
                     time.sleep(3)
                     continue
@@ -283,10 +302,10 @@ def probe_search_metrics(api_key: str, filters: Dict[str, Any]) -> Dict[str, int
     }
 
 
-def batch_probe_all_searches(api_key: str, searches: List[Dict[str, Any]], max_workers: int = 4) -> None:
+def batch_probe_all_searches(api_key: str, searches: List[Dict[str, Any]], max_workers: int = 4, account_email: str = "") -> None:
     """Probe all searches concurrently so the 3-metric table loads fast."""
     def _worker(s):
-        metrics = probe_search_metrics(api_key, s.get("filters", {}))
+        metrics = probe_search_metrics(api_key, s.get("filters", {}), account_email=account_email)
         s["total"] = metrics["total"]
         s["new"] = metrics["new"]
         s["saved"] = metrics["saved"]
@@ -302,6 +321,7 @@ def fetch_contacts_preview(
     filters: Dict[str, Any],
     prospected_status: Optional[str] = None,
     limit: int = 15,
+    account_email: str = "",
 ) -> List[Dict[str, Any]]:
     """
     Fetch preview contacts for a search.
@@ -323,10 +343,27 @@ def fetch_contacts_preview(
         url = "https://api.apollo.io/api/v1/mixed_people/api_search"
 
     try:
+        t0 = time.time()
         res = requests.post(url, headers=headers, json=p, timeout=20)
+        dur = int((time.time() - t0) * 1000)
         if res.status_code == 200:
             d = res.json()
-            return d.get("contacts") or d.get("people") or []
+            leads = d.get("contacts") or d.get("people") or []
+            tot = d.get("total_entries") or len(leads)
+            try:
+                log_people_search_call(
+                    endpoint=url,
+                    payload=p,
+                    status_code=200,
+                    returned_count=len(leads),
+                    total_entries=int(tot),
+                    duration_ms=dur,
+                    account_email=account_email,
+                    credits_charged=0
+                )
+            except Exception:
+                pass
+            return leads
     except Exception as ex:
         print(f"[Error fetching preview]: {ex}")
     return []

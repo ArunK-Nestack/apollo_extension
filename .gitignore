@@ -4,6 +4,7 @@
 !.env.example
 config/apollo_accounts.json
 config/apollo_live_account_report.json
+config/*checkpoint*.json
 .secrets/
 
 # Python Cache & Virtual Environments

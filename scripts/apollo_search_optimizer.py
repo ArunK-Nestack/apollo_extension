@@ -40,6 +40,7 @@ from scripts.apollo_search_direct import (
     probe_searches_volume,
     parse_apollo_url,
 )
+from backend.people_search_logger import log_people_search_call
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -465,8 +466,10 @@ def probe_apollo_keyword_count(
     test_payload["page"] = 1
     test_payload["per_page"] = 1
 
+    t0 = time.time()
     try:
         res = requests.post(url, headers=headers, json=test_payload, timeout=12)
+        dur = int((time.time() - t0) * 1000)
         if res.status_code == 200:
             data = res.json()
             total = data.get("total_entries")
@@ -475,6 +478,18 @@ def probe_apollo_keyword_count(
                 total = pagination.get("total_entries", 0)
             total_leads = int(total or 0)
             total_pages = min(100, max(1, (total_leads + 99) // 100)) if total_leads > 0 else 0
+            try:
+                log_people_search_call(
+                    endpoint=url,
+                    payload=test_payload,
+                    status_code=200,
+                    returned_count=0,
+                    total_entries=total_leads,
+                    duration_ms=dur,
+                    credits_charged=0
+                )
+            except Exception:
+                pass
             return {
                 "keyword": keyword,
                 "category": category,
