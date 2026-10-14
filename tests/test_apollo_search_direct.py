@@ -17,7 +17,9 @@ Validates:
 
 import os
 import sys
+import json
 import unittest
+from unittest.mock import mock_open, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -32,6 +34,7 @@ from scripts.apollo_search_direct import (
     parse_apollo_url,
     load_all_creator_searches,
     load_account_creator_searches,
+    load_login_search_catalog,
     fetch_account_labels,
     convert_filters_v2_to_payload,
     fetch_live_apollo_searches,
@@ -253,6 +256,29 @@ class TestApolloSearchDirect(unittest.TestCase):
         accounts = {s.get("source_account") for s in all_searches if s.get("source_account")}
         self.assertIn("rahul@nestack.co.in", accounts)
         self.assertIn("recruiting@nestack.com", accounts)
+
+    def test_login_search_catalog_excludes_other_accounts(self):
+        catalog = {
+            "first@example.com": [{"name": "First login search", "filters": {}}],
+            "second@example.com": [{"name": "Second login search", "filters": {}}],
+        }
+        with patch("scripts.apollo_search_direct.os.path.exists", return_value=True), \
+                patch("builtins.open", mock_open(read_data=json.dumps(catalog))):
+            searches = load_login_search_catalog("FIRST@EXAMPLE.COM")
+
+        self.assertEqual([item["name"] for item in searches], ["First login search"])
+
+    def test_login_search_catalog_filters_legacy_global_list(self):
+        catalog = [
+            {"name": "First login search", "source_account": "first@example.com", "filters": {}},
+            {"name": "Second login search", "source_account": "second@example.com", "filters": {}},
+            {"name": "Unowned search", "filters": {}},
+        ]
+        with patch("scripts.apollo_search_direct.os.path.exists", return_value=True), \
+                patch("builtins.open", mock_open(read_data=json.dumps(catalog))):
+            searches = load_login_search_catalog("first@example.com")
+
+        self.assertEqual([item["name"] for item in searches], ["First login search"])
 
     def test_fetch_account_labels_mocked(self):
         """Verify account labels parsing separates accounts from contacts modalities."""

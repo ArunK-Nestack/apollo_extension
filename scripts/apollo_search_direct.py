@@ -619,13 +619,29 @@ def load_account_creator_searches(account_email: str) -> List[Dict[str, Any]]:
     try:
         with open(SAVED_SEARCHES_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
+            account_key = account_email.strip().lower()
             if isinstance(data, dict):
-                return data.get(account_email.lower(), [])
+                return next(
+                    (items for email, items in data.items() if str(email).strip().lower() == account_key),
+                    [],
+                )
             elif isinstance(data, list):
-                return data
+                if account_key == "default":
+                    return data
+                owner_fields = ("source_account", "account_email", "login_email")
+                return [
+                    item for item in data
+                    if isinstance(item, dict)
+                    and any(str(item.get(field, "")).strip().lower() == account_key for field in owner_fields)
+                ]
     except Exception:
         pass
     return []
+
+
+def load_login_search_catalog(account_email: str) -> List[Dict[str, Any]]:
+    """Return only saved searches owned by the selected Apollo login."""
+    return load_account_creator_searches(account_email)
 
 
 def load_all_creator_searches() -> List[Dict[str, Any]]:
@@ -1629,16 +1645,10 @@ def main():
         print("  (No new live searches returned from Apollo API, loading saved catalog)")
 
     def reload_catalog():
-        acc_searches = load_account_creator_searches(active_email)
-        all_searches = load_all_creator_searches()
-        other_searches = [
-            s for s in all_searches 
-            if s.get("source_account", "").lower() != active_email.lower()
-        ]
-        combined = list(acc_searches) + list(other_searches)
-        return acc_searches, all_searches, other_searches, combined
+        acc_searches = load_login_search_catalog(active_email)
+        return acc_searches, list(acc_searches)
 
-    account_creator_searches, all_creator_searches, other_creator_searches, selectable_searches = reload_catalog()
+    account_creator_searches, selectable_searches = reload_catalog()
 
     # Active Tab Mode: 'net_new', 'total', 'saved' (Default to net_new to surface pipeline leads)
     active_tab_mode = "net_new"
@@ -1665,17 +1675,6 @@ def main():
                 print(f"  [{idx:>2}] ★ [This Account] {cs['name']}{live_badge}{count_str}")
         else:
             print("  (No creator searches registered specifically for this login)")
-
-        if other_creator_searches:
-            start_offset = len(account_creator_searches) + 1
-            print(f"\nRegistered Searches Available Across Other Logins:")
-            for offset, cs in enumerate(other_creator_searches):
-                idx = start_offset + offset
-                count_val = cs.get("count")
-                count_str = f" ({count_val:,d} leads)" if count_val is not None else ""
-                acc_tag = cs.get("source_account", "Other Account")
-                live_badge = " [Live]" if cs.get("is_live") else ""
-                print(f"  [{idx:>2}] [{acc_tag}] {cs['name']}{live_badge}{count_str}")
 
         total_catalog = len(selectable_searches)
         print("\nOptions:")
@@ -1709,8 +1708,6 @@ def main():
             # Reset probed counts to force re-probing under the new tab
             for s in account_creator_searches:
                 s["count"] = None
-            for s in other_creator_searches:
-                s["count"] = None
             print(f">> Probing data volume for {active_email} searches in [{active_tab_mode.upper()}] mode...")
             probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode, account_email=active_email)
             continue
@@ -1721,7 +1718,7 @@ def main():
                 for ls in live:
                     save_account_creator_search(active_email, ls["name"], ls["filters"], quiet=True, is_live=True)
                 print(f"[+] Refreshed {len(live)} live searches from Apollo!")
-            account_creator_searches, all_creator_searches, other_creator_searches, selectable_searches = reload_catalog()
+            account_creator_searches, selectable_searches = reload_catalog()
             probe_searches_volume(active_key, account_creator_searches, max_workers=4, tab=active_tab_mode, account_email=active_email)
             continue
         elif cmd.lower() == "a":
@@ -1870,22 +1867,53 @@ def main():
     # Step 8 Parity: Session-wide seen companies for 1/company deduplication
     session_seen_companies: Dict[str, ApolloContact] = {}
 
-    print("\nCOMPANY IDENTITY MODE")
-    print("  Exact/alias and verified-domain decisions are automatic.")
-    print("  Similar-name and missing-domain cases remain ambiguous or unresolved.")
-    use_jev = input("Enable Jev for ambiguous company candidates? [y/N]: ").strip().lower() in ("y", "yes")
+    print("\n" + "=" * 80)
+    print("                 COMPANY IDENTITY & JEV AI REVIEW MODE")
+    print("=" * 80)
+    print("  Tier 1 & 2: Exact DB names and verified domains are automatically processed.")
+    print("  Choose your Jev AI review level for uncertain / non-exact companies:")
+    print("    [1] Conservative (Default) : Review strictly ambiguous candidates (~3–5%).")
+    print("                                 Safe; requires >=90% match confidence. Lowest cost.")
+    print("    [2] Aggressive             : Review fuzzy matches & auto-unlock distinct new companies (~20–35%).")
+    print("                                 Balanced; >=80% match, >=85% distinct entity confidence.")
+    print("    [3] Non-Exact              : Review ALL non-exact companies (~60–80%).")
+    print("                                 Comprehensive AI verification for every unconfirmed entity.")
+    print("    [4] Disabled               : Rule-based matching only (no Jev AI calls).\n")
+
+    jev_input = input("Select Jev mode [1=Conservative, 2=Aggressive, 3=Non-Exact, 4=None] (Default: 1): ").strip().lower()
+
+    jev_mode = "conservative"
+    use_jev = True
+    default_cap = 500
+
+    if jev_input in ("4", "none", "n", "no", "disabled", "disable"):
+        use_jev = False
+        jev_mode = "none"
+        print(">> Jev AI Review disabled.")
+    elif jev_input in ("2", "aggressive", "agg"):
+        jev_mode = "aggressive"
+        default_cap = 2000
+    elif jev_input in ("3", "non-exact", "non_exact", "nonexact", "all"):
+        jev_mode = "non_exact"
+        default_cap = 5000
+    else:
+        jev_mode = "conservative"
+        default_cap = 500
+
     jev_decider = None
     if use_jev:
         typesafe_key = os.getenv("TYPESAFE_API_KEY", "").strip()
         if not typesafe_key:
             print("[!] TYPESAFE_API_KEY is not configured. Continuing without Jev.")
+            jev_mode = "none"
         else:
             try:
-                max_jev_cases = max(1, int(os.getenv("JEV_MAX_COMPANIES_PER_SESSION", "250") or 250))
+                env_cap = int(os.getenv("JEV_MAX_COMPANIES_PER_SESSION", "0") or 0)
+                max_jev_cases = env_cap if env_cap > 0 else default_cap
             except ValueError:
-                max_jev_cases = 250
-            jev_decider = TypeSafeJevCompanyDecider(typesafe_key, max_cases=max_jev_cases)
-            print(f">> Jev enabled for at most {max_jev_cases:,} ambiguous companies this session.")
+                max_jev_cases = default_cap
+            jev_decider = TypeSafeJevCompanyDecider(typesafe_key, max_cases=max_jev_cases, mode=jev_mode)
+            print(f">> Jev AI Review ACTIVE in [{jev_mode.upper()}] mode (Max: {max_jev_cases:,} companies this session).")
 
     with get_connection() as identity_conn:
         MySQLCompanyRepository(identity_conn, session_batch_tag).ensure_schema()
@@ -1997,10 +2025,21 @@ def main():
                     for person, company_name in zip(page_people, page_company_names):
                         organization = person.get("organization") or {}
                         if company_name and company_name not in company_context:
+                            loc = organization.get("raw_address") or ", ".join(filter(None, [
+                                organization.get("city") or person.get("city"),
+                                organization.get("state") or person.get("state"),
+                                organization.get("country") or person.get("country"),
+                            ]))
                             company_context[company_name] = {
                                 "industry": person.get("industry") or organization.get("industry") or "",
+                                "company_domain": clean_domain(organization.get("primary_domain") or person.get("company_domain") or organization.get("website_url") or ""),
+                                "location": loc,
+                                "linkedin_url": organization.get("linkedin_url") or "",
+                                "num_employees": str(organization.get("estimated_num_employees") or ""),
                             }
                     identity_repository = MySQLCompanyRepository(conn, session_batch_tag)
+                    if jev_decider:
+                        jev_decider.connection = conn
                     print(
                         f"  [Page {current_page:02d}/{total_pages:02d}] "
                         f"Checking {len(unique_company_names):,} unique company names...",
@@ -2018,6 +2057,7 @@ def main():
                         ),
                         jev_decider=jev_decider,
                         company_context=company_context,
+                        mode=jev_mode,
                     )
                     identity_repository.record_decisions(decisions.values())
 

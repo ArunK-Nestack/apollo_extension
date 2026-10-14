@@ -260,6 +260,82 @@ class TestCompanyIdentityPipeline(unittest.TestCase):
             alias_sql,
         )
 
+    def test_aggressive_mode_unlocks_distinct_new_company(self):
+        repo = FakeRepository(
+            candidates={
+                "Novel Co": [
+                    {"canonical_name": "Novelty Corp", "domain": "novelty.com", "score": 0.82}
+                ]
+            }
+        )
+        jev = FakeJev({
+            "Novel Co": {
+                "choice": "different_company",
+                "confidence": 0.92,
+                "probability": 0.90,
+            }
+        })
+        decisions = classify_companies(
+            ["Novel Co"],
+            repo,
+            resolver=lambda _names: {},
+            jev_decider=jev,
+            company_context={"Novel Co": {"company_domain": "novelco.io"}},
+            mode="aggressive",
+        )
+        self.assertEqual(decisions["Novel Co"].status, NEW_CONFIRMED)
+        self.assertEqual(decisions["Novel Co"].canonical_domain, "novelco.io")
+        self.assertEqual(decisions["Novel Co"].source, "jev_different_company")
+
+    def test_non_exact_mode_evaluates_unresolved_entities(self):
+        repo = FakeRepository(exact={}, candidates={})
+        jev = FakeJev({
+            "BrandNew Startup": {
+                "choice": "is_independent_company",
+                "confidence": 0.88,
+                "probability": 0.85,
+            }
+        })
+        decisions = classify_companies(
+            ["BrandNew Startup"],
+            repo,
+            resolver=lambda _names: {},
+            jev_decider=jev,
+            company_context={"BrandNew Startup": {"domain": "brandnew.ai"}},
+            mode="non_exact",
+        )
+        self.assertEqual(len(jev.calls), 1)
+        self.assertEqual(jev.calls[0][0]["company_name"], "BrandNew Startup")
+        self.assertEqual(decisions["BrandNew Startup"].status, NEW_CONFIRMED)
+        self.assertEqual(decisions["BrandNew Startup"].canonical_domain, "brandnew.ai")
+
+    def test_jev_decider_caches_verdicts_in_memory(self):
+        from backend.company_identity import TypeSafeJevCompanyDecider
+        decider = TypeSafeJevCompanyDecider("dummy_key_for_test", max_cases=10, mode="conservative")
+        # Prepopulate cache
+        decider._memory_cache[(conservative_company_key("Cached Corp"), "conservative")] = {
+            "choice": "candidate_0",
+            "confidence": 0.95,
+            "probability": 0.94,
+        }
+        res = decider.decide([{"company_name": "Cached Corp"}])
+        self.assertIn("Cached Corp", res)
+        self.assertEqual(res["Cached Corp"]["choice"], "candidate_0")
+        self.assertEqual(res["Cached Corp"]["confidence"], 0.95)
+        # Should not have used any external API quota
+        self.assertEqual(decider.used_cases, 0)
+
+    def test_enhanced_seniority_score_recognition(self):
+        from backend.api import get_seniority_score
+        self.assertEqual(get_seniority_score("Managing Member"), 100)
+        self.assertEqual(get_seniority_score("Founding Partner"), 100)
+        self.assertEqual(get_seniority_score("General Partner"), 80)
+        self.assertEqual(get_seniority_score("Distinguished Architect"), 60)
+        self.assertEqual(get_seniority_score("Chief Technical Fellow"), 100)
+        self.assertEqual(get_seniority_score("Growth Evangelist"), 40)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

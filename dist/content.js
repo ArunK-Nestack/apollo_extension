@@ -13,6 +13,8 @@
     "contactCheckerBatchName";
   const EXTENSION_ENABLED_STORAGE_KEY =
     "contactCheckerExtensionEnabled";
+  const COMPANY_CAP_STORAGE_KEY =
+    "contactCheckerCompanyCap";
 
   const APOLLO_19_LOGINS = [
     { name: "Abel Abraham", email: "abel.abraham@nestacktechnologies.com", renewalDay: 10, expiryUtc: "2026-10-10T04:51:32+00:00" },
@@ -243,7 +245,8 @@
     pendingContacts: new Map(), // key -> timestamp (supports TTL auto-expiration)
     currentContacts: new Map(),
     requiredContactsAll: new Map(),
-    requiredCompanyMap: new Map(),
+    requiredCompanyMap: new Map(), // compKey -> Array<lead>
+    maxContactsPerCompany: 3,
     syncedLeadKeys: new Set(),
     syncingLeadKeys: new Set(),
     highlightedRows: new Set(),
@@ -349,57 +352,88 @@
     }
 
     /* ============================================================
-       PRO MAX OBSIDIAN HUD CONTROLS
+       HORIZONTAL CONTROLS (BOTTOM BAR)
        ============================================================ */
     #contact-checker-controls {
       position: fixed;
       right: 20px;
-      bottom: 60px;
+      bottom: 80px;
+      left: auto;
       z-index: 2147483647;
       display: flex;
       align-items: center;
-      gap: 10px;
-      background: rgba(15, 23, 42, 0.94);
-      backdrop-filter: blur(20px) saturate(180%);
-      -webkit-backdrop-filter: blur(20px) saturate(180%);
-      color: #f8fafc;
-      padding: 7px 14px;
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+      gap: 8px;
+      background: #111827;
+      color: white;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid #1f2937;
+      font-family: Arial, sans-serif;
       font-size: 12px;
-      box-shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.06), 0 0 24px rgba(56, 189, 248, 0.08);
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.35);
       user-select: none;
+    }
+
+    #contact-checker-drag-handle {
+      cursor: grab;
+      color: #64748b;
+      font-size: 14px;
+      padding: 0 3px;
+      user-select: none;
+      line-height: 1;
+    }
+    #contact-checker-drag-handle:active {
+      cursor: grabbing;
     }
 
     .contact-checker-live-badge {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 4px 9px;
+      padding: 4px 8px;
       border-radius: 6px;
-      background: rgba(16, 185, 129, 0.15);
-      border: 1px solid rgba(16, 185, 129, 0.35);
+      background: #065f46;
       color: #34d399;
       font-size: 11px;
       font-weight: 700;
-      letter-spacing: 0.02em;
     }
 
-    .contact-checker-live-badge::before {
-      content: "";
-      display: inline-block;
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: #10b981;
-      box-shadow: 0 0 8px #10b981;
-      animation: cc-pulse-dot 2s infinite ease-in-out;
+    .contact-checker-live-badge.active {
+      background: #1e3a5f;
+      color: #60a5fa;
     }
 
-    @keyframes cc-pulse-dot {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.45; transform: scale(0.85); }
+    /* DYNAMIC COMPANY CAPACITY SELECTOR */
+    .contact-checker-cap-pill,
+    .cc-cap-selector-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #94a3b8;
+    }
+
+    .cc-cap-select,
+    #contact-checker-company-cap {
+      background: transparent;
+      color: #38bdf8;
+      border: none;
+      outline: none;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 2px 2px;
+    }
+    .cc-cap-select option,
+    #contact-checker-company-cap option {
+      background: #111827;
+      color: white;
     }
 
     /* CUSTOM CYCLE PICKER PRO MAX */
@@ -736,95 +770,101 @@
       background: #0369a1;
     }
 
-    /* ACTION BUTTON ENHANCEMENTS */
-    #contact-checker-rescan-btn,
-    #contact-checker-export-required,
-    #contact-checker-dedupe-btn,
-    #contact-checker-clear-required,
-    #contact-checker-activity-toggle {
-      border: 1px solid transparent !important;
-      border-radius: 8px !important;
-      padding: 6px 11px !important;
-      font-size: 11.5px !important;
-      font-weight: 700 !important;
-      letter-spacing: 0.01em !important;
-      cursor: pointer !important;
-      transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1) !important;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.25) !important;
-    }
-
+    /* ACTION BUTTONS PREVIOUS STYLE */
     #contact-checker-rescan-btn {
-      background: linear-gradient(135deg, #0284c7, #0369a1) !important;
-      border-color: rgba(56, 189, 248, 0.3) !important;
-      color: white !important;
+      background: #0284c7;
+      border: 0;
+      border-radius: 6px;
+      color: white;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
     }
     #contact-checker-rescan-btn:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 14px rgba(2, 132, 199, 0.45) !important;
+      background: #0369a1;
     }
 
     #contact-checker-export-required {
-      background: linear-gradient(135deg, #10b981, #059669) !important;
-      border-color: rgba(52, 211, 153, 0.3) !important;
-      color: white !important;
+      background: #f97316;
+      border: 0;
+      border-radius: 6px;
+      color: white;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
     }
     #contact-checker-export-required:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 14px rgba(16, 185, 129, 0.45) !important;
+      background: #ea580c;
     }
 
     #contact-checker-dedupe-btn {
-      background: linear-gradient(135deg, #f59e0b, #d97706) !important;
-      border-color: rgba(251, 191, 36, 0.3) !important;
-      color: #0f172a !important;
+      background: #eab308;
+      color: #111827;
+      border: 0;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
     }
     #contact-checker-dedupe-btn:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 14px rgba(245, 158, 11, 0.45) !important;
+      background: #ca8a04;
     }
 
     #contact-checker-clear-required {
-      background: rgba(51, 65, 85, 0.8) !important;
-      border-color: rgba(148, 163, 184, 0.2) !important;
-      color: #cbd5e1 !important;
+      background: #f97316;
+      border: 0;
+      border-radius: 6px;
+      color: white;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
     }
     #contact-checker-clear-required:hover {
-      background: rgba(239, 68, 68, 0.85) !important;
-      border-color: rgba(239, 68, 68, 0.4) !important;
-      color: white !important;
-      transform: translateY(-1px);
+      background: #dc2626;
     }
 
     #contact-checker-activity-toggle {
-      background: linear-gradient(135deg, #4f46e5, #4338ca) !important;
-      border-color: rgba(129, 140, 248, 0.3) !important;
-      color: white !important;
+      background: #f97316;
+      border: 0;
+      border-radius: 6px;
+      color: white;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
     }
     #contact-checker-activity-toggle:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 14px rgba(79, 70, 229, 0.45) !important;
+      background: #ea580c;
     }
 
     #contact-checker-export-required:disabled,
     #contact-checker-dedupe-btn:disabled,
     #contact-checker-clear-required:disabled,
     #contact-checker-activity-toggle:disabled {
-      cursor: default !important;
-      opacity: 0.45 !important;
-      transform: none !important;
-      box-shadow: none !important;
+      background: #4b5563;
+      cursor: default;
+      opacity: 0.6;
     }
 
     #contact-checker-clear-activity {
-      background: #4b5563 !important;
-      padding: 5px 8px !important;
-      font-size: 11px !important;
+      background: #4b5563;
+      border: 0;
+      border-radius: 6px;
+      color: white;
+      padding: 5px 8px;
+      font-size: 11px;
+      cursor: pointer;
     }
 
     #contact-checker-activity-panel {
       position: fixed;
       right: 20px;
-      bottom: 130px;
+      bottom: 135px;
+      left: auto;
       z-index: 2147483646;
       width: 460px;
       max-width: calc(100vw - 40px);
@@ -2331,6 +2371,13 @@
           state.indianGuardrailEnabled = true;
         }
 
+        if (result?.[COMPANY_CAP_STORAGE_KEY] !== undefined) {
+          const capVal = parseInt(result[COMPANY_CAP_STORAGE_KEY], 10);
+          state.maxContactsPerCompany = (capVal >= 1 && capVal <= 10) ? capVal : 3;
+        } else {
+          state.maxContactsPerCompany = 3;
+        }
+
         const stored =
           result?.[REQUIRED_CONTACTS_STORAGE_KEY];
 
@@ -2342,11 +2389,19 @@
             state.syncedLeadKeys.add(key); // Mark as already synced so we don't re-upload on refresh
             const compKey = getCompanyDedupeKey(value.company, value.domain);
             if (compKey) {
-              state.requiredCompanyMap.set(compKey, {
+              if (!state.requiredCompanyMap.has(compKey)) {
+                state.requiredCompanyMap.set(compKey, []);
+              }
+              state.requiredCompanyMap.get(compKey).push({
                 key: key,
                 apollo_id: value.apollo_id || "",
                 name: value.name || `${value.first_name || ""} ${value.last_name || ""}`.trim(),
-                company: value.company
+                title: value.job_title || "",
+                canonical_title: value.canonical_title || getCanonicalTitleKey(value.job_title),
+                score: value.seniority_score || getSeniorityScore(value.job_title),
+                company: value.company,
+                domain: value.domain || value.company_domain || "",
+                is_credit_spent: Boolean(value.is_credit_spent || value.email)
               });
             }
           });
@@ -2408,7 +2463,8 @@
         replace_all: false,
         cycle: state.cycleTag || "",
         account_used: state.accountEmail || "",
-        page_number: currentApolloPage
+        page_number: currentApolloPage,
+        max_contacts_per_company: state.maxContactsPerCompany || 3
       }, (res) => {
         const lastErr = chrome.runtime?.lastError;
         if (!lastErr && res?.success) {
@@ -2522,6 +2578,40 @@
     return 20; // Tier 5: Individual contributor
   }
 
+  function getCanonicalTitleKey(jobTitle) {
+    if (!jobTitle) return "";
+    let t = String(jobTitle).toLowerCase().trim();
+    t = t.replace(/[^\w\s]/g, " ");
+
+    const replacements = [
+      [/\bvice\s+president\b/g, "vp"],
+      [/\bvice\s*-?\s*president\b/g, "vp"],
+      [/\bchief\s+executive\s+officer\b/g, "ceo"],
+      [/\bchief\s+technology\s+officer\b/g, "cto"],
+      [/\bchief\s+financial\s+officer\b/g, "cfo"],
+      [/\bchief\s+operating\s+officer\b/g, "coo"],
+      [/\bchief\s+revenue\s+officer\b/g, "cro"],
+      [/\bchief\s+marketing\s+officer\b/g, "cmo"],
+      [/\bchief\s+product\s+officer\b/g, "cpo"],
+      [/\bchief\s+information\s+officer\b/g, "cio"],
+      [/\bchief\s+security\s+officer\b/g, "ciso"],
+      [/\bco\s*-?\s*founder\b/g, "founder"],
+      [/\bsr\.?\b/g, "senior"],
+      [/\bjr\.?\b/g, "junior"],
+      [/\bhead\s+of\b/g, "head"],
+      [/\bgeneral\s+manager\b/g, "gm"]
+    ];
+
+    for (const [re, repl] of replacements) {
+      t = t.replace(re, repl);
+    }
+
+    const stopWords = new Set(["of", "the", "and", "in", "for", "at", "to", "a", "an"]);
+    const tokens = t.split(/\s+/).filter(w => w && !stopWords.has(w));
+    tokens.sort();
+    return tokens.join("_");
+  }
+
   function getCompanyDedupeKey(companyName, rawDomain = "") {
     const rootDomain = extractRootDomain(rawDomain);
     if (rootDomain) return rootDomain;
@@ -2556,21 +2646,103 @@
     const compKey = getCompanyDedupeKey(contact.company, rawDomain);
     const incomingScore = getSeniorityScore(contact.job_title);
 
-    // Seniority-based Lead Election: 1 unique lead per company in local storage
-    if (compKey && state.requiredCompanyMap.has(compKey)) {
-      const prevElected = state.requiredCompanyMap.get(compKey);
-      if (prevElected && prevElected.key && prevElected.key !== contact.key) {
-        const prevScore = prevElected.score || 0;
-        if (incomingScore > prevScore) {
-          // Replace lower-ranking previous lead with higher-ranking decision maker
-          state.requiredContactsAll.delete(prevElected.key);
-          state.syncedLeadKeys.delete(prevElected.key);
-          state.hasUnsavedRequiredContacts = true;
-        } else {
-          // Current contact is lower or equal rank -> do not replace existing superior lead
+    const incomingCanonTitle = getCanonicalTitleKey(contact.job_title);
+    const cap = state.maxContactsPerCompany || 3;
+
+    // Seniority-based Lead Election: up to N leads per company with title uniqueness & outranking
+    if (compKey) {
+      let pool = state.requiredCompanyMap.get(compKey);
+      if (!Array.isArray(pool)) {
+        pool = pool ? [pool] : [];
+      }
+
+      const normCurrentKey = String(contact.key || "").replace(/^apollo-/, "").toLowerCase();
+      const existingIdx = pool.findIndex(c => {
+        const normKey = String(c.key || c.apollo_id || "").replace(/^apollo-/, "").toLowerCase();
+        return normKey && normKey === normCurrentKey;
+      });
+
+      if (existingIdx >= 0) {
+        pool[existingIdx] = {
+          key: contact.key,
+          apollo_id: apolloId,
+          name: contact.name,
+          title: contact.job_title,
+          canonical_title: incomingCanonTitle,
+          score: incomingScore,
+          company: contact.company,
+          domain: rootDomain || rawDomain,
+          website_link: contact.website_link || (rootDomain ? `https://${rootDomain}` : ""),
+          is_credit_spent: Boolean(contact.is_credit_spent || contact.email)
+        };
+      } else {
+        // Reject duplicate canonical job titles for same company
+        const dupTitleLead = pool.find(c => c.canonical_title && c.canonical_title === incomingCanonTitle);
+        if (dupTitleLead) {
           return;
         }
+
+        if (pool.length < cap) {
+          pool.push({
+            key: contact.key,
+            apollo_id: apolloId,
+            name: contact.name,
+            title: contact.job_title,
+            canonical_title: incomingCanonTitle,
+            score: incomingScore,
+            company: contact.company,
+            domain: rootDomain || rawDomain,
+            website_link: contact.website_link || (rootDomain ? `https://${rootDomain}` : ""),
+            is_credit_spent: Boolean(contact.is_credit_spent || contact.email)
+          });
+        } else {
+          // Pool is at or above cap: find lowest unlocked lead
+          let minIdx = -1;
+          let minScore = Infinity;
+          pool.forEach((c, idx) => {
+            if (!c.is_credit_spent && (c.score || 0) < minScore) {
+              minScore = c.score || 0;
+              minIdx = idx;
+            }
+          });
+
+          if (minIdx >= 0 && incomingScore > minScore) {
+            const evicted = pool[minIdx];
+            state.requiredContactsAll.delete(evicted.key);
+            state.syncedLeadKeys.delete(evicted.key);
+            state.hasUnsavedRequiredContacts = true;
+
+            // Demote evicted row visual badge if currently visible in DOM
+            const evictedContact = state.currentContacts.get(evicted.key);
+            if (evictedContact && evictedContact.row) {
+              evictedContact.row.classList.remove("contact-checker-required-row");
+              setContactBadge(
+                evictedContact,
+                "contact-checker-ignored-badge",
+                "⊘ Replaced",
+                `Replaced by higher-ranking decision maker (${contact.name} - ${contact.job_title})`,
+                "#6b7280"
+              );
+            }
+
+            pool[minIdx] = {
+              key: contact.key,
+              apollo_id: apolloId,
+              name: contact.name,
+              title: contact.job_title,
+              canonical_title: incomingCanonTitle,
+              score: incomingScore,
+              company: contact.company,
+              domain: rootDomain || rawDomain,
+              website_link: contact.website_link || (rootDomain ? `https://${rootDomain}` : ""),
+              is_credit_spent: Boolean(contact.is_credit_spent || contact.email)
+            };
+          } else {
+            return;
+          }
+        }
       }
+      state.requiredCompanyMap.set(compKey, pool);
     }
 
     const isPending = (result?.guardrail_status === "pending_title_eval") || (result?.segment === "Pending_Evaluation");
@@ -2583,6 +2755,7 @@
       last_name: lastName,
       name: contact.name,
       job_title: contact.job_title,
+      canonical_title: incomingCanonTitle,
       company: contact.company,
       domain: rootDomain || rawDomain,
       company_domain: contact.company_domain || rootDomain || rawDomain,
@@ -2593,21 +2766,10 @@
       segment: segmentVal,
       is_pending_eval: isPending,
       seniority_score: incomingScore,
+      is_credit_spent: Boolean(contact.is_credit_spent || contact.email),
       page_number: getApolloPageNumber()
     });
     state.hasUnsavedRequiredContacts = true;
-
-    if (compKey) {
-      state.requiredCompanyMap.set(compKey, {
-        key: contact.key,
-        name: contact.name,
-        title: contact.job_title,
-        score: incomingScore,
-        company: contact.company,
-        domain: rootDomain || rawDomain,
-        website_link: websiteLink
-      });
-    }
   }
 
   function markRequired(contact, result) {
@@ -2686,9 +2848,13 @@
       badgeBg = "#64748b";
       badgeTitle = result.guardrail_reason || "Excluded: Title belongs to non-required segment.";
     } else if (result?.guardrail_status === "company_limit_reached") {
-      badgeText = "⊘ 1/Company Max";
+      badgeText = `⊘ Cap Reached (${state.maxContactsPerCompany || 3}/co)`;
       badgeBg = "#6b7280";
-      badgeTitle = result.guardrail_reason || "Only 1 contact per company is allowed.";
+      badgeTitle = result.guardrail_reason || `Company cap reached (max ${state.maxContactsPerCompany || 3} allowed).`;
+    } else if (result?.guardrail_status === "duplicate_title_for_company") {
+      badgeText = "⊘ Duplicate Title";
+      badgeBg = "#f59e0b";
+      badgeTitle = result.guardrail_reason || "Company already has a contact with this title.";
     }
 
     setContactBadge(contact, "contact-checker-ignored-badge", badgeText, badgeTitle, badgeBg);
@@ -2714,30 +2880,60 @@
         result
       );
     } else if (result.required && !result.ignored) {
-      // Cross-page Local Storage Deduplication: check if this company is already in local storage from an earlier page
+      // Cross-page Local Storage Deduplication: check if company has reached cap or duplicate title
       const compKey = getCompanyDedupeKey(contact.company, result?.matched_domain || contact.domain);
-      const existingCompanyLead = state.requiredCompanyMap.get(compKey);
-
+      let pool = state.requiredCompanyMap.get(compKey);
+      if (!Array.isArray(pool)) {
+        pool = pool ? [pool] : [];
+      }
+      const cap = state.maxContactsPerCompany || 3;
+      const incomingScore = getSeniorityScore(contact.job_title);
+      const incomingCanonTitle = getCanonicalTitleKey(contact.job_title);
       const normCurrentKey = String(contact.key || "").replace(/^apollo-/, "").toLowerCase();
-      const normExistingKey = existingCompanyLead
-        ? String(existingCompanyLead.key || existingCompanyLead.apollo_id || "").replace(/^apollo-/, "").toLowerCase()
-        : "";
 
-      if (existingCompanyLead && normExistingKey && normExistingKey !== normCurrentKey) {
-        // A different contact from this company was already saved as required on an earlier page
+      const isAlreadyInPool = pool.some(c => {
+        const normExistingKey = String(c.key || c.apollo_id || "").replace(/^apollo-/, "").toLowerCase();
+        return normExistingKey && normExistingKey === normCurrentKey;
+      });
+
+      if (isAlreadyInPool) {
+        markRequired(contact, result);
+        return;
+      }
+
+      // Check duplicate job title in local pool
+      const dupTitleLead = pool.find(c => c.canonical_title && c.canonical_title === incomingCanonTitle);
+      if (dupTitleLead) {
         result.required = false;
         result.ignored = true;
-        result.guardrail_status = "company_limit_reached";
-        result.guardrail_reason = `Company '${contact.company}' already has a lead in local storage (${existingCompanyLead.name}). Max 1 contact per company.`;
-        markIgnored(
-          contact,
-          result
-        );
+        result.guardrail_status = "duplicate_title_for_company";
+        result.guardrail_reason = `Company '${contact.company}' already has a lead with title '${dupTitleLead.title}' (${dupTitleLead.name}). No duplicate titles allowed.`;
+        markIgnored(contact, result);
+        return;
+      }
+
+      if (pool.length >= cap) {
+        // Pool is at or above cap: check if incoming can outrank lowest unlocked lead
+        let minScore = Infinity;
+        let hasUnlocked = false;
+        pool.forEach(c => {
+          if (!c.is_credit_spent) {
+            hasUnlocked = true;
+            if ((c.score || 0) < minScore) minScore = c.score || 0;
+          }
+        });
+
+        if (hasUnlocked && incomingScore > minScore) {
+          markRequired(contact, result);
+        } else {
+          result.required = false;
+          result.ignored = true;
+          result.guardrail_status = "company_limit_reached";
+          result.guardrail_reason = `Company '${contact.company}' already has ${cap} contacts selected. Priority (${incomingScore}) does not exceed selected leads.`;
+          markIgnored(contact, result);
+        }
       } else {
-        markRequired(
-          contact,
-          result
-        );
+        markRequired(contact, result);
       }
     } else {
       markIgnored(
@@ -2791,24 +2987,35 @@
       state.requiredContactsAll.values()
     );
 
-    // Pre-Export Single-Pass Strict Sweep: Exactly 1 Lead per Canonical Root Domain
-    const uniqueCompanyMap = new Map();
+    // Pre-Export Multi-Pass Sweep: Up to N Leads per Company & Unique Job Titles
+    const cap = state.maxContactsPerCompany || 3;
+    const companyGroups = new Map();
     rawRows.forEach(row => {
       const rootDom = extractRootDomain(row.domain);
       const dedupeKey = rootDom || getCompanyDedupeKey(row.company);
       const score = row.seniority_score || getSeniorityScore(row.job_title);
+      const canonTitle = row.canonical_title || getCanonicalTitleKey(row.job_title);
 
-      if (!uniqueCompanyMap.has(dedupeKey)) {
-        uniqueCompanyMap.set(dedupeKey, { row, score });
-      } else {
-        const existing = uniqueCompanyMap.get(dedupeKey);
-        if (score > existing.score) {
-          uniqueCompanyMap.set(dedupeKey, { row, score });
-        }
+      if (!companyGroups.has(dedupeKey)) {
+        companyGroups.set(dedupeKey, []);
       }
+      companyGroups.get(dedupeKey).push({ row, score, canonTitle });
     });
 
-    const rows = Array.from(uniqueCompanyMap.values()).map(item => item.row);
+    const rows = [];
+    companyGroups.forEach((leads) => {
+      const seenTitles = new Set();
+      const distinctLeads = [];
+      leads.sort((a, b) => b.score - a.score);
+      for (const item of leads) {
+        if (!item.canonTitle || !seenTitles.has(item.canonTitle)) {
+          if (item.canonTitle) seenTitles.add(item.canonTitle);
+          distinctLeads.push(item.row);
+          if (distinctLeads.length >= cap) break;
+        }
+      }
+      rows.push(...distinctLeads);
+    });
 
     const header = [
       "First Name",
@@ -2959,8 +3166,18 @@
             // Prune / delete from local storage
             state.requiredContactsAll.delete(key);
             const compKey = getCompanyDedupeKey(contact.company, contact.domain);
-            if (compKey && state.requiredCompanyMap.get(compKey)?.key === key) {
-              state.requiredCompanyMap.delete(compKey);
+            if (compKey && state.requiredCompanyMap.has(compKey)) {
+              let pool = state.requiredCompanyMap.get(compKey);
+              if (Array.isArray(pool)) {
+                pool = pool.filter(c => c.key !== key);
+                if (pool.length > 0) {
+                  state.requiredCompanyMap.set(compKey, pool);
+                } else {
+                  state.requiredCompanyMap.delete(compKey);
+                }
+              } else if (pool?.key === key) {
+                state.requiredCompanyMap.delete(compKey);
+              }
             }
           } else {
             // Keep and upgrade
@@ -3044,37 +3261,71 @@
       return;
     }
 
-    const uniqueCompanies = new Map(); // compKey -> { key, score }
+    const cap = state.maxContactsPerCompany || 3;
+    const companyGroups = new Map(); // compKey -> Array<{ key, contact, score, canonical_title, is_credit_spent }>
     const duplicateKeys = [];
 
     state.requiredContactsAll.forEach((contact, key) => {
       const compKey = getCompanyDedupeKey(contact.company, contact.domain);
-      if (!compKey) {
-        uniqueCompanies.set(key, { key, score: 0 });
-        return;
+      if (!compKey) return;
+      const score = contact.seniority_score || getSeniorityScore(contact.job_title);
+      const canonTitle = contact.canonical_title || getCanonicalTitleKey(contact.job_title);
+      if (!companyGroups.has(compKey)) {
+        companyGroups.set(compKey, []);
+      }
+      companyGroups.get(compKey).push({
+        key,
+        contact,
+        score,
+        canonical_title: canonTitle,
+        is_credit_spent: Boolean(contact.is_credit_spent || contact.email)
+      });
+    });
+
+    companyGroups.forEach((leads) => {
+      // 1. Deduplicate identical canonical job titles (keep higher seniority or first)
+      const seenTitles = new Map();
+      const distinctLeads = [];
+      for (const lead of leads) {
+        if (!lead.canonical_title) {
+          distinctLeads.push(lead);
+          continue;
+        }
+        if (seenTitles.has(lead.canonical_title)) {
+          const prev = seenTitles.get(lead.canonical_title);
+          if (lead.score > prev.score && !prev.is_credit_spent) {
+            duplicateKeys.push(prev.key);
+            seenTitles.set(lead.canonical_title, lead);
+            const idx = distinctLeads.findIndex(x => x.key === prev.key);
+            if (idx >= 0) distinctLeads[idx] = lead;
+          } else {
+            duplicateKeys.push(lead.key);
+          }
+        } else {
+          seenTitles.set(lead.canonical_title, lead);
+          distinctLeads.push(lead);
+        }
       }
 
-      const score = contact.seniority_score || getSeniorityScore(contact.job_title);
-      if (uniqueCompanies.has(compKey)) {
-        const existing = uniqueCompanies.get(compKey);
-        if (score > existing.score) {
-          // Incoming lead is higher-ranking (e.g. CEO vs Manager): discard previous lead
-          duplicateKeys.push(existing.key);
-          uniqueCompanies.set(compKey, { key, score });
-        } else {
-          // Existing lead has equal or higher rank: discard incoming lead
-          duplicateKeys.push(key);
+      // 2. Sort distinct leads by seniority score descending
+      distinctLeads.sort((a, b) => b.score - a.score);
+
+      // 3. Keep up to cap leads. Mark remaining unlocked for removal
+      if (distinctLeads.length > cap) {
+        const toRemove = distinctLeads.slice(cap);
+        for (const item of toRemove) {
+          if (!item.is_credit_spent) {
+            duplicateKeys.push(item.key);
+          }
         }
-      } else {
-        uniqueCompanies.set(compKey, { key, score });
       }
     });
 
     if (duplicateKeys.length === 0) {
-      showStatus(`✓ 100% Unique: All ${totalBefore} leads in local storage are already distinct companies!`, 3500);
+      showStatus(`✓ 100% Unique: All ${totalBefore} leads adhere to max ${cap}/company & unique titles!`, 3500);
       addActivity(
         "DEDUPLICATION_CHECK",
-        `Checked ${totalBefore} leads in local storage. All are unique companies (0 duplicates found).`,
+        `Checked ${totalBefore} leads in local storage. All adhere to max ${cap}/company & unique titles.`,
         "info"
       );
       return;
@@ -3093,10 +3344,18 @@
     state.requiredContactsAll.forEach((contact, key) => {
       const compKey = getCompanyDedupeKey(contact.company, contact.domain);
       if (compKey) {
-        state.requiredCompanyMap.set(compKey, {
+        if (!state.requiredCompanyMap.has(compKey)) {
+          state.requiredCompanyMap.set(compKey, []);
+        }
+        state.requiredCompanyMap.get(compKey).push({
           key: contact.apollo_id || key,
           name: contact.name || `${contact.first_name || ""} ${contact.last_name || ""}`.trim(),
-          company: contact.company
+          title: contact.job_title || "",
+          canonical_title: contact.canonical_title || getCanonicalTitleKey(contact.job_title),
+          score: contact.seniority_score || getSeniorityScore(contact.job_title),
+          company: contact.company,
+          domain: contact.domain,
+          is_credit_spent: Boolean(contact.is_credit_spent || contact.email)
         });
       }
     });
@@ -3167,8 +3426,8 @@
       "contact-checker-controls"
     );
 
-    // If an older controls dock exists in DOM without the picker wrap, refresh it
-    if (controls && (!controls.querySelector("#cc-cycle-picker-wrap") || !controls.querySelector("#contact-checker-dedupe-btn"))) {
+    // If an older controls dock exists in DOM without the picker wrap or company cap, refresh it
+    if (controls && (!controls.querySelector("#cc-cycle-picker-wrap") || !controls.querySelector("#contact-checker-dedupe-btn") || !controls.querySelector("#contact-checker-company-cap"))) {
       controls.remove();
       controls = null;
     }
@@ -3177,6 +3436,7 @@
       controls = document.createElement("div");
       controls.id = "contact-checker-controls";
       controls.innerHTML = `
+        <span id="contact-checker-drag-handle" title="Drag to reposition bar">⋮⋮</span>
         <span id="contact-checker-live-status" class="contact-checker-live-badge">Ready</span>
         <div id="cc-cycle-picker-wrap" class="cc-picker-wrap">
           <div id="cc-cycle-trigger" class="cc-picker-trigger" title="Select Apollo Account Login & Active Billing Cycle">
@@ -3211,6 +3471,12 @@
           <input id="contact-checker-batch-input" type="text" value="${state.batchName || 'batch_1'}" style="display:none !important;" tabindex="-1" />
         </div>
         <span id="contact-checker-required-count"></span>
+        <div id="cc-cap-selector-wrap" class="cc-cap-selector-wrap" title="Maximum contacts saved per company (1 to 10)">
+          <span>👥 Cap:</span>
+          <select id="contact-checker-company-cap" class="cc-cap-select">
+            ${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<option value="${n}" ${n === (state.maxContactsPerCompany || 3) ? 'selected' : ''}>${n}/co</option>`).join("")}
+          </select>
+        </div>
         <button
           id="contact-checker-rescan-btn"
           type="button"
@@ -3529,9 +3795,98 @@
           toggleActivityPanel
         );
 
+      controls
+        .querySelector(
+          "#contact-checker-company-cap"
+        )
+        ?.addEventListener(
+          "change",
+          (e) => {
+            const val = parseInt(e.target.value, 10) || 3;
+            state.maxContactsPerCompany = val;
+            if (chrome?.storage?.local) {
+              chrome.storage.local.set({ [COMPANY_CAP_STORAGE_KEY]: val });
+            }
+            showStatus(`✓ Company limit set to max ${val} leads/company`, 3000);
+            addActivity("CAP_UPDATED", `Max contacts per company set to ${val}.`, "info", { cap: val });
+          }
+        );
+
+      // Clear legacy position from previous left-side test
+      try { localStorage.removeItem("apollo_cc_bar_pos"); } catch (_) {}
+
+      // Restore position only if explicitly dragged by user in this version
+      try {
+        const savedPos = localStorage.getItem("apollo_cc_bar_pos_v2");
+        if (savedPos) {
+          const pos = JSON.parse(savedPos);
+          if (pos && typeof pos.left === "number" && typeof pos.top === "number") {
+            const maxLeft = Math.max(0, window.innerWidth - 300);
+            const maxTop = Math.max(0, window.innerHeight - 50);
+            const clampLeft = Math.min(Math.max(10, pos.left), maxLeft);
+            const clampTop = Math.min(Math.max(10, pos.top), maxTop);
+            controls.style.left = clampLeft + "px";
+            controls.style.top = clampTop + "px";
+            controls.style.bottom = "auto";
+            controls.style.right = "auto";
+          }
+        }
+      } catch (_) {}
+
+      // Draggable bar implementation
+      let isDragging = false;
+      let dragStartX = 0;
+      let dragStartY = 0;
+      let barStartLeft = 0;
+      let barStartTop = 0;
+
+      const onMouseDown = (e) => {
+        if (e.target.closest("button, select, input, a, .cc-picker-popover")) return;
+        isDragging = true;
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        const rect = controls.getBoundingClientRect();
+        barStartLeft = rect.left;
+        barStartTop = rect.top;
+        document.body.style.userSelect = "none";
+        window.addEventListener("mousemove", onMouseMove);
+        window.addEventListener("mouseup", onMouseUp);
+      };
+
+      const onMouseMove = (e) => {
+        if (!isDragging) return;
+        const dx = e.clientX - dragStartX;
+        const dy = e.clientY - dragStartY;
+        const newLeft = Math.max(10, Math.min(window.innerWidth - controls.offsetWidth - 10, barStartLeft + dx));
+        const newTop = Math.max(10, Math.min(window.innerHeight - controls.offsetHeight - 10, barStartTop + dy));
+        controls.style.left = newLeft + "px";
+        controls.style.top = newTop + "px";
+        controls.style.bottom = "auto";
+        controls.style.right = "auto";
+      };
+
+      const onMouseUp = () => {
+        if (!isDragging) return;
+        isDragging = false;
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+        try {
+          const rect = controls.getBoundingClientRect();
+          localStorage.setItem("apollo_cc_bar_pos_v2", JSON.stringify({ left: Math.round(rect.left), top: Math.round(rect.top) }));
+        } catch (_) {}
+      };
+
+      controls.addEventListener("mousedown", onMouseDown);
+
       document.body.appendChild(controls);
 
       renderActivityPanel();
+    }
+
+    const currentCapSelect = controls.querySelector("#contact-checker-company-cap");
+    if (currentCapSelect && state.maxContactsPerCompany) {
+      currentCapSelect.value = String(state.maxContactsPerCompany);
     }
 
     const currentBatch = state.batchName || _defaultBatch;
@@ -3762,6 +4117,7 @@
           type: "MATCH_APOLLO",
           batch: state.batchName || `batch_${state.batchNumber || 1}`,
           page_number: currentPageNumber,
+          max_contacts_per_company: state.maxContactsPerCompany || 3,
           title_guardrail_enabled: state.titleGuardrailEnabled === true,
           indian_name_guardrail_enabled: state.indianGuardrailEnabled === true,
           contacts: contactsToCheck.map(contact => {
@@ -4130,6 +4486,36 @@
         activateExtension(true);
       }
       sendResponse({ success: true, active: state.active });
+      return true;
+    } else if (message.type === "UPDATE_COMPANY_CAP") {
+      const val = parseInt(message.cap, 10) || 3;
+      state.maxContactsPerCompany = val;
+      const select = document.getElementById("contact-checker-company-cap");
+      if (select) select.value = String(val);
+      showStatus(`✓ Company cap set to ${val}/co`, 2500);
+      scanApollo();
+      sendResponse({ success: true, cap: val });
+      return true;
+    } else if (message.type === "UPDATE_BATCH_NAME") {
+      state.batchName = message.batch;
+      showStatus(`✓ Batch: ${message.batch}`, 2500);
+      sendResponse({ success: true, batch: message.batch });
+      return true;
+    } else if (message.type === "TRIGGER_RESCAN") {
+      scanApollo();
+      sendResponse({ success: true });
+      return true;
+    } else if (message.type === "TRIGGER_EXPORT_CSV") {
+      exportRequiredContactsToCSV();
+      sendResponse({ success: true });
+      return true;
+    } else if (message.type === "TRIGGER_DEDUPLICATE") {
+      deduplicateStoredContacts();
+      sendResponse({ success: true });
+      return true;
+    } else if (message.type === "TRIGGER_CLEAR_LIST") {
+      clearRequiredContactsList();
+      sendResponse({ success: true });
       return true;
     }
   });

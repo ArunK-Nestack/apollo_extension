@@ -828,25 +828,64 @@ def resolve_contact_domains(name: str = "", job_title: str = "", company: str = 
 def get_seniority_score(job_title: str) -> int:
     """
     Evaluate job title seniority hierarchy score for best lead election:
-      - Tier 1 (100): C-Suite, Founder, Owner, Managing Partner, CEO, CTO, CRO, CMO, COO, CFO, President
-      - Tier 2 (80): VP, Vice President, Head of, GM, General Manager
-      - Tier 3 (60): Director, Group Product Manager, Principal, Lead Architect
-      - Tier 4 (40): Manager, Team Lead, Product Manager, Senior
+      - Tier 1 (100): C-Suite, Founder, Owner, Managing Partner, Managing Member, Chair, President, Board Member
+      - Tier 2 (80): VP, Vice President, Head of, GM, General Manager, Partner, General Partner
+      - Tier 3 (60): Director, Group Product Manager, Principal, Lead Architect, Staff, Fellow, Distinguished
+      - Tier 4 (40): Manager, Team Lead, Product Manager, Senior, Evangelist
       - Tier 5 (20): Specialist, Analyst, Associate, Engineer, Other
     """
     if not job_title:
         return 0
     t = str(job_title).strip().lower()
 
-    if re.search(r"\b(founder|co-founder|ceo|cto|cmo|cro|coo|cfo|cpo|cio|chief|owner|managing partner|chair)\b", t) or re.search(r"(?<!vice\s)(?<!vice-)(?<!asst\s)(?<!assistant\s)\bpresident\b", t):
+    if re.search(r"\b(founder|co-founder|founding|ceo|cto|cmo|cro|coo|cfo|cpo|cio|chief|owner|managing partner|managing member|chair|board member|principal owner)\b", t) or re.search(r"(?<!vice\s)(?<!vice-)(?<!asst\s)(?<!assistant\s)\bpresident\b", t):
         return 100
-    if re.search(r"\b(vp|svp|evp|avp|vice president|head of|general manager|gm)\b", t) or t.startswith("head ") or t.startswith("head,") or t.startswith("head -"):
+    if re.search(r"\b(vp|svp|evp|avp|vice president|head of|general manager|gm|partner|general partner)\b", t) or t.startswith("head ") or t.startswith("head,") or t.startswith("head -"):
         return 80
-    if re.search(r"\b(director|principal|lead architect|group product manager|staff)\b", t):
+    if re.search(r"\b(director|principal|lead architect|group product manager|staff|fellow|distinguished)\b", t):
         return 60
-    if re.search(r"\b(manager|team lead|lead|senior|sr\.?)\b", t):
+    if re.search(r"\b(manager|team lead|lead|senior|sr\.?|evangelist)\b", t):
         return 40
     return 20
+
+
+def get_canonical_title_key(job_title: str) -> str:
+    """
+    Generate normalized canonical job title key for title deduplication within a company.
+    Maps equivalent titles (e.g. 'VP of Sales', 'Vice President, Sales', 'VP Sales')
+    to identical canonical keys ('sales_vp') so that duplicate titles are not selected for the same company.
+    """
+    if not job_title:
+        return ""
+    t = str(job_title).lower().strip()
+    t = re.sub(r"[^\w\s]", " ", t)
+
+    replacements = [
+        (r"\bvice\s+president\b", "vp"),
+        (r"\bvice\s*-?\s*president\b", "vp"),
+        (r"\bchief\s+executive\s+officer\b", "ceo"),
+        (r"\bchief\s+technology\s+officer\b", "cto"),
+        (r"\bchief\s+financial\s+officer\b", "cfo"),
+        (r"\bchief\s+operating\s+officer\b", "coo"),
+        (r"\bchief\s+revenue\s+officer\b", "cro"),
+        (r"\bchief\s+marketing\s+officer\b", "cmo"),
+        (r"\bchief\s+product\s+officer\b", "cpo"),
+        (r"\bchief\s+information\s+officer\b", "cio"),
+        (r"\bchief\s+security\s+officer\b", "ciso"),
+        (r"\bco\s*-?\s*founder\b", "founder"),
+        (r"\bsr\.?\b", "senior"),
+        (r"\bjr\.?\b", "junior"),
+        (r"\bhead\s+of\b", "head"),
+        (r"\bgeneral\s+manager\b", "gm"),
+    ]
+    for pattern, repl in replacements:
+        t = re.sub(pattern, repl, t)
+
+    stop_words = {"of", "the", "and", "in", "for", "at", "to", "a", "an", "&"}
+    tokens = [w for w in t.split() if w and w not in stop_words]
+    tokens.sort()
+    return "_".join(tokens)
+
 
 
 BUSINESS_NOISE_SUFFIXES = {
@@ -1709,6 +1748,128 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                 break
 
     return results
+
+
+def fetch_existing_company_contacts_batch(
+    domains: list[str],
+    companies: list[str],
+    connection=None,
+    active_batch: str | None = None
+) -> dict[str, list[dict]]:
+    """
+    Fetch existing contacts associated with company domains and names from:
+      1. CRM emails table (domain, company_name, full_name, job_title)
+      2. apollo_saved_leads table (company_domain, company, name, job_title, credits_charged, email_status)
+      3. enrich_saved_leads table (company_domain, company, name, job_title)
+    Returns: dict[comp_key, list[dict]] with name, job_title, score, canonical_title, is_credit_spent.
+    """
+    clean_doms = list({extract_root_domain(d) or d.strip().lower() for d in domains if d and d.strip()})
+    clean_comps = list({c.strip() for c in companies if c and c.strip()})
+    if not clean_doms and not clean_comps:
+        return {}
+
+    def _query(conn):
+        res: dict[str, list[dict]] = {}
+        seen_persons: dict[str, set[str]] = {}
+
+        def _add_record(comp_key, name, title, credits_val=0, email_status="", is_locked=False):
+            if not comp_key:
+                return
+            norm_nm = normalize_text(name or "")
+            if comp_key not in seen_persons:
+                seen_persons[comp_key] = set()
+                res[comp_key] = []
+            if norm_nm and norm_nm in seen_persons[comp_key]:
+                return  # Avoid duplicate counting of the exact same person
+            if norm_nm:
+                seen_persons[comp_key].add(norm_nm)
+            raw_title = str(title or "").strip()
+            score = get_seniority_score(raw_title)
+            canon = get_canonical_title_key(raw_title)
+            locked = is_locked or (credits_val > 0) or (str(email_status).lower() in {"revealed", "verified", "delivered"})
+            res[comp_key].append({
+                "name": name or "",
+                "job_title": raw_title,
+                "score": score,
+                "canonical_title": canon,
+                "is_credit_spent": locked,
+            })
+
+        try:
+            with conn.cursor() as cur:
+                schema = get_target_table_schema(conn)
+                tbl_name = schema["table_name"]
+                domain_col = schema["email_domain"]
+                name_col = schema["name"] or "full_name"
+
+                # 1. Query CRM emails table by domain
+                if clean_doms:
+                    fmt_d = ",".join(["%s"] * len(clean_doms))
+                    cur.execute(
+                        f"SELECT `{domain_col}`, `company_name`, `{name_col}`, `job_title` "
+                        f"FROM `{tbl_name}` WHERE `{domain_col}` IN ({fmt_d});",
+                        tuple(clean_doms)
+                    )
+                    for r_dom, r_comp, r_name, r_title in cur.fetchall():
+                        ckey = normalize_text(r_dom or "") or normalize_text(r_comp or "")
+                        _add_record(ckey, r_name, r_title, is_locked=True)
+
+                # 2. Query CRM emails table by company name
+                if clean_comps:
+                    fmt_c = ",".join(["%s"] * len(clean_comps))
+                    cur.execute(
+                        f"SELECT `{domain_col}`, `company_name`, `{name_col}`, `job_title` "
+                        f"FROM `{tbl_name}` WHERE `company_name` IN ({fmt_c});",
+                        tuple(clean_comps)
+                    )
+                    for r_dom, r_comp, r_name, r_title in cur.fetchall():
+                        ckey = normalize_text(r_dom or "") or normalize_text(r_comp or "")
+                        _add_record(ckey, r_name, r_title, is_locked=True)
+
+                # 3. Query apollo_saved_leads
+                try:
+                    if clean_doms:
+                        fmt_s = ",".join(["%s"] * len(clean_doms))
+                        sql_saved = (
+                            f"SELECT company_domain, company, name, job_title, credits_charged, email_status "
+                            f"FROM apollo_saved_leads WHERE company_domain IN ({fmt_s})"
+                        )
+                        params = list(clean_doms)
+                        if active_batch:
+                            sql_saved += " AND batch != %s"
+                            params.append(active_batch)
+                        cur.execute(sql_saved, tuple(params))
+                        for r_dom, r_comp, r_name, r_title, r_cred, r_stat in cur.fetchall():
+                            ckey = normalize_text(r_dom or "") or normalize_text(r_comp or "")
+                            _add_record(ckey, r_name, r_title, credits_val=r_cred or 0, email_status=r_stat or "")
+                except Exception:
+                    pass
+
+                # 4. Query enrich_saved_leads if present
+                try:
+                    if clean_doms:
+                        fmt_e = ",".join(["%s"] * len(clean_doms))
+                        cur.execute(
+                            f"SELECT company_domain, company, name, job_title "
+                            f"FROM enrich_saved_leads WHERE company_domain IN ({fmt_e});",
+                            tuple(clean_doms)
+                        )
+                        for r_dom, r_comp, r_name, r_title in cur.fetchall():
+                            ckey = normalize_text(r_dom or "") or normalize_text(r_comp or "")
+                            _add_record(ckey, r_name, r_title, is_locked=True)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            print(f"[ContactChecker] Notice: fetch_existing_company_contacts_batch error: {e}", flush=True)
+
+        return res
+
+    if connection:
+        return _query(connection)
+    with get_connection() as c:
+        return _query(c)
+
 
 
 # ============================================================
@@ -2833,6 +2994,8 @@ class ApolloMatchRequest(BaseModel):
     title_guardrail_enabled: bool = True
     indian_name_guardrail_enabled: bool = True
     page_number: int | None = None
+    max_contacts_per_company: int = 3
+
 
 
 class SyncSavedLeadItem(BaseModel):
@@ -2860,6 +3023,7 @@ class SyncSavedLeadsRequest(BaseModel):
     cycle: str | None = ""
     account_used: str | None = ""
     page_number: int | None = None
+    max_contacts_per_company: int | None = 3
 
 
 class EvaluatePendingTitlesRequest(BaseModel):
@@ -2871,6 +3035,17 @@ class EvaluatePendingTitlesRequest(BaseModel):
 @app.get("/health")
 def health_check():
     return {"status": "ok", "engine": "company_domains_lookup_v3"}
+
+
+@app.post("/set-company-cap")
+def set_company_cap(cap: int = 3):
+    os.environ["MAX_CONTACTS_PER_COMPANY"] = str(max(1, min(10, cap)))
+    return {"status": "ok", "max_contacts_per_company": int(os.environ["MAX_CONTACTS_PER_COMPANY"])}
+
+
+@app.get("/get-company-cap")
+def get_company_cap():
+    return {"status": "ok", "max_contacts_per_company": int(os.getenv("MAX_CONTACTS_PER_COMPANY", "3"))}
 
 
 @app.post("/evaluate-pending-titles")
@@ -3594,45 +3769,242 @@ def get_batch_enrichment_summary(conn, batch: str) -> dict[str, Any]:
     }
 
 
-def _filter_sync_contacts_one_per_domain(contacts: list, batch_tag: str, cur) -> list:
-    """One lead per canonical domain per batch; highest seniority wins (matches extension election)."""
-    winners: dict[str, tuple[int, Any]] = {}
-    no_domain: list[Any] = []
+def _filter_sync_contacts_dynamic_cap(
+    contacts: list,
+    batch_tag: str,
+    cur,
+    max_contacts_per_company: int = 3
+) -> list:
+    """
+    Filter and resolve contacts to sync into apollo_saved_leads for a batch:
+      1. Dynamic Cap: Enforce max_contacts_per_company per company/domain in this batch.
+      2. Title Uniqueness: Exactly one lead per canonical job title per company.
+      3. Seniority Outranking: Higher seniority replaces lower seniority if cap is full.
+      4. Credit Lock Protection: Leads with spent credits or revealed emails in DB cannot be evicted.
+    """
+    cap = max(1, min(10, int(max_contacts_per_company or 3)))
+
+    # 1. Group incoming contacts by company identifier (domain or normalized company name)
+    grouped_incoming: dict[str, list[Any]] = {}
+    no_ident: list[Any] = []
 
     for c in contacts:
         target_dom = canonical_lookup_domain(ApolloContact(
             key="sync_filter",
             company_domain=(getattr(c, "company_domain", None) or getattr(c, "domain", None) or "").strip(),
-            website_link=(c.website_link or "").strip(),
-            email=(c.email or "").strip(),
+            website_link=(getattr(c, "website_link", None) or "").strip(),
+            email=(getattr(c, "email", None) or "").strip(),
         ))
-        if not target_dom:
-            no_domain.append(c)
+        comp_name = (getattr(c, "company", None) or "").strip()
+        comp_key = normalize_text(target_dom or comp_name)
+        if not comp_key:
+            no_ident.append(c)
             continue
-        dom_l = target_dom.lower()
-        score = get_seniority_score(c.job_title or "")
-        prev = winners.get(dom_l)
-        if not prev or score > prev[0]:
-            winners[dom_l] = (score, c)
+        grouped_incoming.setdefault(comp_key, []).append(c)
 
-    accepted: list[Any] = []
-    for dom_l, (score, c) in winners.items():
-        cur.execute(
-            "SELECT `job_title` FROM `apollo_saved_leads` WHERE `batch` = %s AND LOWER(`company_domain`) = %s",
-            (batch_tag, dom_l),
-        )
-        existing = cur.fetchall()
-        if existing:
-            best_db = max(get_seniority_score(str(r[0] or "")) for r in existing)
-            if score < best_db:
+    accepted_contacts: list[Any] = []
+
+    for comp_key, inc_list in grouped_incoming.items():
+        # First, deduplicate incoming contacts for this company by canonical title
+        # Keep higher seniority score if duplicate title within incoming batch
+        inc_by_title: dict[str, tuple[int, Any]] = {}
+        inc_untyped: list[tuple[int, Any]] = []
+        for c in inc_list:
+            raw_title = getattr(c, "job_title", "") or ""
+            canon = get_canonical_title_key(raw_title)
+            score = get_seniority_score(raw_title)
+            if not canon:
+                inc_untyped.append((score, c))
                 continue
-            cur.execute(
-                "DELETE FROM `apollo_saved_leads` WHERE `batch` = %s AND LOWER(`company_domain`) = %s",
-                (batch_tag, dom_l),
-            )
-        accepted.append(c)
+            if canon in inc_by_title:
+                prev_score, prev_c = inc_by_title[canon]
+                if score > prev_score:
+                    inc_by_title[canon] = (score, c)
+            else:
+                inc_by_title[canon] = (score, c)
 
-    return accepted + no_domain
+        deduped_incoming = [c for score, c in inc_by_title.values()] + [c for score, c in inc_untyped]
+
+        # Determine lookup parameters for existing DB records for this company in this batch
+        sample_dom = ""
+        for c in inc_list:
+            d = (getattr(c, "company_domain", None) or getattr(c, "domain", None) or "").strip().lower()
+            if d:
+                sample_dom = d
+                break
+        sample_comp = (getattr(inc_list[0], "company", None) or "").strip()
+
+        # Query existing leads already saved in apollo_saved_leads for this batch and company
+        existing_db: list[dict] = []
+        try:
+            if sample_dom and sample_comp:
+                cur.execute(
+                    "SELECT `id`, `apollo_id`, `name`, `job_title`, `company`, `company_domain`, `credits_charged`, `email_status` "
+                    "FROM `apollo_saved_leads` WHERE `batch` = %s AND (LOWER(`company_domain`) = %s OR `company` = %s)",
+                    (batch_tag, sample_dom, sample_comp),
+                )
+            elif sample_dom:
+                cur.execute(
+                    "SELECT `id`, `apollo_id`, `name`, `job_title`, `company`, `company_domain`, `credits_charged`, `email_status` "
+                    "FROM `apollo_saved_leads` WHERE `batch` = %s AND LOWER(`company_domain`) = %s",
+                    (batch_tag, sample_dom),
+                )
+            else:
+                cur.execute(
+                    "SELECT `id`, `apollo_id`, `name`, `job_title`, `company`, `company_domain`, `credits_charged`, `email_status` "
+                    "FROM `apollo_saved_leads` WHERE `batch` = %s AND `company` = %s",
+                    (batch_tag, sample_comp),
+                )
+            for row in cur.fetchall():
+                r_id, r_apid, r_name, r_title, r_cmp, r_dom, r_cred, r_stat = row
+                r_locked = bool((r_cred or 0) > 0 or str(r_stat or "").lower() in {"revealed", "verified", "delivered"})
+                existing_db.append({
+                    "id": r_id,
+                    "apollo_id": str(r_apid or "").strip(),
+                    "name": str(r_name or "").strip(),
+                    "job_title": str(r_title or "").strip(),
+                    "canonical_title": get_canonical_title_key(str(r_title or "")),
+                    "score": get_seniority_score(str(r_title or "")),
+                    "is_credit_spent": r_locked,
+                })
+        except Exception as ex_query:
+            print(f"[ContactChecker] Notice: _filter_sync_contacts DB query error: {ex_query}", flush=True)
+
+        db_ids_to_delete: set[int] = set()
+
+        if not existing_db:
+            deduped_incoming.sort(key=lambda c: get_seniority_score(getattr(c, "job_title", "") or ""), reverse=True)
+            accepted_contacts.extend(deduped_incoming[:cap])
+            continue
+
+        # Represent active company pool as list of dicts:
+        pool: list[dict] = []
+        for db_c in existing_db:
+            pool.append({
+                "type": "db",
+                "id": db_c["id"],
+                "obj": None,
+                "score": db_c["score"],
+                "canonical_title": db_c["canonical_title"],
+                "is_locked": db_c["is_credit_spent"],
+                "apollo_id": db_c["apollo_id"],
+                "name_norm": normalize_text(db_c["name"]),
+            })
+
+        deduped_incoming.sort(key=lambda c: get_seniority_score(getattr(c, "job_title", "") or ""), reverse=True)
+
+        for inc_c in deduped_incoming:
+            inc_title = getattr(inc_c, "job_title", "") or ""
+            inc_score = get_seniority_score(inc_title)
+            inc_canon = get_canonical_title_key(inc_title)
+            inc_apid = str(getattr(inc_c, "apollo_id", "") or "").strip()
+            inc_norm_name = normalize_text(getattr(inc_c, "name", "") or "")
+
+            # 1. Check if same person already exists in pool (update in place, no extra slot used)
+            same_person_idx = -1
+            for idx, p in enumerate(pool):
+                if inc_apid and not inc_apid.startswith("apollo-row-") and p["apollo_id"] and p["apollo_id"] == inc_apid:
+                    same_person_idx = idx
+                    break
+                if inc_norm_name and p["name_norm"] and p["name_norm"] == inc_norm_name:
+                    same_person_idx = idx
+                    break
+
+            if same_person_idx >= 0:
+                pool[same_person_idx] = {
+                    "type": "incoming",
+                    "id": pool[same_person_idx]["id"],
+                    "obj": inc_c,
+                    "score": inc_score,
+                    "canonical_title": inc_canon,
+                    "is_locked": pool[same_person_idx]["is_locked"],
+                    "apollo_id": inc_apid,
+                    "name_norm": inc_norm_name,
+                }
+                continue
+
+            # 2. Check if canonical job title already exists in pool
+            dup_title_idx = -1
+            if inc_canon:
+                for idx, p in enumerate(pool):
+                    if p["canonical_title"] and p["canonical_title"] == inc_canon:
+                        dup_title_idx = idx
+                        break
+
+            if dup_title_idx >= 0:
+                existing_p = pool[dup_title_idx]
+                # If existing lead with same title is NOT locked and incoming has higher seniority, replace it
+                if not existing_p["is_locked"] and inc_score > existing_p["score"]:
+                    if existing_p["type"] == "db" and existing_p["id"]:
+                        db_ids_to_delete.add(existing_p["id"])
+                    pool[dup_title_idx] = {
+                        "type": "incoming",
+                        "id": None,
+                        "obj": inc_c,
+                        "score": inc_score,
+                        "canonical_title": inc_canon,
+                        "is_locked": False,
+                        "apollo_id": inc_apid,
+                        "name_norm": inc_norm_name,
+                    }
+                # Otherwise duplicate title is rejected
+                continue
+
+            # 3. Capacity check
+            if len(pool) < cap:
+                pool.append({
+                    "type": "incoming",
+                    "id": None,
+                    "obj": inc_c,
+                    "score": inc_score,
+                    "canonical_title": inc_canon,
+                    "is_locked": False,
+                    "apollo_id": inc_apid,
+                    "name_norm": inc_norm_name,
+                })
+            else:
+                # Pool is full (len(pool) >= cap). Check if incoming outranks lowest unlocked lead in pool
+                lowest_idx = -1
+                lowest_score = float("inf")
+                for idx, p in enumerate(pool):
+                    if not p["is_locked"] and p["score"] < lowest_score:
+                        lowest_score = p["score"]
+                        lowest_idx = idx
+
+                if lowest_idx >= 0 and inc_score > lowest_score:
+                    evicted = pool[lowest_idx]
+                    if evicted["type"] == "db" and evicted["id"]:
+                        db_ids_to_delete.add(evicted["id"])
+                    pool[lowest_idx] = {
+                        "type": "incoming",
+                        "id": None,
+                        "obj": inc_c,
+                        "score": inc_score,
+                        "canonical_title": inc_canon,
+                        "is_locked": False,
+                        "apollo_id": inc_apid,
+                        "name_norm": inc_norm_name,
+                    }
+
+        # Delete evicted existing DB leads
+        if db_ids_to_delete:
+            try:
+                fmt_ids = ",".join(["%s"] * len(db_ids_to_delete))
+                cur.execute(f"DELETE FROM `apollo_saved_leads` WHERE `id` IN ({fmt_ids})", tuple(db_ids_to_delete))
+            except Exception as ex_del:
+                print(f"[ContactChecker] Notice: deleting evicted DB leads error: {ex_del}", flush=True)
+
+        # Collect accepted incoming contacts from the final pool
+        for p in pool:
+            if p["type"] == "incoming" and p["obj"] is not None:
+                accepted_contacts.append(p["obj"])
+
+    return accepted_contacts + no_ident
+
+
+def _filter_sync_contacts_one_per_domain(contacts: list, batch_tag: str, cur) -> list:
+    """Legacy alias: collapses to 1 lead per domain."""
+    return _filter_sync_contacts_dynamic_cap(contacts, batch_tag, cur, max_contacts_per_company=1)
 
 
 class ExtensionActivityRequest(BaseModel):
@@ -3771,7 +4143,20 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
             if not request.contacts:
                 return {"status": "ok", "synced": 0}
 
-            contacts_to_sync = _filter_sync_contacts_one_per_domain(request.contacts, batch_tag, cur)
+            cap_val = request.max_contacts_per_company
+            if cap_val is None:
+                try:
+                    cap_val = int(os.getenv("MAX_CONTACTS_PER_COMPANY", "3"))
+                except Exception:
+                    cap_val = 3
+            cap_val = max(1, min(10, int(cap_val)))
+
+            contacts_to_sync = _filter_sync_contacts_dynamic_cap(
+                request.contacts,
+                batch_tag,
+                cur,
+                max_contacts_per_company=cap_val
+            )
 
             rows_to_insert = []
             for idx, c in enumerate(contacts_to_sync):
@@ -3851,6 +4236,49 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
                     if target_dom not in _person_domain_cache[norm_nm]:
                         _person_domain_cache[norm_nm].append(target_dom)
 
+    # Keep in-memory _batch_seen_companies in sync with synced batch
+    with _batch_seen_companies_lock:
+        if batch_tag in _batch_seen_companies:
+            for c in contacts_to_sync:
+                raw_dom = (getattr(c, "company_domain", None) or getattr(c, "domain", None) or "").strip().lower()
+                c_comp = getattr(c, "company", None) or ""
+                ckey = normalize_text(raw_dom or "") or normalize_text(c_comp or "")
+                if not ckey:
+                    continue
+                pool_mem = _batch_seen_companies[batch_tag].setdefault(ckey, [])
+                c_apid = str(getattr(c, "apollo_id", "") or "").strip()
+                c_name = getattr(c, "name", "") or ""
+                c_norm_name = normalize_text(c_name)
+                c_title = getattr(c, "job_title", "") or ""
+                c_canon = get_canonical_title_key(c_title)
+                c_score = get_seniority_score(c_title)
+
+                m_idx = -1
+                for idx_m, item in enumerate(pool_mem):
+                    if not isinstance(item, dict):
+                        continue
+                    if c_apid and not c_apid.startswith("apollo-row-") and item.get("apollo_id") == c_apid:
+                        m_idx = idx_m
+                        break
+                    if c_norm_name and normalize_text(item.get("name") or "") == c_norm_name:
+                        m_idx = idx_m
+                        break
+                entry = {
+                    "key": c_apid or c_name,
+                    "apollo_id": c_apid,
+                    "name": c_name,
+                    "title": c_title,
+                    "canonical_title": c_canon,
+                    "score": c_score,
+                    "company": c_comp,
+                    "domain": raw_dom,
+                    "is_credit_spent": False,
+                }
+                if m_idx >= 0:
+                    pool_mem[m_idx] = entry
+                else:
+                    pool_mem.append(entry)
+
     print(f"\n[ContactChecker] Synced {len(rows_to_insert)} lead(s) with website links into MySQL table `apollo_saved_leads` under batch '{batch_tag}'.", flush=True)
     return {"status": "ok", "synced": len(rows_to_insert)}
 
@@ -3916,7 +4344,7 @@ def match_apollo(request: ApolloMatchRequest):
             for k in oldest_keys:
                 _batch_seen_companies.pop(k, None)
 
-    max_contacts_per_comp = int(os.getenv("MAX_CONTACTS_PER_COMPANY", "1"))
+    max_contacts_per_comp = max(1, min(10, int(request.max_contacts_per_company or os.getenv("MAX_CONTACTS_PER_COMPANY", "3"))))
 
     unique_domains_seen = set()
     existing_domain_contacts = 0
@@ -3958,9 +4386,11 @@ def match_apollo(request: ApolloMatchRequest):
                                     "apollo_id": r_id or "",
                                     "name": r_name,
                                     "title": r_title,
+                                    "canonical_title": get_canonical_title_key(r_title or ""),
                                     "score": get_seniority_score(r_title or ""),
                                     "company": r_comp,
-                                    "domain": r_dom
+                                    "domain": r_dom,
+                                    "is_credit_spent": False,
                                 })
                 except Exception as ex_preload:
                     print(f"[ContactChecker] WARNING: Could not preload batch_seen_companies for {batch_tag}: {ex_preload}", flush=True)
@@ -3987,11 +4417,12 @@ def match_apollo(request: ApolloMatchRequest):
         net_new_contacts: list[ApolloContact] = []
 
         for idx, contact in enumerate(contacts, 1):
-            if contact.key in crm_matches:
+            hit = crm_matches.get(contact.key)
+            if hit and hit.get("guardrail_status") in ("contact_already_in_db", "person_domain_overlap"):
                 existing_domain_contacts += 1
                 existing_count += 1
                 ignored_count += 1
-                results[contact.key] = crm_matches[contact.key]
+                results[contact.key] = hit
             elif not contact_primary_domain.get(contact.key):
                 ignored_count += 1
                 results[contact.key] = {
@@ -4005,7 +4436,10 @@ def match_apollo(request: ApolloMatchRequest):
                     "matched_domain": "",
                 }
             else:
-                net_new_domain_contacts += 1
+                if hit:
+                    existing_domain_contacts += 1
+                else:
+                    net_new_domain_contacts += 1
                 net_new_contacts.append(contact)
 
         # --------------------------------------------------------
@@ -4046,13 +4480,19 @@ def match_apollo(request: ApolloMatchRequest):
         indian_filter_active = request.indian_name_guardrail_enabled
 
         # --------------------------------------------------------
-        # STEP 4: DECISION LOGIC, DEMOGRAPHIC & 1/COMPANY LIMIT
+        # STEP 4: DECISION LOGIC, DEMOGRAPHIC & COMPANY CAP (1-10)
         # --------------------------------------------------------
         prefetched_indian_db = {}
         if indian_filter_active and net_new_contacts:
             all_names_to_check = [c.name.strip() for c in net_new_contacts if c.name and c.name.strip()]
             if all_names_to_check:
                 prefetched_indian_db = lookup_indian_names_batch(all_names_to_check, connection=conn)
+
+        all_batch_domains = [contact_primary_domain.get(c.key) for c in net_new_contacts if contact_primary_domain.get(c.key)]
+        all_batch_companies = [c.company.strip() for c in net_new_contacts if c.company and c.company.strip()]
+        company_db_contacts = fetch_existing_company_contacts_batch(
+            all_batch_domains, all_batch_companies, connection=conn, active_batch=batch_tag
+        )
 
         for idx, contact in enumerate(net_new_contacts, 1):
             comp_name = contact.company.strip()
@@ -4095,10 +4535,13 @@ def match_apollo(request: ApolloMatchRequest):
                     "matched_domain": prim_d,
                 }
             else:
-                # 4.3 Check Contact per Company Limit with Seniority-Based Election (Thread-Safe)
+                # 4.3 Check Contact per Company Limit with Seniority-Based Election & DB Lookup (Thread-Safe)
                 with _batch_seen_companies_lock:
-                    already_selected = seen_required_companies.get(comp_key, [])
+                    already_selected = seen_required_companies.setdefault(comp_key, [])
+                    db_contacts = company_db_contacts.get(comp_key, [])
+                    db_count = len(db_contacts)
                     incoming_score = get_seniority_score(contact.job_title)
+                    incoming_canon_title = get_canonical_title_key(contact.job_title)
 
                     # Check if contact is already selected (by key, non-synthetic apollo_id, or normalized name)
                     is_same_contact = False
@@ -4137,23 +4580,82 @@ def match_apollo(request: ApolloMatchRequest):
                             "role_type": role_t,
                             "guardrail_reason": title_reason,
                             "matched_domain": prim_d,
+                            "company_db_count": db_count,
+                            "seniority_score": incoming_score,
                         }
-                    elif len(already_selected) < max_contacts_per_comp:
-                        # Under company limit: admit contact
+                        continue
+
+                    # RULE: Strict Job Title Uniqueness within company
+                    # Check against existing contacts in DB
+                    dup_db_contact = next((c for c in db_contacts if c.get("canonical_title") == incoming_canon_title), None)
+                    if dup_db_contact:
+                        ignored_count += 1
+                        results[contact.key] = {
+                            "exists": False,
+                            "required": False,
+                            "ignored": True,
+                            "guardrail_status": "duplicate_title_for_company",
+                            "guardrail_reason": f"Company '{comp_name}' already has contact with title '{dup_db_contact.get('job_title')}' in database.",
+                            "matched_domain": prim_d,
+                            "segment": title_seg,
+                            "company_db_count": db_count,
+                        }
+                        continue
+
+                    # Check against active selected leads in current batch
+                    dup_active_contact = next((c for c in already_selected if isinstance(c, dict) and c.get("canonical_title") == incoming_canon_title), None)
+                    if dup_active_contact:
+                        ignored_count += 1
+                        results[contact.key] = {
+                            "exists": False,
+                            "required": False,
+                            "ignored": True,
+                            "guardrail_status": "duplicate_title_for_company",
+                            "guardrail_reason": f"Company '{comp_name}' already has selected lead with title '{dup_active_contact.get('title')}' ({dup_active_contact.get('name')}).",
+                            "matched_domain": prim_d,
+                            "segment": title_seg,
+                            "company_db_count": db_count,
+                        }
+                        continue
+
+                    # RULE: Company Capacity (1-10) & Seniority Outranking Check
+                    max_cap = max_contacts_per_comp
+                    db_contacts_sorted = sorted(db_contacts, key=lambda c: c.get("score", 0))
+                    free_slots = max(0, max_cap - db_count)
+                    num_selected = len(already_selected)
+
+                    can_admit_additional = False
+                    admit_reason = ""
+
+                    if num_selected < free_slots:
+                        # Case A: Free slots available from DB cap (e.g. DB has 2, cap is 5 -> 3 free slots)
+                        can_admit_additional = True
+                        admit_reason = title_reason or f"Qualified lead ({num_selected + 1}/{free_slots} available company slots)"
+                    elif num_selected < max_cap:
+                        # Case B: Free slots filled or at/exceeding DB cap, but active batch has not reached max_cap.
+                        # Can admit if incoming lead outranks an existing DB contact that hasn't already been outranked!
+                        outranked_db_index = num_selected - free_slots
+                        if outranked_db_index < len(db_contacts_sorted):
+                            target_db_contact = db_contacts_sorted[outranked_db_index]
+                            target_db_score = target_db_contact.get("score", 0)
+                            if incoming_score > target_db_score:
+                                can_admit_additional = True
+                                admit_reason = title_reason or f"Qualified: Seniority score {incoming_score} outranks DB contact '{target_db_contact.get('job_title')}' (score {target_db_score}) for {comp_name}"
+
+                    if can_admit_additional:
                         required_count += 1
                         new_entry = {
                             "key": contact.key,
                             "apollo_id": c_apollo_id,
                             "name": contact.name,
                             "title": contact.job_title,
+                            "canonical_title": incoming_canon_title,
                             "score": incoming_score,
                             "company": comp_name,
-                            "domain": prim_d
+                            "domain": prim_d,
+                            "is_credit_spent": False,
                         }
-                        if comp_key not in seen_required_companies:
-                            seen_required_companies[comp_key] = []
-                        seen_required_companies[comp_key].append(new_entry)
-
+                        already_selected.append(new_entry)
                         results[contact.key] = {
                             "exists": False,
                             "required": True,
@@ -4161,21 +4663,24 @@ def match_apollo(request: ApolloMatchRequest):
                             "guardrail_status": "qualified",
                             "segment": title_seg,
                             "role_type": role_t,
-                            "guardrail_reason": title_reason,
+                            "guardrail_reason": admit_reason,
                             "matched_domain": prim_d,
+                            "company_db_count": db_count,
+                            "seniority_score": incoming_score,
                         }
                     else:
-                        # At or over limit: find the contact in already_selected with the lowest seniority score
+                        # Case C: Active batch has max_cap leads OR candidate did not outrank DB contact.
+                        # Check if incoming lead outranks lowest unlocked lead in active batch (already_selected)
                         min_idx = -1
                         min_score = float("inf")
-                        for idx, item in enumerate(already_selected):
-                            sc = item.get("score", 0) if isinstance(item, dict) else 0
-                            if sc < min_score:
-                                min_score = sc
-                                min_idx = idx
+                        for idx_item, item in enumerate(already_selected):
+                            if isinstance(item, dict) and not item.get("is_credit_spent"):
+                                sc = item.get("score", 0)
+                                if sc < min_score:
+                                    min_score = sc
+                                    min_idx = idx_item
 
                         if min_idx >= 0 and incoming_score > min_score:
-                            # Seniority Election: incoming higher-ranking lead outranks lowest previously selected lead
                             replaced_contact = already_selected[min_idx]
                             prev_key = replaced_contact.get("key") if isinstance(replaced_contact, dict) else None
                             if prev_key and prev_key in results:
@@ -4189,15 +4694,24 @@ def match_apollo(request: ApolloMatchRequest):
                                 }
                                 required_count = max(0, required_count - 1)
 
-                            # Replace lowest-scoring lead
+                            # Remove evicted lead from apollo_saved_leads if previously saved
+                            try:
+                                with conn.cursor() as cur:
+                                    del_sql = "DELETE FROM `apollo_saved_leads` WHERE `batch` = %s AND (`apollo_id` = %s OR (`name` = %s AND `company` = %s));"
+                                    cur.execute(del_sql, (batch_tag, replaced_contact.get("apollo_id") or "", replaced_contact.get("name") or "", replaced_contact.get("company") or ""))
+                            except Exception:
+                                pass
+
                             already_selected[min_idx] = {
                                 "key": contact.key,
                                 "apollo_id": c_apollo_id,
                                 "name": contact.name,
                                 "title": contact.job_title,
+                                "canonical_title": incoming_canon_title,
                                 "score": incoming_score,
                                 "company": comp_name,
-                                "domain": prim_d
+                                "domain": prim_d,
+                                "is_credit_spent": False,
                             }
                             required_count += 1
                             results[contact.key] = {
@@ -4207,11 +4721,12 @@ def match_apollo(request: ApolloMatchRequest):
                                 "guardrail_status": "qualified",
                                 "segment": title_seg,
                                 "role_type": role_t,
-                                "guardrail_reason": title_reason,
+                                "guardrail_reason": title_reason or f"Qualified: Seniority score {incoming_score} outranks previous lead '{replaced_contact.get('title')}' (score {min_score})",
                                 "matched_domain": prim_d,
+                                "company_db_count": db_count,
+                                "seniority_score": incoming_score,
                             }
                         else:
-                            # Cannot replace: limit reached
                             elected_names = ", ".join(item.get("name", "") if isinstance(item, dict) else str(item) for item in already_selected)
                             ignored_count += 1
                             results[contact.key] = {
@@ -4219,10 +4734,12 @@ def match_apollo(request: ApolloMatchRequest):
                                 "required": False,
                                 "ignored": True,
                                 "guardrail_status": "company_limit_reached",
-                                "guardrail_reason": f"Company '{comp_name}' already has lead selected ({elected_names}). Max {max_contacts_per_comp} per company allowed.",
+                                "guardrail_reason": f"Company '{comp_name}' reached target capacity ({max_cap}/company; {db_count} in DB, {len(already_selected)} selected: {elected_names}).",
                                 "matched_domain": prim_d,
                                 "segment": title_seg,
+                                "company_db_count": db_count,
                             }
+
 
         # --------------------------------------------------------
         # STEP 5: AUTO-PERSIST REQUIRED LEADS TO MYSQL BATCH TABLE

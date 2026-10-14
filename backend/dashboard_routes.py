@@ -109,14 +109,25 @@ def resolve_account_by_login_or_badge(login_str: str = "", account_str: str = ""
         if (l_low and em in l_low) or (b_low and em in b_low):
             return a
 
-    # Priority 3: Email prefix and domain in batch_str or login_str
+    # Priority 3: Prefer the most specific email prefix, then the strongest
+    # domain-token match. This prevents generic users such as "rahul" or
+    # "vijay" from stealing batches owned by rahul_chandran/vijay_raghavan.
+    identity_context = re.sub(r"[^a-z0-9]+", "_", f"{b_low} {l_low}").strip("_")
+    identity_candidates = []
+    ignored_domain_tokens = {"com", "net", "info", "biz", "co", "in", "org"}
     for a in accs:
         em = a.get("email", "").strip().lower()
         if "@" in em:
-            user_p = em.split("@")[0].replace(".", "_").replace("-", "_")
-            dom_p = em.split("@")[1].split(".")[0]
-            if (user_p in b_low and dom_p in b_low) or (user_p in l_low and dom_p in l_low):
-                return a
+            user_p = re.sub(r"[^a-z0-9]+", "_", em.split("@")[0]).strip("_")
+            if user_p and user_p in identity_context:
+                domain_tokens = [
+                    token for token in re.split(r"[^a-z0-9]+", em.split("@", 1)[1])
+                    if token and token not in ignored_domain_tokens
+                ]
+                matched_tokens = [token for token in domain_tokens if token in identity_context]
+                identity_candidates.append((len(user_p), len(matched_tokens), sum(map(len, matched_tokens)), a))
+    if identity_candidates:
+        return max(identity_candidates, key=lambda item: item[:3])[3]
 
     # Priority 4: Exact account name match
     if a_low:
@@ -197,6 +208,7 @@ def get_logins():
 
     # Live Database Telemetry: million_verifier_log, batch_enrichment_ledger, extension_activity_log, apollo_saved_leads
     mv_acc_stats = {}
+    latest_mv_by_aid = {}
     ledger_acc_stats = {}
     ext_acc_stats = {}
     db_counts = {}
@@ -240,6 +252,20 @@ def get_logins():
                         dt = v_at or c_at
                         if dt and not mv_acc_stats[aid]["last_date"]:
                             mv_acc_stats[aid]["last_date"] = dt.strftime("%Y-%m-%d %H:%M") if hasattr(dt, "strftime") else str(dt)
+                        current_batch_name = str(bat_nm or fname or "")
+                        current_stamp = dt.isoformat() if hasattr(dt, "isoformat") else str(dt or "")
+                        latest_job = latest_mv_by_aid.get(aid)
+                        if _batch_ends_in_current_month(current_batch_name) and (
+                            not latest_job or current_stamp > str(latest_job.get("created_at") or "")
+                        ):
+                            latest_mv_by_aid[aid] = {
+                                "batch": current_batch_name,
+                                "created_at": current_stamp,
+                                "entered": int(entered or 0),
+                                "good": int(good or 0),
+                                "bad": int(bad or 0),
+                                "risky": int(risky or disc or 0),
+                            }
             except Exception as e_mv:
                 print(f"[get_logins] Error querying million_verifier_log: {e_mv}", flush=True)
 
@@ -301,18 +327,20 @@ def get_logins():
 
             # 4. Database saved lead counts & batches
             try:
-                cur.execute("SELECT batch, COUNT(*) FROM apollo_saved_leads GROUP BY batch;")
-                for b, cnt in cur.fetchall():
-                    b_low = b.lower()
-                    for a in accs:
-                        e_prefix = a["email"].split("@")[0].lower().replace(".", "_").replace("-", "_")
-                        em = a["email"].lower()
-                        if e_prefix in b_low or em in b_low:
-                            db_counts[em] = db_counts.get(em, 0) + cnt
-                            if em not in batches_by_email:
-                                batches_by_email[em] = []
-                            batches_by_email[em].append({"batch": b, "leads": cnt})
-                            break
+                cur.execute("""
+                    SELECT batch, COUNT(*), MAX(created_at) AS last_added
+                    FROM apollo_saved_leads
+                    GROUP BY batch
+                    ORDER BY last_added DESC;
+                """)
+                for b, cnt, last_added in cur.fetchall():
+                    matched_acc = resolve_account_by_login_or_badge("", "", str(b or ""), accs)
+                    if matched_acc:
+                        em = matched_acc["email"].lower()
+                        db_counts[em] = db_counts.get(em, 0) + cnt
+                        if em not in batches_by_email:
+                            batches_by_email[em] = []
+                        batches_by_email[em].append({"batch": b, "leads": cnt, "last_added": last_added})
             except Exception as e_db:
                 print(f"[get_logins] Error querying apollo_saved_leads: {e_db}", flush=True)
 
@@ -333,6 +361,24 @@ def get_logins():
                     )
                     if matched_acc:
                         aid = matched_acc["id"]
+                        job_stamp = str(j.get("created_at") or j.get("timestamp") or "")
+                        job_batch = j.get("batch") or j.get("file_name") or ""
+                        latest_job = latest_mv_by_aid.get(aid)
+                        # The analytics cards represent this month's cycle. A
+                        # historical job must not replace a current-month batch.
+                        if _batch_ends_in_current_month(job_batch) and (
+                            not latest_job
+                            or not _batch_ends_in_current_month(latest_job.get("batch"))
+                            or job_stamp > latest_job.get("created_at", "")
+                        ):
+                            latest_mv_by_aid[aid] = {
+                                "batch": job_batch,
+                                "created_at": job_stamp,
+                                "entered": int(j.get("total_rows", 0) or 0),
+                                "good": int(j.get("good_count", 0) or 0),
+                                "bad": int(j.get("bad_count", 0) or 0),
+                                "risky": int(j.get("risky_count", 0) or 0),
+                            }
                         if aid not in mv_acc_stats:
                             mv_acc_stats[aid] = {
                                 "count": 1,
@@ -354,7 +400,8 @@ def get_logins():
         em = a["email"].lower()
         exp = exp_map.get(em, {})
         mv = mv_acc_stats.get(aid, {"count": 0, "last_date": None, "good": 0, "bad": 0, "risky": 0, "entered": 0, "file_id": None})
-        fs = fs_jobs.get(em, {"count": 0, "last_date": "2026-09-27 21:15", "created": 0, "updated": 0, "tld_blocked": 0})
+        mv_current = latest_mv_by_aid.get(aid, {})
+        fs = fs_jobs.get(em, {"count": 0, "last_date": None, "created": 0, "updated": 0, "tld_blocked": 0})
         led = ledger_acc_stats.get(aid, {"attempts": 0, "emails": 0, "credits": 0, "last_date": None})
         ext = ext_acc_stats.get(aid, {"pages": 0, "required": 0, "collected": 0, "last_date": None})
 
@@ -374,11 +421,22 @@ def get_logins():
             used = max(0, avail - rem)
 
         db_leads_count = db_counts.get(em, 0)
+        current_month_batches = [
+            batch for batch in batches_by_email.get(em, [])
+            if _batch_ends_in_current_month(batch.get("batch"))
+        ]
+        mv_batch_key = _analytics_normalized(mv_current.get("batch"))
+        current_batch = next(
+            (
+                batch for batch in current_month_batches
+                if _analytics_normalized(batch.get("batch")) == mv_batch_key
+            ),
+            (current_month_batches or [{}])[0],
+        )
+        current_batch_name = current_batch.get("batch") or mv_current.get("batch") or ""
+        current_batch_leads = int(current_batch.get("leads", 0) or 0)
         # Compute extension leads dynamically from live telemetry without hardcoding
         collected_leads = max(ext.get("collected", 0), ext.get("required", 0), db_leads_count)
-        if collected_leads == 0 and aid in (1, 18, 19):
-            # Fallback baseline for older unlogged sessions
-            collected_leads = 1407 if aid == 18 else (4005 if aid == 19 else 4358)
 
         results.append({
             "id": aid,
@@ -400,6 +458,12 @@ def get_logins():
             "ledger_credits": led.get("credits", 0),
             "ledger_last_date": led.get("last_date").strftime("%Y-%m-%d %H:%M") if led.get("last_date") else None,
             "batches": batches_by_email.get(em, []),
+            "current_batch": current_batch_name,
+            "current_extension_leads": current_batch_leads,
+            "current_mv_entered": mv_current.get("entered", 0),
+            "current_mv_good": mv_current.get("good", 0),
+            "current_mv_bad": mv_current.get("bad", 0),
+            "current_mv_risky": mv_current.get("risky", 0),
             "mv_jobs": mv["count"],
             "mv_last_date": mv["last_date"] or "N/A",
             "mv_good": mv["good"],
@@ -429,8 +493,133 @@ def _analytics_int(value: Any) -> int:
         return 0
 
 
+_FRESHSALES_TAG_STATS_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
+
+
+def _freshsales_tag_stats(tag: str) -> Dict[str, Any]:
+    """Return the contact count for an exact Freshsales batch tag."""
+    if not tag:
+        return {"found": False, "contacts": 0}
+    cache_key = _analytics_normalized(tag)
+    cached = _FRESHSALES_TAG_STATS_CACHE.get(cache_key)
+    if cached and time.monotonic() - cached[0] < 300:
+        return dict(cached[1])
+    freshsales_root = PROJECT_ROOT / "freshsales_agent"
+    if not freshsales_root.exists():
+        return {"found": False, "contacts": 0}
+    original_path = list(sys.path)
+    client = None
+    stats = {"found": False, "contacts": 0}
+    try:
+        if str(freshsales_root) not in sys.path:
+            sys.path.insert(0, str(freshsales_root))
+        from app.clients.freshsales import FreshsalesClient
+        from app.config import settings as freshsales_settings
+
+        if not freshsales_settings.api_key:
+            return stats
+        client = FreshsalesClient()
+
+        pages: Dict[int, List[Dict[str, Any]]] = {}
+
+        def _search_page(page: int) -> List[Dict[str, Any]]:
+            if page not in pages:
+                result = client._request(
+                    "GET",
+                    "api/search",
+                    params={"q": tag, "include": "contact", "per_page": 100, "page": page},
+                )
+                rows = result if isinstance(result, list) else result.get("contacts", [])
+                pages[page] = [item for item in rows if isinstance(item, dict)]
+            return pages[page]
+
+        first_page = _search_page(1)
+        if not first_page:
+            return stats
+
+        # Search results do not include tags, so verify a small sample against
+        # the full contact endpoint before trusting the paginated result count.
+        tag_key = re.sub(r"[^a-z0-9]+", "", tag.lower())
+        for item in first_page[:3]:
+            contact_id = item.get("id") if isinstance(item, dict) else None
+            if not contact_id:
+                continue
+            full = client._request("GET", f"api/contacts/{contact_id}")
+            contact = full.get("contact", full) if isinstance(full, dict) else {}
+            tags = contact.get("tags") or []
+            if isinstance(tags, str):
+                tags = [value.strip() for value in tags.split(",") if value.strip()]
+            if any(re.sub(r"[^a-z0-9]+", "", str(value).lower()) == tag_key for value in tags):
+                stats["found"] = True
+                break
+
+        if not stats["found"]:
+            return stats
+
+        if len(first_page) < 100:
+            stats["contacts"] = len(first_page)
+        else:
+            # Find the final page with logarithmic API calls. Freshsales caps
+            # search pages at 100 rows, so the last page determines the total.
+            low = 1
+            high = 2
+            while high <= 1024 and len(_search_page(high)) == 100:
+                low = high
+                high *= 2
+            while low + 1 < high:
+                middle = (low + high) // 2
+                if _search_page(middle):
+                    low = middle
+                else:
+                    high = middle
+            last_page = high if _search_page(high) else low
+            last_count = len(_search_page(last_page))
+            stats["contacts"] = ((last_page - 1) * 100) + last_count
+    except Exception:
+        return stats
+    finally:
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
+        sys.path[:] = original_path
+    _FRESHSALES_TAG_STATS_CACHE[cache_key] = (time.monotonic(), dict(stats))
+    return stats
+
+
+def _freshsales_tag_exists(tag: str) -> bool:
+    """Confirm a batch tag through Freshsales without sending contact emails."""
+    return bool(_freshsales_tag_stats(tag).get("found"))
+
+
 def _analytics_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _batch_ends_in_current_month(value: Any, now: datetime | None = None) -> bool:
+    """Return whether a batch's final date token is in the current month."""
+    text = _analytics_text(value).lower()
+    if not text:
+        return False
+    # Date ranges are normally inside parentheses: (sep 10 - oct 10).
+    scope = text[text.rfind("(") + 1:text.rfind(")")] if ")" in text else text
+    month_numbers = {
+        "jan": 1, "january": 1, "feb": 2, "february": 2,
+        "mar": 3, "march": 3, "apr": 4, "april": 4,
+        "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+        "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+        "oct": 10, "october": 10, "nov": 11, "november": 11,
+        "dec": 12, "december": 12,
+    }
+    matches = re.findall(
+        r"(?<![a-z])(january|february|march|april|may|june|july|august|september|october|november|december|sept|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)(?![a-z])",
+        scope,
+    )
+    if not matches:
+        return False
+    current = now or datetime.now()
+    return month_numbers[matches[-1]] == current.month
 
 
 def _analytics_normalized(value: Any) -> str:
@@ -799,6 +988,338 @@ def get_extension_analytics(
     return result
 
 
+@dashboard_router.get("/api/v1/login-pipeline-analytics/{account_email}")
+def get_login_pipeline_analytics(
+    account_email: str,
+    cycle_tag: str = "",
+    year: str = "",
+    batch_name: str = "",
+):
+    """Return cross-pipeline analytics scoped to a login's batch/CRM tag."""
+    email = urllib.parse.unquote(account_email).strip()
+    if not email or len(email) > 255:
+        raise HTTPException(status_code=400, detail="A valid login email is required")
+
+    active_cycle = urllib.parse.unquote(cycle_tag).strip()
+    selected_batch = urllib.parse.unquote(batch_name).strip()
+    cycle_start = cycle_end = None
+    if not active_cycle:
+        try:
+            from scripts.apollo_saved_search_inspector import get_account_cycle_window
+            cycle_start, cycle_end, active_cycle = get_account_cycle_window(email)
+        except Exception:
+            active_cycle = ""
+
+    try:
+        selected_year = int(year) if str(year).strip() else None
+    except (TypeError, ValueError):
+        selected_year = None
+
+    def _where(
+        account_sql: str,
+        cycle_sql: str = "",
+        date_sql: str = "",
+        year_column: str = "created_at",
+        batch_sql: str = "",
+    ):
+        clauses = [account_sql]
+        params: List[Any] = [email]
+        if batch_sql and selected_batch:
+            clauses.append(batch_sql)
+            params.append(selected_batch)
+        elif cycle_sql and active_cycle:
+            clauses.append(cycle_sql)
+            params.append(active_cycle)
+        elif date_sql and cycle_start and cycle_end:
+            clauses.append(date_sql)
+            params.extend([cycle_start.replace(tzinfo=None), cycle_end.replace(tzinfo=None)])
+        if selected_year:
+            clauses.append(f"YEAR({year_column}) = %s")
+            params.append(selected_year)
+        return " AND ".join(clauses), tuple(params)
+
+    def _scalar(cur, sql: str, params=(), default=0):
+        try:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            if isinstance(row, dict):
+                value = next(iter(row.values()), default)
+            else:
+                value = row[0] if row else default
+            return value if value is not None else default
+        except Exception:
+            return default
+
+    def _rows(cur, sql: str, params=()):
+        try:
+            cur.execute(sql, params)
+            return cur.fetchall()
+        except Exception:
+            return []
+
+    summary = {
+        "extension_saved": 0,
+        "people_search": 0,
+        "enriched_email": 0,
+        "without_email": 0,
+        "credits_used": 0,
+        "mv_sent": 0,
+        "mv_good": 0,
+        "mv_bad": 0,
+        "mv_risky": 0,
+        "crm_sent": 0,
+        "crm_created": 0,
+        "crm_updated": 0,
+        "crm_errors": 0,
+        "new_accounts": 0,
+        "people_search_calls": 0,
+        "crm_errors_available": False,
+        "crm_breakdown_available": False,
+        "new_accounts_available": False,
+        "crm_tag_found": False,
+        "crm_tag_source": "sync_ledger",
+    }
+    batches = []
+    cycle_options = []
+    year_options = set()
+
+    try:
+        from backend.api import get_connection
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Batch names are the stable join key across Apollo, enrichment,
+                # MillionVerifier, and the Freshsales tag ledger. Prefer the
+                # explicitly selected batch; otherwise use the latest saved batch
+                # for this login instead of relying on a date-derived cycle label.
+                batch_rows = _rows(cur, """
+                    SELECT batch, MAX(created_at) AS last_added
+                    FROM apollo_saved_leads
+                    WHERE (
+                        LOWER(account_used) = LOWER(%s)
+                        OR LOWER(batch) LIKE CONCAT(LOWER(%s), '%%')
+                    ) AND COALESCE(batch, '') <> ''
+                    GROUP BY batch
+                    ORDER BY last_added DESC
+                """, (email, email))
+                batch_options = [str(row[0]) for row in batch_rows if row and row[0]]
+                if not selected_batch and batch_options:
+                    current_month_batches = [
+                        batch for batch in batch_options
+                        if _batch_ends_in_current_month(batch)
+                    ]
+                    selected_batch = (current_month_batches or batch_options)[0]
+
+                if selected_batch:
+                    saved_where = "batch = %s"
+                    saved_params: tuple[Any, ...] = (selected_batch,)
+                    if selected_year:
+                        saved_where += " AND YEAR(created_at) = %s"
+                        saved_params += (selected_year,)
+                else:
+                    saved_where, saved_params = _where(
+                        "LOWER(account_used) = LOWER(%s)",
+                        "cycle = %s",
+                        "created_at >= %s AND created_at < %s",
+                    )
+                summary["extension_saved"] = _analytics_int(_scalar(
+                    cur,
+                    f"SELECT COUNT(*) FROM apollo_saved_leads WHERE {saved_where}",
+                    saved_params,
+                ))
+                enriched_where, enriched_params = _where(
+                    "LOWER(login_email) = LOWER(%s)",
+                    "",
+                    "attempted_at >= %s AND attempted_at < %s",
+                    year_column="attempted_at",
+                    batch_sql="batch = %s",
+                )
+                summary["enriched_email"] = _analytics_int(_scalar(
+                    cur,
+                    f"SELECT COUNT(*) FROM batch_enrichment_ledger WHERE {enriched_where} AND outcome = 'email_found'",
+                    enriched_params,
+                ))
+                attempts = _analytics_int(_scalar(
+                    cur,
+                    f"SELECT COUNT(*) FROM batch_enrichment_ledger WHERE {enriched_where}",
+                    enriched_params,
+                ))
+                summary["without_email"] = max(0, attempts - summary["enriched_email"])
+                summary["credits_used"] = _analytics_int(_scalar(
+                    cur,
+                    f"SELECT COALESCE(SUM(credits_charged), 0) FROM batch_enrichment_ledger WHERE {enriched_where}",
+                    enriched_params,
+                ))
+
+                people_where, people_params = _where(
+                    "LOWER(account_email) = LOWER(%s)",
+                    "",
+                    "created_at >= %s AND created_at < %s",
+                )
+                summary["people_search"] = _analytics_int(_scalar(
+                    cur,
+                    f"SELECT COALESCE(SUM(returned_count), 0) FROM people_search_api_log WHERE {people_where}",
+                    people_params,
+                ))
+                summary["people_search_calls"] = _analytics_int(_scalar(
+                    cur,
+                    f"SELECT COUNT(*) FROM people_search_api_log WHERE {people_where}",
+                    people_params,
+                ))
+
+                mv_where, mv_params = _where(
+                    "(LOWER(login_name) = LOWER(%s) OR LOWER(log_name) = LOWER(%s))",
+                    "cycle = %s",
+                    "created_at >= %s AND created_at < %s",
+                    batch_sql="batch_name = %s",
+                )
+                # The account predicate has two placeholders; replace the single
+                # email parameter added by _where with the pair expected above.
+                mv_params = (email, email) + tuple(mv_params[1:])
+                mv_row = _rows(cur, f"""
+                    SELECT COALESCE(SUM(leads_entered),0), COALESCE(SUM(good_leads),0),
+                           COALESCE(SUM(bad_leads),0), COALESCE(SUM(risky_leads),0),
+                           COALESCE(SUM(crm_created + crm_updated),0),
+                           COALESCE(SUM(crm_created),0), COALESCE(SUM(crm_updated),0)
+                    FROM million_verifier_log WHERE {mv_where}
+                """, mv_params)
+                if mv_row:
+                    row = mv_row[0]
+                    summary.update({
+                        "mv_sent": _analytics_int(row[0]),
+                        "mv_good": _analytics_int(row[1]),
+                        "mv_bad": _analytics_int(row[2]),
+                        "mv_risky": _analytics_int(row[3]),
+                        "crm_sent": _analytics_int(row[4]),
+                        "crm_created": _analytics_int(row[5]),
+                        "crm_updated": _analytics_int(row[6]),
+                    })
+                    if summary["crm_sent"]:
+                        summary["crm_breakdown_available"] = True
+
+                if selected_batch:
+                    batch_where = "batch = %s"
+                    batch_params: tuple[Any, ...] = (selected_batch,)
+                    if selected_year:
+                        batch_where += " AND YEAR(created_at) = %s"
+                        batch_params += (selected_year,)
+                else:
+                    batch_where, batch_params = _where(
+                        "LOWER(account_used) = LOWER(%s)",
+                        "cycle = %s",
+                        "created_at >= %s AND created_at < %s",
+                    )
+                batch_rows = _rows(cur, f"""
+                    SELECT batch, COUNT(*) AS leads, COUNT(email) AS emails,
+                           MAX(created_at) AS last_added
+                    FROM apollo_saved_leads WHERE {batch_where}
+                    GROUP BY batch ORDER BY last_added DESC LIMIT 30
+                """, batch_params)
+                batches = [{
+                    "batch": str(row[0] or "Unnamed"),
+                    "leads": _analytics_int(row[1]),
+                    "emails": _analytics_int(row[2]),
+                    "last_added": _analytics_iso(row[3]),
+                } for row in batch_rows]
+
+                for sql, params in [
+                    ("SELECT DISTINCT cycle_tag FROM extension_activity_log WHERE LOWER(account_email)=LOWER(%s) AND cycle_tag <> '' ORDER BY cycle_tag DESC", (email,)),
+                    ("SELECT DISTINCT cycle FROM apollo_saved_leads WHERE LOWER(account_used)=LOWER(%s) AND cycle <> '' ORDER BY cycle DESC", (email,)),
+                ]:
+                    for row in _rows(cur, sql, params):
+                        if row and row[0] and row[0] not in cycle_options:
+                            cycle_options.append(row[0])
+                for table, col, account_col in [
+                    ("extension_activity_log", "created_at", "account_email"),
+                    ("apollo_saved_leads", "created_at", "account_used"),
+                    ("batch_enrichment_ledger", "attempted_at", "login_email"),
+                ]:
+                    for row in _rows(cur, f"SELECT DISTINCT YEAR({col}) FROM {table} WHERE LOWER({account_col})=LOWER(%s) AND {col} IS NOT NULL ORDER BY 1 DESC", (email,)):
+                        if row and row[0]:
+                            year_options.add(int(row[0]))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Pipeline analytics unavailable: {exc}") from exc
+
+    def _tag_key(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+    selected_batch_key = _tag_key(selected_batch)
+    matched_crm_account_ids: set[str] = set()
+    fallback_crm_accounts = 0
+    fs_file = CONFIG_DIR / "freshsales_synced_batches.json"
+    if fs_file.exists():
+        try:
+            with open(fs_file, "r", encoding="utf-8") as handle:
+                for item in json.load(handle).values():
+                    tag = str(item.get("tag") or "").strip()
+                    tag_key = _tag_key(tag)
+                    if selected_batch_key:
+                        # Freshsales stores the selected Apollo batch as its tag.
+                        # Allow harmless suffixes such as -verified added by the
+                        # export job, but do not aggregate unrelated cycles.
+                        if not (
+                            tag_key == selected_batch_key
+                            or tag_key.startswith(selected_batch_key)
+                            or selected_batch_key.startswith(tag_key)
+                        ):
+                            continue
+                    else:
+                        tag_login = email.lower().replace(".", "_").replace("-", "_")
+                        if email.lower() not in tag.lower() and tag_login not in tag.replace(".", "_").replace("-", "_").lower():
+                            continue
+                    stamp = str(item.get("synced_at") or item.get("timestamp") or "")
+                    if selected_year and not stamp.startswith(str(selected_year)):
+                        continue
+                    if not selected_batch_key and active_cycle and active_cycle.lower() not in tag.lower():
+                        continue
+                    summary["crm_tag_found"] = True
+                    summary["crm_breakdown_available"] = True
+                    summary["new_accounts_available"] = True
+                    account_ids = {
+                        str(account_id) for account_id in (item.get("account_ids") or []) if account_id
+                    }
+                    if account_ids:
+                        matched_crm_account_ids.update(account_ids)
+                    else:
+                        fallback_crm_accounts += _analytics_int(item.get("accounts_created"))
+                    summary["crm_created"] += _analytics_int(item.get("created"))
+                    summary["crm_updated"] += _analytics_int(item.get("updated"))
+                    summary["crm_sent"] += _analytics_int(item.get("created")) + _analytics_int(item.get("updated"))
+        except Exception:
+            pass
+
+    summary["new_accounts"] = (
+        len(matched_crm_account_ids)
+        if matched_crm_account_ids
+        else fallback_crm_accounts
+    )
+    if selected_batch and not summary["crm_tag_found"]:
+        # The local sync ledger may be stale or missing a run. Confirm the tag
+        # directly through Freshsales and recover the tagged-contact total.
+        freshsales_stats = _freshsales_tag_stats(selected_batch)
+        summary["crm_tag_found"] = bool(freshsales_stats.get("found"))
+        if summary["crm_tag_found"]:
+            summary["crm_tag_source"] = "freshsales_api"
+            if not summary["crm_sent"]:
+                summary["crm_sent"] = _analytics_int(freshsales_stats.get("contacts"))
+
+    if not year_options:
+        year_options.add(datetime.now().year)
+    return {
+        "status": "ok",
+        "login": email,
+        "batch_name": selected_batch,
+        "cycle_tag": active_cycle,
+        "cycle_start": cycle_start.isoformat() if cycle_start else "",
+        "cycle_end": cycle_end.isoformat() if cycle_end else "",
+        "cycle_options": sorted(cycle_options, reverse=True),
+        "batch_options": batch_options,
+        "year_options": sorted(year_options, reverse=True),
+        "summary": summary,
+        "batches": batches,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # =====================================================================
 # 2b. REST API: LIVE ACCOUNT CREDIT & EXPIRY REPORT (Real API probe)
 # =====================================================================
@@ -1002,17 +1523,9 @@ def get_account_intel(account_id: int):
         except Exception:
             pass
 
+    # Never borrow searches from a different login. If this login has no local
+    # catalog, the live Apollo lookup below uses only this account's API key.
     raw_searches = searches_data.get(em, [])
-    # Alias fallback
-    if not raw_searches:
-        if "vraghavan" in em:
-            raw_searches = searches_data.get("vraghavan@nestack.com", []) or searches_data.get("vraghavan@nestacktech.com", [])
-        elif "vijay" in em:
-            raw_searches = searches_data.get("vijay.raghavan@nestacktechnologies.com", []) or searches_data.get("vijay@nestacktech.com", [])
-        elif "rahul" in em:
-            raw_searches = searches_data.get("rahul.chandran@nestack-tech.com", []) or searches_data.get("rahul@nestack-tech.com", [])
-        elif "abel" in em:
-            raw_searches = searches_data.get("vijay.raghavan@nestacktechnologies.com", [])[:4]
 
     # If still empty, probe live finder views via Apollo API
     if not raw_searches and api_key:

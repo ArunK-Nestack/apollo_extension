@@ -1811,6 +1811,52 @@
     .analytics-event-meta { color:var(--text-dim); font-size:9px; margin-top:3px; overflow-wrap:anywhere; }
     .analytics-state { padding:48px 24px; text-align:center; border:1px dashed var(--border-subtle); border-radius:var(--radius-md); color:var(--text-muted); }
     .analytics-state strong { color:var(--text-main); display:block; margin-bottom:8px; }
+    .analytics-login-strip { padding:16px; border:1px solid rgba(110,86,207,.24); border-radius:var(--radius-md); background:linear-gradient(135deg,rgba(17,26,42,.94),rgba(11,17,28,.82)); box-shadow:0 14px 38px rgba(0,0,0,.22); }
+    .analytics-strip-head { display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom:13px; }
+    .analytics-strip-title { color:var(--text-main); font-size:13px; font-weight:800; letter-spacing:-.2px; }
+    .analytics-strip-copy { color:var(--text-dim); font-size:10px; margin-top:4px; }
+    .analytics-login-scroll { display:flex; gap:10px; overflow-x:auto; padding:3px 2px 8px; scroll-snap-type:x proximity; scrollbar-color:rgba(139,92,246,.7) rgba(255,255,255,.05); }
+    .analytics-login-card { flex:0 0 218px; min-height:116px; padding:13px; cursor:pointer; scroll-snap-align:start; border:1px solid rgba(255,255,255,.08); border-radius:11px; background:rgba(7,12,21,.72); transition:transform .2s ease,border-color .2s ease,background .2s ease; }
+    .analytics-login-card:hover { transform:translateY(-2px); border-color:rgba(167,139,250,.5); background:rgba(18,24,39,.96); }
+    .analytics-login-card.selected { border-color:#A78BFA; background:linear-gradient(145deg,rgba(110,86,207,.22),rgba(7,12,21,.88)); box-shadow:0 0 0 1px rgba(167,139,250,.12),0 8px 24px rgba(110,86,207,.16); }
+    .analytics-login-top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .analytics-login-index { color:#c4b5fd; font:700 10px var(--font-mono); }
+    .analytics-login-status { color:#6ee7b7; font:700 9px var(--font-mono); text-transform:uppercase; letter-spacing:.6px; }
+    .analytics-login-name { margin-top:11px; color:var(--text-main); font-size:12px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .analytics-login-email { margin-top:4px; color:var(--text-dim); font:500 9px var(--font-mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .analytics-login-stats { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:12px; }
+    .analytics-login-stat { color:var(--text-dim); font-size:9px; }
+    .analytics-login-stat b { display:block; color:var(--text-main); font:700 12px var(--font-mono); margin-bottom:2px; }
+    .pipeline-panel { display:flex; flex-direction:column; gap:16px; }
+    .pipeline-kpi-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+    .pipeline-kpi { min-height:104px; padding:15px; border-radius:var(--radius-md); border:1px solid var(--border-subtle); background:linear-gradient(145deg,rgba(17,26,42,.94),rgba(11,17,28,.82)); position:relative; overflow:hidden; }
+    .pipeline-kpi::after { content:""; position:absolute; right:-28px; top:-28px; width:76px; height:76px; border-radius:50%; background:var(--pipeline-glow,rgba(110,86,207,.15)); }
+    .pipeline-kpi-label { color:var(--text-dim); font-size:9px; font-weight:800; letter-spacing:.7px; text-transform:uppercase; }
+    .pipeline-kpi-value { position:relative; z-index:1; margin-top:13px; color:var(--pipeline-color,var(--text-main)); font:700 23px/1 var(--font-mono); }
+    .pipeline-kpi-meta { margin-top:7px; color:var(--text-muted); font-size:10px; }
+    .pipeline-grid-2 { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr); gap:16px; }
+    .pipeline-grid-2 > * { min-width:0; }
+    .pipeline-bar-list { display:flex; flex-direction:column; gap:13px; padding-top:7px; }
+    .pipeline-bar-row { display:grid; grid-template-columns:145px 1fr 72px; gap:10px; align-items:center; font-size:10px; }
+    .pipeline-bar-label { color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pipeline-bar-track { height:9px; border-radius:8px; background:rgba(255,255,255,.07); overflow:hidden; }
+    .pipeline-bar-fill { height:100%; border-radius:8px; background:linear-gradient(90deg,#8b5cf6,#22d3ee); }
+    .pipeline-bar-value { color:var(--text-main); font:700 10px var(--font-mono); text-align:right; }
+    .pipeline-donut { width:154px; height:154px; border-radius:50%; display:grid; place-items:center; margin:auto; position:relative; background:rgba(255,255,255,.06); }
+    .pipeline-donut::before { content:""; position:absolute; inset:22px; border-radius:50%; background:#0d1522; box-shadow:inset 0 0 0 1px var(--border-subtle); }
+    .pipeline-donut-center { position:relative; z-index:1; text-align:center; }
+    .pipeline-donut-center strong { display:block; color:var(--text-main); font:700 20px var(--font-mono); }
+    .pipeline-donut-center span { color:var(--text-dim); font-size:9px; text-transform:uppercase; }
+    .pipeline-donut-layout { display:grid; grid-template-columns:180px 1fr; gap:18px; align-items:center; min-height:210px; }
+    .pipeline-legend { display:flex; flex-direction:column; gap:12px; }
+    .pipeline-legend-row { display:grid; grid-template-columns:9px 1fr auto; gap:8px; align-items:center; color:var(--text-muted); font-size:10px; }
+    .pipeline-legend-row b { color:var(--text-main); font:700 11px var(--font-mono); }
+    .pipeline-table { min-width:760px; }
+    .pipeline-source-chip { display:inline-flex; padding:4px 7px; border-radius:6px; color:#c4b5fd; background:rgba(139,92,246,.11); border:1px solid rgba(139,92,246,.2); font:700 9px var(--font-mono); }
+    .pipeline-muted { color:var(--text-dim); font-size:10px; }
+    @media (max-width:1300px) { .pipeline-kpi-grid{grid-template-columns:repeat(3,1fr)} }
+    @media (max-width:900px) { .pipeline-grid-2{grid-template-columns:1fr} .pipeline-kpi-grid{grid-template-columns:repeat(2,1fr)} }
+    @media (max-width:650px) { .pipeline-kpi-grid{grid-template-columns:1fr 1fr} .pipeline-donut-layout{grid-template-columns:1fr} .pipeline-bar-row{grid-template-columns:105px 1fr 58px} }
     .analytics-detail-btn { border:1px solid rgba(110,86,207,.25); background:rgba(110,86,207,.08); color:#A78BFA; border-radius:7px; padding:5px 8px; font:600 9px var(--font-ui); cursor:pointer; }
     .analytics-detail-btn:hover { background:rgba(110,86,207,.16); }
     .analytics-drawer-backdrop { display:none; position:fixed; inset:0; z-index:60; background:rgba(2,6,12,.7); backdrop-filter:blur(4px); }
@@ -2632,7 +2678,25 @@ def extract_and_verify_lead(domain, first, last):
               <option value="apollo_leads.db">Local SQLite: apollo_leads.db (Local Storage)</option>
             </select>
           </div>
-          <div style="display:flex; align-items:center; gap:10px;">
+          <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+            <div style="display:flex; align-items:center; gap:6px;">
+              <label for="op-company-cap-select" style="font-size:12px; font-weight:700; color:var(--text-main); display:flex; align-items:center; gap:6px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--primary)"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                Company Limit Cap:
+              </label>
+              <select id="op-company-cap-select" class="op-custom-select" style="min-width:140px; font-weight:700;" onchange="onCompanyCapChange(this.value)">
+                <option value="1">1 lead / co</option>
+                <option value="2">2 leads / co</option>
+                <option value="3" selected>3 leads / co (Default)</option>
+                <option value="4">4 leads / co</option>
+                <option value="5">5 leads / co</option>
+                <option value="6">6 leads / co</option>
+                <option value="7">7 leads / co</option>
+                <option value="8">8 leads / co</option>
+                <option value="9">9 leads / co</option>
+                <option value="10">10 leads / co</option>
+              </select>
+            </div>
             <span class="status-tag verified" id="op-db-status-badge">● AWS RDS MySQL Connected</span>
             <span class="status-tag verified" id="mode-a-searches-count-badge">Live Searches Ready</span>
           </div>
@@ -3019,7 +3083,7 @@ def extract_and_verify_lead(domain, first, last):
         <div class="glass-card radial-box">
           <div class="donut-chart" id="mv-donut-chart">
             <div class="donut-hole">
-              <div class="donut-pct" id="mv-good-pct">86.4%</div>
+              <div class="donut-pct" id="mv-good-pct">0.0%</div>
               <div class="donut-label">Good Quality</div>
             </div>
           </div>
@@ -3455,9 +3519,9 @@ def extract_and_verify_lead(domain, first, last):
     <section id="tab-extension-analytics" class="view-container">
       <div class="analytics-hero">
         <div>
-          <div class="analytics-eyebrow">Extension telemetry · login isolated</div>
+            <div class="analytics-eyebrow">Pipeline telemetry · login isolated</div>
           <h2 id="analytics-account-name">Select a login to inspect performance</h2>
-          <p id="analytics-account-copy">Search yield, page saturation, duplication, guardrail outcomes and saved-lead performance from the extension activity ledger.</p>
+            <p id="analytics-account-copy">Select a login to inspect capture, enrichment, verification, and CRM delivery.</p>
           <div class="analytics-cycle-chip"><span class="analytics-live-dot"></span><span id="analytics-cycle-label">Waiting for login selection</span></div>
         </div>
         <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;">
@@ -3466,7 +3530,7 @@ def extract_and_verify_lead(domain, first, last):
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4Z"/></svg>
             Send today's report
           </button>
-          <button class="pill-btn primary" id="analytics-refresh-btn" onclick="loadExtensionAnalytics(true)">
+          <button class="pill-btn primary" id="analytics-refresh-btn" onclick="refreshAnalyticsPage()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg>
             Refresh analytics
           </button>
@@ -3481,11 +3545,65 @@ def extract_and_verify_lead(domain, first, last):
         <button class="pill-btn" onclick="resetAnalyticsFilters()">Clear filters</button>
       </div>
 
+      <div class="analytics-login-strip">
+        <div class="analytics-strip-head">
+          <div><div class="analytics-strip-title">Login performance cockpit</div><div class="analytics-strip-copy">Scroll across all 19 logins. Select one to load its complete pipeline analytics below.</div></div>
+          <span class="status-tag verified" id="analytics-login-count">19 logins</span>
+        </div>
+        <div class="analytics-login-scroll" id="analytics-login-cards" aria-label="Login analytics selector"></div>
+      </div>
+
       <div id="analytics-loading" class="analytics-state" style="display:none;"><span class="fetch-spinner" style="width:22px;height:22px;border-width:3px;margin:0 auto 12px;display:block;"></span><strong>Building analytics</strong>Aggregating extension activity for the selected login and cycle.</div>
       <div id="analytics-error" class="analytics-state" style="display:none;border-color:rgba(239,68,68,.3);"><strong style="color:#fca5a5;">Analytics could not be loaded</strong><span id="analytics-error-copy"></span></div>
       <div id="analytics-empty" class="analytics-state" style="display:none;"><strong>No extension activity in this scope</strong>Choose another cycle or run the extension with this login. Historical rows created before search logging may appear under “Unknown / Not captured.”</div>
 
       <div id="analytics-content" style="display:none; flex-direction:column; gap:16px;">
+        <div class="pipeline-panel" id="pipeline-analytics-panel">
+          <div class="analytics-filter-bar" style="grid-template-columns:1.2fr 1fr auto;">
+          <div class="analytics-field"><label for="pipeline-batch-filter">Freshsales batch / tag</label><select id="pipeline-batch-filter" onchange="loadPipelineAnalytics()"><option value="">Latest batch</option></select></div>
+            <div class="analytics-field"><label for="pipeline-year-filter">Year</label><select id="pipeline-year-filter" onchange="loadPipelineAnalytics()"><option value="">All years</option></select></div>
+            <button class="pill-btn" onclick="resetPipelineFilters()">Reset pipeline view</button>
+          </div>
+
+          <div class="pipeline-kpi-grid">
+            <div class="pipeline-kpi" style="--pipeline-color:#c4b5fd;--pipeline-glow:rgba(139,92,246,.2);"><div class="pipeline-kpi-label">Apollo extension saved</div><div class="pipeline-kpi-value" id="pipeline-extension-saved">0</div><div class="pipeline-kpi-meta">Leads saved from the extension</div></div>
+            <div class="pipeline-kpi" style="--pipeline-color:#67e8f9;--pipeline-glow:rgba(34,211,238,.18);"><div class="pipeline-kpi-label">PeopleSearch API</div><div class="pipeline-kpi-value" id="pipeline-people-search">0</div><div class="pipeline-kpi-meta" id="pipeline-people-search-meta">0 API calls · zero credits</div></div>
+            <div class="pipeline-kpi" style="--pipeline-color:#6ee7b7;--pipeline-glow:rgba(16,185,129,.18);"><div class="pipeline-kpi-label">Enriched with email</div><div class="pipeline-kpi-value" id="pipeline-enriched-email">0</div><div class="pipeline-kpi-meta">Successful enrichment outcomes</div></div>
+            <div class="pipeline-kpi" style="--pipeline-color:#fca5a5;--pipeline-glow:rgba(239,68,68,.16);"><div class="pipeline-kpi-label">No email utilization</div><div class="pipeline-kpi-value" id="pipeline-without-email">0</div><div class="pipeline-kpi-meta">Enrichment attempts without an email</div></div>
+            <div class="pipeline-kpi" style="--pipeline-color:#fcd34d;--pipeline-glow:rgba(245,158,11,.17);"><div class="pipeline-kpi-label">Credits used</div><div class="pipeline-kpi-value" id="pipeline-credits-used">0</div><div class="pipeline-kpi-meta">Paid enrichment credits</div></div>
+            <div class="pipeline-kpi" style="--pipeline-color:#f9a8d4;--pipeline-glow:rgba(236,72,153,.15);"><div class="pipeline-kpi-label">Sent to MillionVerifier</div><div class="pipeline-kpi-value" id="pipeline-mv-sent">0</div><div class="pipeline-kpi-meta">Leads submitted for verification</div></div>
+          <div class="pipeline-kpi" style="--pipeline-color:#a7f3d0;--pipeline-glow:rgba(16,185,129,.16);"><div class="pipeline-kpi-label">Sent to Freshsales CRM</div><div class="pipeline-kpi-value" id="pipeline-crm-sent">0</div><div class="pipeline-kpi-meta" id="pipeline-crm-meta">Created + updated contacts for this batch tag</div></div>
+          <div class="pipeline-kpi" style="--pipeline-color:#93c5fd;--pipeline-glow:rgba(59,130,246,.16);"><div class="pipeline-kpi-label">New accounts created</div><div class="pipeline-kpi-value" id="pipeline-new-accounts">0</div><div class="pipeline-kpi-meta">Freshsales reconciliation for this batch tag</div></div>
+          </div>
+
+          <div class="pipeline-grid-2">
+            <div class="glass-card">
+              <div class="card-head"><div><div class="card-title">Pipeline stage progression</div><div class="analytics-card-sub">Volume at each stage for the selected login and Freshsales batch tag</div></div><span class="status-tag verified" id="pipeline-scope-label">Latest batch</span></div>
+              <div class="pipeline-bar-list" id="pipeline-stage-bars"></div>
+            </div>
+            <div class="glass-card">
+              <div class="card-head"><div><div class="card-title">MillionVerifier quality</div><div class="analytics-card-sub">Good, bad, and risky distribution</div></div></div>
+              <div class="pipeline-donut-layout"><div class="pipeline-donut" id="pipeline-mv-donut"><div class="pipeline-donut-center"><strong id="pipeline-mv-total">0</strong><span>verified</span></div></div><div class="pipeline-legend" id="pipeline-mv-legend"></div></div>
+            </div>
+          </div>
+
+          <div class="pipeline-grid-2">
+            <div class="glass-card">
+              <div class="card-head"><div><div class="card-title">CRM outcome ledger</div><div class="analytics-card-sub">Freshsales delivery outcomes for the selected scope</div></div></div>
+              <div class="analytics-table-shell"><table class="analytics-table pipeline-table"><thead><tr><th>Outcome</th><th>Leads</th><th>Share of CRM sent</th><th>Health</th></tr></thead><tbody id="pipeline-crm-table"></tbody></table></div>
+            </div>
+            <div class="glass-card">
+              <div class="card-head"><div><div class="card-title">Account efficiency</div><div class="analytics-card-sub">How much pipeline volume became new CRM accounts</div></div></div>
+              <div id="pipeline-efficiency-bars" class="pipeline-bar-list"></div>
+            </div>
+          </div>
+
+          <div class="glass-card">
+            <div class="card-head"><div><div class="card-title">Lead batches in scope</div><div class="analytics-card-sub">Every batch contributing to this login’s selected cycle/year</div></div><span class="status-tag" id="pipeline-batch-count">0 batches</span></div>
+            <div class="analytics-table-shell"><table class="analytics-table pipeline-table"><thead><tr><th>Batch</th><th>Leads</th><th>With email</th><th>Last added</th><th>Source</th></tr></thead><tbody id="pipeline-batch-table"></tbody></table></div>
+          </div>
+        </div>
+
         <div class="analytics-kpi-grid">
           <div class="analytics-kpi" style="--kpi-color:#A78BFA;--kpi-glow:rgba(110,86,207,.18);"><div class="analytics-kpi-label">Pages evaluated</div><div class="analytics-kpi-value" id="analytics-kpi-pages">0</div><div class="analytics-kpi-meta" id="analytics-kpi-pages-meta">0 searches</div></div>
           <div class="analytics-kpi"><div class="analytics-kpi-label">Contacts checked</div><div class="analytics-kpi-value" id="analytics-kpi-evaluated">0</div><div class="analytics-kpi-meta">Canonical PAGE_EVALUATED events</div></div>
@@ -3783,28 +3901,34 @@ def extract_and_verify_lead(domain, first, last):
     }
 
     async function loadAllLogins() {
+      const selectedId = currentSelectedLogin?.id;
+      const selectedEmail = String(currentSelectedLogin?.email || '').toLowerCase();
       try {
-        const res = await fetch('/api/v1/logins');
+        const res = await fetch(`/api/v1/logins?_=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
           const data = await res.json();
           if (data.logins && Array.isArray(data.logins) && data.logins.length > 0) {
             allLogins = data.logins;
+            if (selectedId != null || selectedEmail) {
+              currentSelectedLogin = allLogins.find(account =>
+                Number(account.id) === Number(selectedId)
+                || String(account.email || '').toLowerCase() === selectedEmail
+              ) || null;
+            }
             const totalCredits = allLogins.reduce((sum, a) => sum + (a.credits_remaining || 0), 0);
             const sideQuota = document.getElementById('fleet-quota-total');
             if (sideQuota && totalCredits > 0) sideQuota.innerText = totalCredits.toLocaleString();
             sortAndRenderLogins(document.getElementById('fleet-sort-select').value);
             populateOpLoginSelect();
             loadRecentBatchesDropdown();
-            return;
+            return true;
           }
         }
+        throw new Error(`Login refresh failed (${res.status})`);
       } catch (e) {
         console.warn('Logins fetch error:', e);
+        return false;
       }
-      allLogins = REAL_19_LOGINS;
-      sortAndRenderLogins(document.getElementById('fleet-sort-select').value);
-      populateOpLoginSelect();
-      loadRecentBatchesDropdown();
     }
 
     function sortAndRenderLogins(sortBy) {
@@ -3865,17 +3989,19 @@ def extract_and_verify_lead(domain, first, last):
           <div class="acc-email" title="${acc.email}">${acc.email}</div>
           <div class="acc-bottom">
             <span class="acc-credits">${(acc.credits_remaining || 4000).toLocaleString()} Creds</span>
-            ${acc.id === 18 ? '<span class="acc-ready-tag">1,407 Ready</span>' : ''}
+            ${Number(acc.current_extension_leads || 0) > 0 ? `<span class="acc-ready-tag">${Number(acc.current_extension_leads).toLocaleString()} Current</span>` : ''}
           </div>
         `;
         container.appendChild(pill);
       });
 
       renderAuditMatrix(loginsList);
+      renderAnalyticsLoginCards();
     }
 
     function selectLogin(acc) {
       currentSelectedLogin = acc;
+      renderAnalyticsLoginCards();
       
       document.querySelectorAll('.acc-pill').forEach(el => {
         el.classList.remove('selected');
@@ -3958,11 +4084,11 @@ def extract_and_verify_lead(domain, first, last):
       }
 
       // 4. Mail Verifier Real Metrics for this Login
-      const mvGood = acc.mv_good || (acc.id === 18 ? 2096 : (acc.id === 19 ? 3450 : (acc.id === 9 ? 3947 : (acc.id === 11 ? 4012 : (acc.id === 1 ? 3610 : 0)))));
-      const mvRisky = acc.mv_risky || (acc.id === 18 ? 134 : (acc.id === 19 ? 245 : (acc.id === 9 ? 338 : (acc.id === 11 ? 315 : (acc.id === 1 ? 261 : 0)))));
-      const mvBad = acc.mv_bad || (acc.id === 18 ? 195 : (acc.id === 19 ? 310 : (acc.id === 9 ? 384 : (acc.id === 11 ? 420 : (acc.id === 1 ? 350 : 0)))));
+      const mvGood = Number(acc.mv_good || 0);
+      const mvRisky = Number(acc.mv_risky || 0);
+      const mvBad = Number(acc.mv_bad || 0);
       const mvTotal = mvGood + mvRisky + mvBad;
-      const goodPct = mvTotal > 0 ? ((mvGood / mvTotal) * 100).toFixed(1) : 86.4;
+      const goodPct = mvTotal > 0 ? ((mvGood / mvTotal) * 100).toFixed(1) : '0.0';
 
       const mvGoodEl = document.getElementById('mv-good-cnt');
       if (mvGoodEl) mvGoodEl.innerText = mvGood > 0 ? mvGood.toLocaleString() : '0';
@@ -3975,11 +4101,11 @@ def extract_and_verify_lead(domain, first, last):
       const mvDonut = document.getElementById('mv-donut-chart');
       if (mvDonut) mvDonut.style.background = `conic-gradient(var(--accent-green) 0% ${goodPct}%, var(--accent-amber) ${goodPct}% 96%, var(--accent-red) 96% 100%)`;
       const mvBatchText = document.getElementById('mv-loaded-batch-text');
-      if (mvBatchText) mvBatchText.innerText = `Batch from ${acc.name} (${(acc.extension_leads || acc.db_leads || 1407).toLocaleString()} Enriched Leads)`;
+      if (mvBatchText) mvBatchText.innerText = `Batch from ${acc.name} (${Number(acc.extension_leads || acc.db_leads || 0).toLocaleString()} Enriched Leads)`;
 
       // 5. Freshsales CRM Real Metrics for this Login
-      const fsCreated = acc.fs_created || (acc.id === 18 ? 2425 : (acc.id === 19 ? 4005 : (acc.id === 9 ? 3947 : (acc.id === 11 ? 4747 : (acc.id === 1 ? 2724 : 0)))));
-      const fsUpdated = acc.fs_updated || (acc.id === 18 ? 310 : (acc.id === 19 ? 180 : (acc.id === 9 ? 538 : (acc.id === 11 ? 157 : (acc.id === 1 ? 412 : 0)))));
+      const fsCreated = Number(acc.fs_created || 0);
+      const fsUpdated = Number(acc.fs_updated || 0);
       const fsCreatedEl = document.getElementById('fs-created-cnt');
       if (fsCreatedEl) fsCreatedEl.innerText = `+${fsCreated.toLocaleString()} Contacts`;
       const fsUpdatedEl = document.getElementById('fs-updated-cnt');
@@ -3988,7 +4114,9 @@ def extract_and_verify_lead(domain, first, last):
       const activeView = document.querySelector('.view-container.active-view');
       if (activeView && activeView.id === 'tab-extension-analytics') {
         resetAnalyticsFilters(false);
+        resetPipelineFilters(false);
         loadExtensionAnalytics();
+        loadPipelineAnalytics();
       }
     }
 
@@ -4055,6 +4183,7 @@ def extract_and_verify_lead(domain, first, last):
         if (repDashboard) repDashboard.style.display = 'none';
         if (btnText) btnText.innerText = 'Refresh Analytics';
         loadExtensionAnalytics();
+        loadPipelineAnalytics();
       } else {
         if (repDashboard) repDashboard.style.display = 'block';
         if (tabId === 'tab-apollo') {
@@ -4643,6 +4772,32 @@ def extract_and_verify_lead(domain, first, last):
 
       loadRecentBatchesDropdown(dbVal);
     }
+
+    function onCompanyCapChange(val) {
+      const capInt = parseInt(val, 10) || 3;
+      localStorage.setItem('contactCheckerCompanyCap', capInt);
+      fetch(`/set-company-cap?cap=${capInt}`, { method: 'POST' }).catch(() => {});
+      const wLog = document.getElementById('working-stream-log');
+      if (wLog) {
+        const line = document.createElement('div');
+        line.style.color = '#c4b5fd';
+        line.innerHTML = `<span>${new Date().toTimeString().slice(0,8)} [Company Capacity]</span> Dynamic limit updated to <b>max ${capInt} leads/company</b>.`;
+        wLog.insertBefore(line, wLog.firstChild);
+      }
+    }
+
+    // Load initial cap from backend / localStorage
+    (async function initCompanyCap() {
+      try {
+        const res = await fetch('/get-company-cap');
+        if (res.ok) {
+          const d = await res.json();
+          const cap = d.max_contacts_per_company || 3;
+          const select = document.getElementById('op-company-cap-select');
+          if (select) select.value = String(cap);
+        }
+      } catch (_) {}
+    })();
 
     async function loadRecentBatchesDropdown(table) {
       table = table || currentSelectedDbTable || 'apollo_saved_leads';
@@ -5618,6 +5773,219 @@ def extract_and_verify_lead(domain, first, last):
       return Number(value || 0).toLocaleString('en-IN');
     }
 
+    function renderAnalyticsLoginCards() {
+      const container = document.getElementById('analytics-login-cards');
+      const count = document.getElementById('analytics-login-count');
+      if (!container) return;
+      const logins = [...(allLogins || [])].sort((a,b) => (a.id || 0) - (b.id || 0));
+      if (count) count.textContent = `${logins.length} logins`;
+      container.innerHTML = logins.map(acc => {
+        const selected = currentSelectedLogin && currentSelectedLogin.id === acc.id;
+        const ready = Number(acc.current_extension_leads || 0);
+        const mv = Number(acc.current_mv_entered || 0) || (Number(acc.current_mv_good || 0) + Number(acc.current_mv_bad || 0) + Number(acc.current_mv_risky || 0));
+        return `<button type="button" class="analytics-login-card${selected ? ' selected' : ''}" onclick="selectLoginByAnalytics(${Number(acc.id)})" aria-pressed="${selected}">
+          <div class="analytics-login-top"><span class="analytics-login-index">#${String(acc.id || '').padStart(2,'0')}</span><span class="analytics-login-status">${analyticsEscape(acc.time_left || 'Active')}</span></div>
+          <div class="analytics-login-name">${analyticsEscape(acc.name || 'Unnamed login')}</div>
+          <div class="analytics-login-email">${analyticsEscape(acc.email || '')}</div>
+          <div class="analytics-login-stats"><div class="analytics-login-stat"><b>${analyticsNumber(ready)}</b>current batch leads</div><div class="analytics-login-stat"><b>${analyticsNumber(mv)}</b>MV verified</div></div>
+        </button>`;
+      }).join('');
+    }
+
+    function selectLoginByAnalytics(id) {
+      const acc = (allLogins || []).find(item => Number(item.id) === Number(id));
+      if (acc) selectLogin(acc);
+    }
+
+    function pipelineValue(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value == null ? '—' : analyticsNumber(value);
+    }
+
+    function renderPipelineDonut(summary) {
+      const values = [
+        {label:'Good', value:Number(summary.mv_good || 0), color:'#10b981'},
+        {label:'Bad', value:Number(summary.mv_bad || 0), color:'#ef4444'},
+        {label:'Risky', value:Number(summary.mv_risky || 0), color:'#f59e0b'}
+      ];
+      const total = values.reduce((sum,item) => sum + item.value, 0);
+      let cursor = 0;
+      const stops = values.map(item => { const start = cursor; cursor += total ? item.value * 100 / total : 0; return `${item.color} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`; });
+      const donut = document.getElementById('pipeline-mv-donut');
+      if (donut) donut.style.background = total ? `conic-gradient(${stops.join(',')})` : 'rgba(255,255,255,.06)';
+      const totalEl = document.getElementById('pipeline-mv-total');
+      if (totalEl) totalEl.textContent = analyticsNumber(total);
+      const legend = document.getElementById('pipeline-mv-legend');
+      if (legend) legend.innerHTML = values.map(item => `<div class="pipeline-legend-row"><i class="analytics-legend-dot" style="background:${item.color}"></i><span>${item.label}</span><b>${analyticsNumber(item.value)} <small style="color:var(--text-dim);font-weight:500;">${total ? (item.value * 100 / total).toFixed(1) : '0.0'}%</small></b></div>`).join('');
+    }
+
+    function renderPipelineAnalytics(data) {
+      const summary = data.summary || {};
+      pipelineValue('pipeline-extension-saved', summary.extension_saved);
+      pipelineValue('pipeline-people-search', summary.people_search);
+      pipelineValue('pipeline-enriched-email', summary.enriched_email);
+      pipelineValue('pipeline-without-email', summary.without_email);
+      pipelineValue('pipeline-credits-used', summary.credits_used);
+      pipelineValue('pipeline-mv-sent', summary.mv_sent);
+      pipelineValue('pipeline-crm-sent', summary.crm_sent);
+      pipelineValue('pipeline-new-accounts', summary.new_accounts_available === false ? null : summary.new_accounts);
+      const crmMeta = document.getElementById('pipeline-crm-meta');
+      if (crmMeta) crmMeta.textContent = summary.crm_tag_found === false
+        ? 'No matching Freshsales tag for this batch'
+        : summary.crm_breakdown_available === false
+          ? 'Tagged contacts found via Freshsales API; created/updated split unavailable'
+          : 'Created + updated contacts for this batch tag';
+      const psMeta = document.getElementById('pipeline-people-search-meta');
+      if (psMeta) psMeta.textContent = `${analyticsNumber(summary.people_search_calls)} API calls · zero credits`;
+      const scope = document.getElementById('pipeline-scope-label');
+      if (scope) scope.textContent = data.batch_name || data.cycle_tag || 'Latest batch';
+
+      const stages = [
+        ['Apollo extension saved', summary.extension_saved, '#8b5cf6'],
+        ['PeopleSearch API', summary.people_search, '#22d3ee'],
+        ['Enriched with email', summary.enriched_email, '#10b981'],
+        ['MillionVerifier sent', summary.mv_sent, '#ec4899'],
+        ['CRM sent', summary.crm_sent, '#60a5fa'],
+        ['New accounts', summary.new_accounts, '#f59e0b']
+      ];
+      const maxStage = Math.max(1, ...stages.map(item => Number(item[1] || 0)));
+      document.getElementById('pipeline-stage-bars').innerHTML = stages.map(item => `<div class="pipeline-bar-row"><span class="pipeline-bar-label">${item[0]}</span><div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:${Math.min(100, Number(item[1] || 0) * 100 / maxStage)}%;background:${item[2]}"></div></div><span class="pipeline-bar-value">${analyticsNumber(item[1])}</span></div>`).join('');
+      renderPipelineDonut(summary);
+
+      const crmTotal = Number(summary.crm_sent || 0);
+      const crmRows = [
+        ['Leads created', summary.crm_created, 'good'],
+        ['Leads updated', summary.crm_updated, 'watch'],
+        ['Leads with errors', summary.crm_errors, summary.crm_errors ? 'danger' : 'good']
+      ];
+      document.getElementById('pipeline-crm-table').innerHTML = crmRows.map(row => {
+        const unavailable = summary.crm_breakdown_available === false || (row[0] === 'Leads with errors' && !summary.crm_errors_available);
+        const value = unavailable ? '—' : analyticsNumber(row[1]);
+        const share = unavailable ? '—' : `${crmTotal ? (Number(row[1] || 0) * 100 / crmTotal).toFixed(1) : '0.0'}%`;
+        const health = unavailable ? 'Unavailable' : row[2] === 'good' ? 'Healthy' : 'Monitor';
+        return `<tr><td style="color:var(--text-main);font-weight:600;">${row[0]}</td><td style="font-family:var(--font-mono);">${value}</td><td>${share}</td><td><span class="analytics-health ${unavailable ? 'watch' : row[2]}">${health}</span></td></tr>`;
+      }).join('');
+
+      const efficiency = [['Email yield', summary.enriched_email, summary.extension_saved], ['MV quality', summary.mv_good, summary.mv_sent], ['CRM account conversion', summary.new_accounts, summary.crm_sent]];
+      document.getElementById('pipeline-efficiency-bars').innerHTML = efficiency.map(item => { const pct = item[2] ? Math.min(100, Number(item[1] || 0) * 100 / Number(item[2])) : 0; return `<div class="pipeline-bar-row"><span class="pipeline-bar-label">${item[0]}</span><div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:${pct}%;"></div></div><span class="pipeline-bar-value">${pct.toFixed(1)}%</span></div>`; }).join('');
+
+      const batches = data.batches || [];
+      document.getElementById('pipeline-batch-count').textContent = `${analyticsNumber(batches.length)} batches`;
+      document.getElementById('pipeline-batch-table').innerHTML = batches.length ? batches.map(item => `<tr><td><div class="analytics-search-name" title="${analyticsEscape(item.batch)}">${analyticsEscape(item.batch)}</div></td><td>${analyticsNumber(item.leads)}</td><td>${analyticsNumber(item.emails)}</td><td>${analyticsDate(item.last_added, true)}</td><td><span class="pipeline-source-chip">Apollo saved leads</span></td></tr>`).join('') : '<tr><td colspan="5" style="text-align:center;padding:28px;">No batches found for this scope.</td></tr>';
+      setAnalyticsSelectOptions('pipeline-batch-filter', data.batch_options || [], 'Latest batch', data.batch_name || document.getElementById('pipeline-batch-filter')?.value || '');
+      setAnalyticsSelectOptions('pipeline-year-filter', data.year_options || [], 'All years', document.getElementById('pipeline-year-filter')?.value || '');
+    }
+
+    async function loadPipelineAnalytics() {
+      if (!currentSelectedLogin?.email) return;
+      const params = new URLSearchParams();
+      const batchName = document.getElementById('pipeline-batch-filter')?.value || currentSelectedLogin.current_batch;
+      const year = document.getElementById('pipeline-year-filter')?.value;
+      if (batchName) params.set('batch_name', batchName);
+      if (year) params.set('year', year);
+      params.set('_', Date.now());
+      try {
+        const response = await fetch(`/api/v1/login-pipeline-analytics/${encodeURIComponent(currentSelectedLogin.email)}?${params.toString()}`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok || data.status !== 'ok') throw new Error(data.detail || data.message || `Request failed (${response.status})`);
+        renderPipelineAnalytics(data);
+      } catch (error) {
+        // Keep the cockpit useful when an older running backend has not loaded
+        // the new route yet. /api/v1/logins already carries the same login's
+        // aggregate ledger fields, so render that verified snapshot instead of
+        // leaving every card at its initial zero state.
+        const account = allLogins.find(login =>
+          String(login.email || '').toLowerCase() === String(currentSelectedLogin.email || '').toLowerCase()
+        ) || currentSelectedLogin;
+        const snapshot = pipelineSnapshotFromLogin(account);
+        renderPipelineAnalytics(snapshot);
+        const bars = document.getElementById('pipeline-stage-bars');
+        if (bars) {
+          const note = document.createElement('div');
+          note.className = 'pipeline-muted';
+          note.textContent = 'Showing the latest login ledger snapshot; cycle detail will appear after the analytics API is refreshed.';
+          bars.prepend(note);
+        }
+      }
+    }
+
+    async function refreshAnalyticsPage() {
+      const refreshBtn = document.getElementById('analytics-refresh-btn');
+      const originalHtml = refreshBtn?.innerHTML || '';
+      if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.innerHTML = '<span class="fetch-spinner"></span> Refreshing analytics';
+      }
+      try {
+        const refreshed = await loadAllLogins();
+        if (!refreshed) throw new Error('Unable to refresh login telemetry');
+        await Promise.all([loadExtensionAnalytics(), loadPipelineAnalytics()]);
+      } catch (error) {
+        const errorBox = document.getElementById('analytics-error');
+        const errorCopy = document.getElementById('analytics-error-copy');
+        if (errorBox) errorBox.style.display = 'block';
+        if (errorCopy) errorCopy.textContent = error.message || 'Analytics refresh failed';
+      } finally {
+        if (refreshBtn) {
+          refreshBtn.disabled = false;
+          refreshBtn.innerHTML = originalHtml;
+        }
+      }
+    }
+
+    function pipelineSnapshotFromLogin(login) {
+      const extensionSaved = Number(login?.current_extension_leads || 0);
+      const enriched = Number(login?.ledger_enriched || 0);
+      const attempts = Number(login?.ledger_attempts || 0);
+      const crmCreated = Number(login?.fs_created || 0);
+      const crmUpdated = Number(login?.fs_updated || 0);
+      return {
+        status: 'ok',
+        login: login?.email || '',
+        batch_name: login?.current_batch || login?.batches?.[0]?.batch || 'Latest login ledger snapshot',
+        cycle_tag: '',
+        cycle_start: '',
+        cycle_end: '',
+        cycle_options: [],
+        year_options: [],
+        summary: {
+          extension_saved: extensionSaved,
+          people_search: 0,
+          people_search_calls: 0,
+          enriched_email: enriched,
+          without_email: Math.max(0, attempts - enriched),
+          credits_used: Number(login?.ledger_credits || 0),
+          mv_sent: Number(login?.current_mv_entered || 0),
+          mv_good: Number(login?.current_mv_good || 0),
+          mv_bad: Number(login?.current_mv_bad || 0),
+          mv_risky: Number(login?.current_mv_risky || 0),
+          crm_sent: crmCreated + crmUpdated,
+          crm_created: crmCreated,
+          crm_updated: crmUpdated,
+          crm_errors: 0,
+          new_accounts: 0,
+          crm_errors_available: false,
+          crm_breakdown_available: false,
+          new_accounts_available: false,
+          crm_tag_found: false,
+        },
+        batches: Array.isArray(login?.batches) ? login.batches.map(batch => ({
+          batch: batch.batch || batch.name || 'Unnamed',
+          leads: Number(batch.total_leads || batch.leads || batch.count || 0),
+          emails: Number(batch.emails || batch.with_email || 0),
+          last_added: batch.last_added || batch.last_date || '',
+        })) : [],
+      };
+    }
+
+    function resetPipelineFilters(reload = true) {
+      const batch = document.getElementById('pipeline-batch-filter');
+      const year = document.getElementById('pipeline-year-filter');
+      if (batch) batch.value = '';
+      if (year) year.value = '';
+      if (reload) loadPipelineAnalytics();
+    }
+
     function analyticsDate(value, compact = false) {
       if (!value) return '—';
       const parsed = new Date(String(value).replace(' ', 'T'));
@@ -5671,7 +6039,8 @@ def extract_and_verify_lead(domain, first, last):
     function setAnalyticsSelectOptions(id, values, placeholder, selected = '') {
       const select = document.getElementById(id);
       if (!select) return;
-      const unique = [...new Set((values || []).filter(Boolean))];
+      const unique = [...new Set((values || []).filter(Boolean).map(value => String(value)))];
+      selected = selected ? String(selected) : '';
       if (selected && !unique.includes(selected)) unique.unshift(selected);
       select.innerHTML = `<option value="">${analyticsEscape(placeholder)}</option>` + unique.map(value =>
         `<option value="${analyticsEscape(value)}"${value === selected ? ' selected' : ''}>${analyticsEscape(value)}</option>`
@@ -5732,8 +6101,8 @@ def extract_and_verify_lead(domain, first, last):
 
     function renderExtensionAnalytics(data) {
       const summary = data.summary || {};
-      document.getElementById('analytics-account-name').textContent = `${currentSelectedLogin?.name || 'Selected login'} · Extension analytics`;
-      document.getElementById('analytics-account-copy').textContent = `${data.login || currentSelectedLogin?.email || ''} · Search effectiveness and extension decision telemetry`;
+        document.getElementById('analytics-account-name').textContent = `${currentSelectedLogin?.name || 'Selected login'} · Pipeline analytics`;
+        document.getElementById('analytics-account-copy').textContent = `${data.login || currentSelectedLogin?.email || ''} · Capture, enrichment, verification, and CRM delivery telemetry`;
       const cycleWindow = data.cycle_start && data.cycle_end ? `${analyticsDate(data.cycle_start, true)} → ${analyticsDate(data.cycle_end, true)}` : '';
       document.getElementById('analytics-cycle-label').textContent = cycleWindow ? `${data.cycle_tag || 'Current cycle'} · ${cycleWindow}` : (data.cycle_tag || 'Current cycle');
 
@@ -5809,32 +6178,31 @@ def extract_and_verify_lead(domain, first, last):
         empty.style.display = 'block';
         return;
       }
-      document.getElementById('analytics-account-name').textContent = `${currentSelectedLogin.name || 'Selected login'} · Extension analytics`;
-      document.getElementById('analytics-account-copy').textContent = `${currentSelectedLogin.email} · Search effectiveness and extension decision telemetry`;
+        document.getElementById('analytics-account-name').textContent = `${currentSelectedLogin.name || 'Selected login'} · Pipeline analytics`;
+        document.getElementById('analytics-account-copy').textContent = `${currentSelectedLogin.email} · Capture, enrichment, verification, and CRM delivery telemetry`;
       document.getElementById('analytics-cycle-label').textContent = 'Loading current cycle…';
       const requestId = ++extensionAnalyticsRequest;
       loading.style.display = 'block'; error.style.display = empty.style.display = 'none'; content.style.display = 'none';
-      const refreshBtn = document.getElementById('analytics-refresh-btn');
-      if (refreshBtn) refreshBtn.disabled = true;
       const params = new URLSearchParams();
       const mappings = [['cycle_tag','analytics-cycle-filter'],['batch','analytics-batch-filter'],['search_word','analytics-search-filter'],['search_bar_word','analytics-keyword-filter']];
       mappings.forEach(([key,id]) => { const value=document.getElementById(id)?.value; if(value) params.set(key,value); });
+      params.set('_', Date.now());
       try {
-        const response = await fetch(`/api/v1/extension-analytics/${encodeURIComponent(currentSelectedLogin.email)}?${params.toString()}`);
+        const response = await fetch(`/api/v1/extension-analytics/${encodeURIComponent(currentSelectedLogin.email)}?${params.toString()}`, { cache: 'no-store' });
         const data = await response.json();
         if (!response.ok || data.status !== 'ok') throw new Error(data.detail || data.message || `Request failed (${response.status})`);
         if (requestId !== extensionAnalyticsRequest) return;
         extensionAnalyticsData = data;
         renderExtensionAnalytics(data);
         loading.style.display = 'none';
+        // Keep the pipeline cockpit visible even when this login has no
+        // extension page events in the selected scope.
+        content.style.display = 'flex';
         if (Number(data.summary?.pages || 0) === 0) empty.style.display = 'block';
-        else content.style.display = 'flex';
       } catch (err) {
         if (requestId !== extensionAnalyticsRequest) return;
         loading.style.display = 'none'; error.style.display = 'block';
         document.getElementById('analytics-error-copy').textContent = err.message || 'Unknown error';
-      } finally {
-        if (requestId === extensionAnalyticsRequest && refreshBtn) refreshBtn.disabled = false;
       }
     }
 
@@ -5995,6 +6363,7 @@ def extract_and_verify_lead(domain, first, last):
       const refreshBtn = document.getElementById('btn-refresh-fleet');
       if (refreshBtn && isManual) {
         refreshBtn.style.opacity = '0.6';
+        refreshBtn.disabled = true;
       }
 
       try {
@@ -6002,11 +6371,19 @@ def extract_and_verify_lead(domain, first, last):
           loadAllLogins(),
           loadAllReports(true)
         ]);
+        const activeView = document.querySelector('.view-container.active-view');
+        if (activeView?.id === 'tab-extension-analytics' && currentSelectedLogin?.email) {
+          await Promise.allSettled([
+            loadExtensionAnalytics(),
+            loadPipelineAnalytics()
+          ]);
+        }
       } catch (err) {
         console.warn('[Auto-Refresh] Background refresh notice:', err);
       } finally {
         if (refreshBtn && isManual) {
           refreshBtn.style.opacity = '1';
+          refreshBtn.disabled = false;
         }
       }
 

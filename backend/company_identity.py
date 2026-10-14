@@ -99,8 +99,14 @@ def classify_companies(
     resolver: Callable[[list[str]], dict[str, dict[str, Any]]],
     jev_decider: JevDecider | None = None,
     company_context: dict[str, dict[str, Any]] | None = None,
+    mode: str = "conservative",
 ) -> dict[str, CompanyDecision]:
-    """Classify unique company names without forcing uncertain records into existing/new."""
+    """Classify unique company names with selectable Jev AI review modes:
+       - 'conservative': Review strictly ambiguous candidates (>=90% match threshold).
+       - 'aggressive'  : Review candidates and auto-unlock confirmed distinct new entities (>=80% match, >=85% diff).
+       - 'non_exact'   : Review ALL non-exact entities (>=75% match, >=80% diff).
+    """
+    mode = str(mode or "conservative").strip().lower().replace("-", "_")
     names = list(dict.fromkeys(str(name or "").strip() for name in company_names))
     results: dict[str, CompanyDecision] = {}
     non_empty = [name for name in names if name]
@@ -198,6 +204,13 @@ def classify_companies(
                 source=str(info.get("source") or "insufficient_evidence"),
                 evidence={"reason": "No exact company match or verified domain"},
             )
+            if mode == "non_exact":
+                # In non-exact mode, submit all unresolved entities to Jev for verification
+                ambiguous_cases.append({
+                    "company_name": name,
+                    "context": (company_context or {}).get(name, {}),
+                    "candidates": [],
+                })
 
     if jev_decider and ambiguous_cases:
         try:
@@ -213,7 +226,19 @@ def classify_companies(
             confidence = float(answer.get("confidence") or 0.0)
             probability = float(answer.get("probability") or confidence)
             decision_confidence = min(confidence, probability)
-            if choice.startswith("candidate_") and decision_confidence >= 0.90:
+
+            # Determine match and distinct entity thresholds based on selected mode
+            if mode == "conservative":
+                match_threshold = 0.90
+                diff_threshold = 1.01  # Conservative never auto-unlocks purely on "different_company"
+            elif mode == "aggressive":
+                match_threshold = 0.80
+                diff_threshold = 0.85  # Aggressive unlocks distinct entities with >=85% confidence
+            else:  # non_exact
+                match_threshold = 0.75
+                diff_threshold = 0.80  # Non-exact unlocks distinct entities with >=80% confidence
+
+            if choice.startswith("candidate_") and decision_confidence >= match_threshold:
                 try:
                     selected = case["candidates"][int(choice.split("_", 1)[1])]
                 except (ValueError, IndexError):
@@ -227,12 +252,27 @@ def classify_companies(
                     canonical_domain=clean_domain(selected.get("domain") or ""),
                     source="jev_candidate",
                     candidates=case["candidates"],
-                    evidence={"jev_choice": choice},
+                    evidence={"jev_choice": choice, "jev_mode": mode},
+                )
+            elif (choice in ("different_company", "is_independent_company")) and decision_confidence >= diff_threshold:
+                ctx = case.get("context") or {}
+                canonical_domain = clean_domain(ctx.get("company_domain") or ctx.get("domain") or "")
+                results[name] = CompanyDecision(
+                    name,
+                    conservative_company_key(name),
+                    NEW_CONFIRMED,
+                    decision_confidence,
+                    canonical_name=name,
+                    canonical_domain=canonical_domain,
+                    source="jev_different_company",
+                    candidates=case.get("candidates", []),
+                    evidence={"jev_choice": choice, "jev_mode": mode},
                 )
             else:
                 results[name].evidence["jev_choice"] = choice
                 results[name].evidence["jev_confidence"] = confidence
                 results[name].evidence["jev_probability"] = probability
+                results[name].evidence["jev_mode"] = mode
 
     return results
 
@@ -312,6 +352,20 @@ class MySQLCompanyRepository:
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     INDEX idx_company_decision_batch (batch),
                     INDEX idx_company_decision_name (normalized_input)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS jev_decision_cache (
+                    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    company_name VARCHAR(255) NOT NULL,
+                    normalized_name VARCHAR(255) NOT NULL,
+                    choice VARCHAR(64) NOT NULL,
+                    confidence DECIMAL(5,4) NOT NULL DEFAULT 0,
+                    probability DECIMAL(5,4) NOT NULL DEFAULT 0,
+                    jev_mode VARCHAR(32) NOT NULL DEFAULT 'conservative',
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_jev_cache_name_mode (normalized_name, jev_mode)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
             cur.execute("""
@@ -604,40 +658,167 @@ class MySQLCompanyRepository:
 
 
 class TypeSafeJevCompanyDecider:
-    """One constrained System One request for a batch of ambiguous company candidates."""
+    """Constrained System One requests with persistent MySQL/memory caching & rich context enrichment."""
 
-    def __init__(self, api_key: str, timeout: float = 30.0, max_cases: int = 250) -> None:
+    _memory_cache: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float = 30.0,
+        max_cases: int = 250,
+        connection: Any = None,
+        mode: str = "conservative",
+    ) -> None:
         self.api_key = str(api_key or "").strip()
         if not self.api_key:
             raise ValueError("TYPESAFE_API_KEY is required when Jev review is enabled")
         self.timeout = timeout
         self.max_cases = max_cases
         self.used_cases = 0
+        self.connection = connection
+        self.mode = str(mode or "conservative").strip().lower().replace("-", "_")
+
+    def _fetch_from_cache(self, cases: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+        cached: dict[str, dict[str, Any]] = {}
+        missing: list[dict[str, Any]] = []
+
+        # 1. Check in-memory session cache first
+        for case in cases:
+            name = case["company_name"]
+            key = conservative_company_key(name)
+            if (key, self.mode) in self._memory_cache:
+                cached[name] = self._memory_cache[(key, self.mode)]
+            else:
+                missing.append(case)
+
+        if not missing or not self.connection:
+            return cached, missing
+
+        # 2. Check persistent MySQL jev_decision_cache
+        try:
+            name_map = {conservative_company_key(c["company_name"]): c["company_name"] for c in missing}
+            keys = list(name_map.keys())
+            if keys:
+                placeholders = ",".join(["%s"] * len(keys))
+                with self.connection.cursor() as cur:
+                    cur.execute(
+                        f"SELECT normalized_name, choice, confidence, probability "
+                        f"FROM jev_decision_cache "
+                        f"WHERE normalized_name IN ({placeholders}) AND jev_mode = %s",
+                        tuple(keys) + (self.mode,),
+                    )
+                    for norm_name, choice, conf, prob in cur.fetchall():
+                        orig_name = name_map.get(norm_name)
+                        if orig_name:
+                            ans = {
+                                "choice": str(choice),
+                                "confidence": float(conf or 0.0),
+                                "probability": float(prob or conf or 0.0),
+                                "cached": True,
+                            }
+                            cached[orig_name] = ans
+                            self._memory_cache[(norm_name, self.mode)] = ans
+        except Exception:
+            pass
+
+        uncached = [c for c in missing if c["company_name"] not in cached]
+        return cached, uncached
+
+    def _save_to_cache(self, cases: list[dict[str, Any]], results: dict[str, dict[str, Any]]) -> None:
+        db_rows = []
+        for case in cases:
+            name = case["company_name"]
+            ans = results.get(name)
+            if not ans:
+                continue
+            norm_name = conservative_company_key(name)
+            self._memory_cache[(norm_name, self.mode)] = ans
+            db_rows.append((
+                name,
+                norm_name,
+                ans.get("choice", "insufficient_evidence"),
+                float(ans.get("confidence", 0.0)),
+                float(ans.get("probability", 0.0)),
+                self.mode,
+            ))
+
+        if db_rows and self.connection:
+            try:
+                with self.connection.cursor() as cur:
+                    cur.executemany("""
+                        INSERT INTO jev_decision_cache
+                            (company_name, normalized_name, choice, confidence, probability, jev_mode)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            choice = VALUES(choice),
+                            confidence = VALUES(confidence),
+                            probability = VALUES(probability),
+                            updated_at = CURRENT_TIMESTAMP
+                    """, db_rows)
+                self.connection.commit()
+            except Exception:
+                pass
 
     def decide(self, cases: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         import requests
 
+        # Check local cache first
+        cached_results, uncached_cases = self._fetch_from_cache(cases)
+        if not uncached_cases:
+            return cached_results
+
         remaining = max(0, self.max_cases - self.used_cases)
-        selected = cases[:remaining]
+        selected = uncached_cases[:remaining]
         if not selected:
-            return {}
+            return cached_results
+
         state = {"ambiguous_companies": selected, "rule": "Use only supplied candidates and evidence."}
         questions: dict[str, dict[str, Any]] = {}
         for index, case in enumerate(selected):
-            criteria = {
-                f"candidate_{candidate_index}": candidate
-                for candidate_index, candidate in enumerate(case["candidates"])
-            }
-            criteria["different_company"] = "The incoming company is distinct from every candidate."
-            criteria["insufficient_evidence"] = "The evidence is insufficient for a safe decision."
+            candidates = case.get("candidates") or []
+            context = case.get("context") or {}
+
+            # Construct rich context snippet (Location, Industry, Domain, Headcount)
+            ctx_items = []
+            if context.get("location"):
+                ctx_items.append(f"Location: {context['location']}")
+            if context.get("industry"):
+                ctx_items.append(f"Industry: {context['industry']}")
+            if context.get("company_domain"):
+                ctx_items.append(f"Domain: {context['company_domain']}")
+            if context.get("num_employees"):
+                ctx_items.append(f"Headcount: {context['num_employees']}")
+            ctx_str = f" [Context: {'; '.join(ctx_items)}]" if ctx_items else ""
+
+            if candidates:
+                criteria = {
+                    f"candidate_{candidate_index}": (
+                        f"{c.get('canonical_name') or c.get('name')}"
+                        + (f" [domain: {c.get('domain')}]" if c.get('domain') else "")
+                        + (f" [location: {c.get('location')}]" if c.get('location') else "")
+                    )
+                    for candidate_index, c in enumerate(candidates)
+                }
+                criteria["different_company"] = "The incoming company is distinct from every candidate."
+                criteria["insufficient_evidence"] = "The evidence is insufficient for a safe decision."
+                question_text = f"Which candidate is the same operating company as '{case['company_name']}'{ctx_str}?"
+            else:
+                criteria = {
+                    "is_independent_company": "The incoming entity is a distinct operating business (not in CRM).",
+                    "insufficient_evidence": "The evidence is insufficient to verify this company.",
+                }
+                question_text = f"Is '{case['company_name']}'{ctx_str} a distinct operating business?"
+
             questions[f"company_{index}"] = {
                 "type": "choice",
                 "instructions": {
                     "company_name": case["company_name"],
-                    "question": "Which candidate is the same legal/operating company?",
+                    "question": question_text,
                 },
                 "criteria": criteria,
             }
+
         response = requests.post(
             "https://api.typesafe.ai/v1/systemone",
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
@@ -649,13 +830,19 @@ class TypeSafeJevCompanyDecider:
         payload = response.json()
         answers = payload.get("answers") or {}
         self.used_cases += len(selected)
-        result: dict[str, dict[str, Any]] = {}
+
+        newly_decided: dict[str, dict[str, Any]] = {}
         for index, case in enumerate(selected):
             answer = answers.get(f"company_{index}") or {}
             choice = str(answer.get("choice") or "insufficient_evidence")
-            result[case["company_name"]] = {
+            newly_decided[case["company_name"]] = {
                 "choice": choice,
                 "confidence": float(answer.get("confidence") or 0.0),
                 "probability": float((answer.get("probabilities") or {}).get(choice, 0.0)),
             }
-        return result
+
+        # Save new verdicts to cache
+        self._save_to_cache(selected, newly_decided)
+
+        # Merge with cached results
+        return {**cached_results, **newly_decided}

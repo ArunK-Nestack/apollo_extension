@@ -34,8 +34,7 @@ from dotenv import load_dotenv
 
 from scripts.apollo_search_direct import (
     fetch_live_apollo_searches,
-    load_account_creator_searches,
-    load_all_creator_searches,
+    load_login_search_catalog,
     save_account_creator_search,
     probe_searches_volume,
     parse_apollo_url,
@@ -606,16 +605,10 @@ def run_apollo_search_optimizer():
         print(f"[Notice] Could not fetch live saved searches from Apollo: {ex}")
 
     def reload_catalog():
-        acc_searches = load_account_creator_searches(account_email)
-        all_searches = load_all_creator_searches()
-        other_searches = [
-            s for s in all_searches 
-            if s.get("source_account", "").lower() != account_email.lower()
-        ]
-        combined = list(acc_searches) + list(other_searches)
-        return acc_searches, all_searches, other_searches, combined
+        acc_searches = load_login_search_catalog(account_email)
+        return acc_searches, list(acc_searches)
 
-    account_searches, all_searches, other_searches, selectable_searches = reload_catalog()
+    account_searches, selectable_searches = reload_catalog()
 
     # Probe lead volume for active account searches
     print(f">> Probing data volume for {account_email} searches (0 credits)...")
@@ -632,17 +625,6 @@ def run_apollo_search_optimizer():
                 print(f"  [{idx:>2}] ★ [This Account] {cs['name']}{live_badge}{count_str}")
         else:
             print("  (No creator searches registered specifically for this login)")
-
-        if other_searches:
-            start_offset = len(account_searches) + 1
-            print(f"\nRegistered Searches Available Across Other Logins (Optional):")
-            for offset, cs in enumerate(other_searches):
-                idx = start_offset + offset
-                count_val = cs.get("count")
-                count_str = f" ({count_val:,d} leads)" if count_val is not None else ""
-                acc_tag = cs.get("source_account", "Other Account")
-                live_badge = " [Live]" if cs.get("is_live") else ""
-                print(f"  [{idx:>2}] [{acc_tag}] {cs['name']}{live_badge}{count_str}")
 
         total_catalog = len(selectable_searches)
         print("\nOptions:")
@@ -669,7 +651,7 @@ def run_apollo_search_optimizer():
                 for ls in live:
                     save_account_creator_search(account_email, ls["name"], ls["filters"], quiet=True, is_live=True)
                 print(f"[+] Refreshed {len(live)} live searches from Apollo!")
-            account_searches, all_searches, other_searches, selectable_searches = reload_catalog()
+            account_searches, selectable_searches = reload_catalog()
             probe_searches_volume(api_key, account_searches, max_workers=4)
             continue
         elif cmd.lower() == "a":

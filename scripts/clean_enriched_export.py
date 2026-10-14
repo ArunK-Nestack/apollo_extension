@@ -381,8 +381,37 @@ def resolve_canonical_account(login_id: str, account_name: str = "", batch: str 
     return (clean_login or "Unknown", clean_name or clean_login or "Unknown")
 
 
-def fetch_enriched_logins_summary(conn, table_name: str = "all") -> List[Dict[str, Any]]:
-    """Query MySQL database for all logins/accounts that have enriched leads across active/all tables."""
+def _current_cycle_scope_sql() -> Tuple[str, List[str]]:
+    """Build a scope for the configured accounts' current billing-cycle rows."""
+    from scripts.apollo_saved_search_inspector import get_account_cycle_window
+
+    _, accounts = load_canonical_accounts_map()
+    clauses: List[str] = []
+    params: List[str] = []
+    for account in accounts:
+        email = str(account.get("email") or "").strip()
+        if not email:
+            continue
+        try:
+            cycle = get_account_cycle_window(email)[2]
+        except Exception:
+            continue
+        canonical_batch = f"{email}({cycle})"
+        clauses.append(
+            "((LOWER(COALESCE(l.account_used, '')) = LOWER(%s) "
+            "AND LOWER(COALESCE(l.cycle, '')) = LOWER(%s)) "
+            "OR LOWER(COALESCE(l.batch, '')) = LOWER(%s))"
+        )
+        params.extend([email, cycle, canonical_batch])
+    return (" OR ".join(clauses) or "1 = 0"), params
+
+
+def fetch_enriched_logins_summary(
+    conn,
+    table_name: str = "all",
+    current_cycle_only: bool = False,
+) -> List[Dict[str, Any]]:
+    """Query enriched login totals, optionally restricted to the active billing cycle."""
     if table_name == "apollo_saved_leads":
         target_tables = [("apollo_saved_leads", "Apollo")]
     elif table_name == "enrich_saved_leads":
@@ -391,9 +420,11 @@ def fetch_enriched_logins_summary(conn, table_name: str = "all") -> List[Dict[st
         target_tables = [("apollo_saved_leads", "Apollo"), ("enrich_saved_leads", "Enrich.so")]
 
     combined: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    cycle_sql, cycle_params = _current_cycle_scope_sql() if current_cycle_only else ("", [])
     with conn.cursor() as cur:
         for tbl, label in target_tables:
             try:
+                cycle_clause = f" AND ({cycle_sql})" if current_cycle_only else ""
                 cur.execute(f"""
                     SELECT 
                         COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') AS login_id,
@@ -405,8 +436,9 @@ def fetch_enriched_logins_summary(conn, table_name: str = "all") -> List[Dict[st
                     LEFT JOIN batch_enrichment_ledger e 
                       ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
                     WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
+                      {cycle_clause}
                     GROUP BY login_id, account_name;
-                """)
+                """, tuple(cycle_params) if current_cycle_only else ())
                 rows = cur.fetchall()
                 for r in rows:
                     raw_login = str(r[0] or "Unknown")
@@ -447,8 +479,14 @@ def fetch_enriched_logins_summary(conn, table_name: str = "all") -> List[Dict[st
     return logins
 
 
-def fetch_batches_for_login(conn, login_id: str, account_name: str = "", table_name: str = "all") -> List[Dict[str, Any]]:
-    """Fetch all distinct batches belonging to this login with lead & email counts across active/all tables."""
+def fetch_batches_for_login(
+    conn,
+    login_id: str,
+    account_name: str = "",
+    table_name: str = "all",
+    current_cycle_only: bool = False,
+) -> List[Dict[str, Any]]:
+    """Fetch batches for a login, optionally restricted to the active billing cycle."""
     if table_name == "apollo_saved_leads":
         target_tables = [("apollo_saved_leads", "Apollo")]
     elif table_name == "enrich_saved_leads":
@@ -457,10 +495,12 @@ def fetch_batches_for_login(conn, login_id: str, account_name: str = "", table_n
         target_tables = [("apollo_saved_leads", "Apollo"), ("enrich_saved_leads", "Enrich.so")]
 
     batch_rows = []
+    cycle_sql, cycle_params = _current_cycle_scope_sql() if current_cycle_only else ("", [])
     with conn.cursor() as cur:
         for tbl, label in target_tables:
             try:
                 if login_id == "__ALL__":
+                    cycle_clause = f" AND ({cycle_sql})" if current_cycle_only else ""
                     sql = f"""
                         SELECT 
                             l.batch,
@@ -469,10 +509,11 @@ def fetch_batches_for_login(conn, login_id: str, account_name: str = "", table_n
                             MAX(l.created_at) AS last_added
                         FROM `{tbl}` l
                         WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
+                          {cycle_clause}
                         GROUP BY l.batch
                         ORDER BY MAX(l.created_at) DESC;
                     """
-                    cur.execute(sql)
+                    cur.execute(sql, tuple(cycle_params) if current_cycle_only else ())
                 else:
                     if "@" in login_id:
                         match_condition = """
@@ -492,6 +533,7 @@ def fetch_batches_for_login(conn, login_id: str, account_name: str = "", table_n
                         """
                         match_params = (login_id, account_name or login_id, account_name or login_id)
 
+                    cycle_clause = f" AND ({cycle_sql})" if current_cycle_only else ""
                     sql = f"""
                         SELECT 
                             l.batch,
@@ -503,10 +545,11 @@ def fetch_batches_for_login(conn, login_id: str, account_name: str = "", table_n
                           ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci AND e.saved_lead_id = l.id
                         WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
                           AND {match_condition}
+                          {cycle_clause}
                         GROUP BY l.batch
                         ORDER BY MAX(l.created_at) DESC;
                     """
-                    cur.execute(sql, match_params)
+                    cur.execute(sql, tuple(match_params) + tuple(cycle_params) if current_cycle_only else match_params)
 
                 for r in cur.fetchall():
                     batch_rows.append({
@@ -530,6 +573,7 @@ def fetch_enriched_leads_for_login(
     account_name: str = "",
     batch_name: Optional[str] = None,
     table_name: str = "all",
+    current_cycle_only: bool = False,
 ) -> List[Dict[str, Any]]:
     """Fetch all leads associated with the given login/account and optional batch that have verified emails."""
     if table_name == "apollo_saved_leads":
@@ -540,6 +584,7 @@ def fetch_enriched_leads_for_login(
         target_tables = ["apollo_saved_leads", "enrich_saved_leads"]
 
     all_leads = []
+    cycle_sql, cycle_params = _current_cycle_scope_sql() if current_cycle_only else ("", [])
     with conn.cursor() as cur:
         for tbl in target_tables:
             try:
@@ -568,6 +613,10 @@ def fetch_enriched_leads_for_login(
                 if batch_name and batch_name != "__ALL__":
                     query_conditions.append("l.batch = %s")
                     params.append(batch_name)
+
+                if current_cycle_only:
+                    query_conditions.append(f"({cycle_sql})")
+                    params.extend(cycle_params)
 
                 where_clause = " AND ".join(query_conditions)
 

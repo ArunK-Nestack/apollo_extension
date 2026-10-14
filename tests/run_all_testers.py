@@ -302,12 +302,12 @@ def run_tester_3():
     # 3.3 Company Lead Cap (MAX_CONTACTS_PER_COMPANY=1)
     # When multiple qualified decision makers exist at the same new company
     cap_contacts = [
-        api.ApolloContact(key=f"cap_1_{uid}", name="Sarah CEO", job_title="CEO", company=f"SingleCapCo_{uid}", company_domain=f"singlecap-{uid}.io"),
-        api.ApolloContact(key=f"cap_2_{uid}", name="David VP", job_title="VP Sales", company=f"SingleCapCo_{uid}", company_domain=f"singlecap-{uid}.io"),
-        api.ApolloContact(key=f"cap_3_{uid}", name="Jessica Director", job_title="Director of Operations", company=f"SingleCapCo_{uid}", company_domain=f"singlecap-{uid}.io"),
+        api.ApolloContact(key=f"cap_1_{uid}", name=f"Sarah CEO {uid}", job_title="CEO", company=f"ZzzCapCo_{uid}", company_domain=f"zzzqxycap{uid}.io"),
+        api.ApolloContact(key=f"cap_2_{uid}", name=f"David VP {uid}", job_title="VP Sales", company=f"ZzzCapCo_{uid}", company_domain=f"zzzqxycap{uid}.io"),
+        api.ApolloContact(key=f"cap_3_{uid}", name=f"Jessica Director {uid}", job_title="Director of Operations", company=f"ZzzCapCo_{uid}", company_domain=f"zzzqxycap{uid}.io"),
     ]
     t0 = time.perf_counter()
-    res_cap = api.match_apollo(api.ApolloMatchRequest(contacts=cap_contacts, batch=f"cap_test_{uid}"))
+    res_cap = api.match_apollo(api.ApolloMatchRequest(contacts=cap_contacts, batch=f"cap_test_{uid}", max_contacts_per_company=1))
     duration = (time.perf_counter() - t0) * 1000
 
     required_in_company = sum(1 for c in cap_contacts if res_cap["results"][c.key].get("required"))

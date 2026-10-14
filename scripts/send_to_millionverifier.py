@@ -79,7 +79,11 @@ def preserve_batch_filename(name: str) -> str:
     return sanitized or "batch"
 
 
-def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
+def send_to_millionverifier_action(
+    conn,
+    table_name: str = "all",
+    include_all_cycles: bool = False,
+) -> None:
     """
     Interactive CLI action:
     Select enriched leads by login/batch, run 14-step cleaning & CRM guardrails,
@@ -93,10 +97,19 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
     print("=" * 95)
 
     # 1. Discover and select enriched login
-    logins = fetch_enriched_logins_summary(conn, table_name=table_name)
+    current_cycle_only = not include_all_cycles
+    logins = fetch_enriched_logins_summary(
+        conn,
+        table_name=table_name,
+        current_cycle_only=current_cycle_only,
+    )
     if not logins and table_name != "all":
         print(f"\n[NOTICE] No enriched leads found in `{table_name}`. Checking all tables...")
-        logins = fetch_enriched_logins_summary(conn, table_name="all")
+        logins = fetch_enriched_logins_summary(
+            conn,
+            table_name="all",
+            current_cycle_only=current_cycle_only,
+        )
         table_name = "all"
 
     if not logins:
@@ -109,6 +122,8 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
 
     print(f"\n{'#':<4} | {'Enriched Login / Account':<35} | {'Enriched Leads':<15} | {'Verified Emails':<16} | {'Batches'}")
     print("-" * 95)
+    if current_cycle_only:
+        print("  Scope: active billing-cycle accounts and batches only (use --all-cycles for historical data)")
     for idx, L in enumerate(logins, 1):
         display_label = f"{L['login_id']} ({L['account_name']})" if L['login_id'] != L['account_name'] else L['login_id']
         batches_preview = L['batches'] if len(L['batches']) <= 32 else L['batches'][:29] + "..."
@@ -134,7 +149,13 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
     print(f"\n✓ Selected Login: '{label}'")
 
     # 2. Discover and select batch
-    batches = fetch_batches_for_login(conn, selected_login, selected_acc_name, table_name=table_name)
+    batches = fetch_batches_for_login(
+        conn,
+        selected_login,
+        selected_acc_name,
+        table_name=table_name,
+        current_cycle_only=current_cycle_only,
+    )
     if not batches:
         print(f"[NOTICE] No batches found with enriched leads for login '{label}'.")
         return
@@ -173,7 +194,14 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
     print("  Fetching lead records and firmographic payloads from database...")
 
     t0 = time.perf_counter()
-    lead_dicts = fetch_enriched_leads_for_login(conn, selected_login, selected_acc_name, batch_name=selected_batch, table_name=batch_target_table)
+    lead_dicts = fetch_enriched_leads_for_login(
+        conn,
+        selected_login,
+        selected_acc_name,
+        batch_name=selected_batch,
+        table_name=batch_target_table,
+        current_cycle_only=current_cycle_only,
+    )
     if not lead_dicts:
         print(f"[NOTICE] No leads with emails found for batch '{batch_label}'.")
         return
@@ -644,6 +672,7 @@ def send_to_millionverifier_action(conn, table_name: str = "all") -> None:
 
 def main():
     table_arg = "apollo_saved_leads"
+    include_all_cycles = "--all-cycles" in sys.argv[1:]
     for i, arg in enumerate(sys.argv[1:], 1):
         if arg in ("--table", "-t") and i < len(sys.argv):
             val = sys.argv[i].strip().lower()
@@ -655,7 +684,11 @@ def main():
             table_arg = "enrich_saved_leads"
 
     with get_connection() as conn:
-        send_to_millionverifier_action(conn, table_name=table_arg)
+        send_to_millionverifier_action(
+            conn,
+            table_name=table_arg,
+            include_all_cycles=include_all_cycles,
+        )
 
 
 if __name__ == "__main__":
