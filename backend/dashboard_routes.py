@@ -77,6 +77,12 @@ def unified_dashboard():
     return HTMLResponse(content=_get_template_html("index.html"))
 
 
+@dashboard_router.get("/cyclepilot", response_class=HTMLResponse)
+def cyclepilot_dashboard():
+    """Operator-controlled search, cleaning, enrichment, and verification agent."""
+    return HTMLResponse(content=_get_template_html("cyclepilot.html"))
+
+
 @dashboard_router.get("/landing", response_class=HTMLResponse)
 @dashboard_router.get("/ai-startup", response_class=HTMLResponse)
 @dashboard_router.get("/ai-startup-kit", response_class=HTMLResponse)
@@ -89,6 +95,72 @@ def ai_startup_landing():
 # =====================================================================
 # 2. REST API: 19 LOGINS DEEP-DIVE TELEMETRY
 # =====================================================================
+
+
+def _cyclepilot_connection():
+    # Imported lazily because backend.api mounts this router after defining its pool.
+    from backend.api import get_connection
+    return get_connection()
+
+
+class CyclePilotRunRequest(BaseModel):
+    login_email: str
+    search_ids: List[str] = Field(min_length=1)
+    credit_reserve: int = Field(default=25, ge=0, le=100000)
+    operator_name: str = Field(default="operator", max_length=255)
+
+
+@dashboard_router.get("/api/v1/cyclepilot/accounts")
+def cyclepilot_accounts():
+    from backend.cyclepilot_agent import public_accounts
+    return {"accounts": public_accounts()}
+
+
+@dashboard_router.get("/api/v1/cyclepilot/searches")
+def cyclepilot_searches(login_email: str):
+    from backend.cyclepilot_agent import load_scoped_searches
+    return {"login_email": login_email, "searches": load_scoped_searches(login_email)}
+
+
+@dashboard_router.get("/api/v1/cyclepilot/runs")
+def cyclepilot_runs(limit: int = 30):
+    from backend.cyclepilot_agent import list_runs
+    with _cyclepilot_connection() as conn:
+        return {"runs": list_runs(conn, limit)}
+
+
+@dashboard_router.get("/api/v1/cyclepilot/runs/{run_id}")
+def cyclepilot_run(run_id: str):
+    from backend.cyclepilot_agent import get_run
+    with _cyclepilot_connection() as conn:
+        run = get_run(conn, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="CyclePilot run not found")
+    return run
+
+
+@dashboard_router.post("/api/v1/cyclepilot/runs", status_code=201)
+def create_cyclepilot_run(req: CyclePilotRunRequest):
+    from backend.cyclepilot_agent import create_run
+    try:
+        with _cyclepilot_connection() as conn:
+            return create_run(conn, req.login_email, req.search_ids, req.credit_reserve, req.operator_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@dashboard_router.post("/api/v1/cyclepilot/runs/{run_id}/prepare", status_code=202)
+def prepare_cyclepilot_run(run_id: str):
+    from backend.cyclepilot_agent import get_run, start_preparation
+    with _cyclepilot_connection() as conn:
+        run = get_run(conn, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="CyclePilot run not found")
+    if run["status"] not in {"planned", "failed"}:
+        raise HTTPException(status_code=409, detail=f"Run cannot be prepared from status {run['status']}")
+    if not start_preparation(run_id, _cyclepilot_connection):
+        raise HTTPException(status_code=409, detail="Preparation is already running")
+    return {"status": "accepted", "run_id": run_id}
 
 def resolve_account_by_login_or_badge(login_str: str = "", account_str: str = "", batch_str: str = "", accs: list = None) -> Optional[dict]:
     if not accs:

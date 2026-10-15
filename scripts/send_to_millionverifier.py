@@ -123,7 +123,7 @@ def send_to_millionverifier_action(
     print(f"\n{'#':<4} | {'Enriched Login / Account':<35} | {'Enriched Leads':<15} | {'Verified Emails':<16} | {'Batches'}")
     print("-" * 95)
     if current_cycle_only:
-        print("  Scope: active billing-cycle accounts and batches only (use --all-cycles for historical data)")
+        print("  Scope: account cycles ending this month only (use --all-cycles for historical data)")
     for idx, L in enumerate(logins, 1):
         display_label = f"{L['login_id']} ({L['account_name']})" if L['login_id'] != L['account_name'] else L['login_id']
         batches_preview = L['batches'] if len(L['batches']) <= 32 else L['batches'][:29] + "..."

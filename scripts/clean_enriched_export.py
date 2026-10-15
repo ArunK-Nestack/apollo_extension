@@ -22,7 +22,7 @@ import re
 import csv
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Tuple, Optional
 
 import pandas as pd
@@ -381,29 +381,24 @@ def resolve_canonical_account(login_id: str, account_name: str = "", batch: str 
     return (clean_login or "Unknown", clean_name or clean_login or "Unknown")
 
 
-def _current_cycle_scope_sql() -> Tuple[str, List[str]]:
-    """Build a scope for the configured accounts' current billing-cycle rows."""
-    from scripts.apollo_saved_search_inspector import get_account_cycle_window
+def _current_cycle_scope_sql(
+    target_date: Optional[datetime] = None,
+) -> Tuple[str, List[str]]:
+    """Match enriched rows whose stored cycle or batch name ends this IST month."""
+    now = target_date or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
 
-    _, accounts = load_canonical_accounts_map()
-    clauses: List[str] = []
-    params: List[str] = []
-    for account in accounts:
-        email = str(account.get("email") or "").strip()
-        if not email:
-            continue
-        try:
-            cycle = get_account_cycle_window(email)[2]
-        except Exception:
-            continue
-        canonical_batch = f"{email}({cycle})"
-        clauses.append(
-            "((LOWER(COALESCE(l.account_used, '')) = LOWER(%s) "
-            "AND LOWER(COALESCE(l.cycle, '')) = LOWER(%s)) "
-            "OR LOWER(COALESCE(l.batch, '')) = LOWER(%s))"
-        )
-        params.extend([email, cycle, canonical_batch])
-    return (" OR ".join(clauses) or "1 = 0"), params
+    ist = timezone(timedelta(hours=5, minutes=30))
+    month_token = now.astimezone(ist).strftime("%b").lower()
+    pattern = rf"-[[:space:]]*{month_token}[[:space:]]+[0-9]{{1,2}}"
+    return (
+        "(LOWER(COALESCE(l.cycle, '')) REGEXP %s "
+        "OR LOWER(COALESCE(l.batch, '')) REGEXP %s)",
+        [pattern, pattern],
+    )
 
 
 def fetch_enriched_logins_summary(
@@ -411,7 +406,7 @@ def fetch_enriched_logins_summary(
     table_name: str = "all",
     current_cycle_only: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Query enriched login totals, optionally restricted to the active billing cycle."""
+    """Query enriched login totals, optionally restricted to cycles ending this month."""
     if table_name == "apollo_saved_leads":
         target_tables = [("apollo_saved_leads", "Apollo")]
     elif table_name == "enrich_saved_leads":

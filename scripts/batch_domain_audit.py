@@ -428,6 +428,7 @@ def audit_batch(
     run_guardrails: bool = True,
     table_name: str = "apollo_saved_leads",
     ignore_enriched: bool = True,
+    max_leads_per_domain: int = 1,
 ) -> dict[str, Any]:
     target_table = "enrich_saved_leads" if table_name == "enrich_saved_leads" else "apollo_saved_leads"
     leads = fetch_batch_leads(conn, batch_name, table_name=target_table, ignore_enriched=ignore_enriched)
@@ -457,8 +458,10 @@ def audit_batch(
         return analysis
 
     if run_guardrails:
-        print(f"  Checking 4-layer CRM guardrails on {len(leads):,d} unenriched leads against CRM, Apollo & Enrich tables...", flush=True)
-        eligible, metrics = apply_4_layer_guardrails(leads, batch_name, conn, verbose=False, table_name=target_table)
+        print(f"  Checking 4-layer CRM guardrails on {len(leads):,d} unenriched leads against CRM, Apollo & Enrich tables (Cap: {max_leads_per_domain} / domain)...", flush=True)
+        eligible, metrics = apply_4_layer_guardrails(
+            leads, batch_name, conn, verbose=False, table_name=target_table, max_leads_per_domain=max_leads_per_domain
+        )
         analysis["guardrail_metrics"] = metrics
         analysis["guardrail_eligible"] = len(eligible)
         analysis["safe_enrich_count"] = int(metrics.get("final_verified", len(eligible)))

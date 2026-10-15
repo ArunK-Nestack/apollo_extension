@@ -1,6 +1,6 @@
 """
-Unit & Integration Tests for Dynamic Company Capacity (1-10) and Seniority Selection
-=====================================================================================
+Unit & Integration Tests for Dynamic Company Capacity and Seniority Selection
+=============================================================================
 Tests:
 1. get_canonical_title_key normalization & deduplication
 2. get_seniority_score ranking
@@ -81,6 +81,46 @@ class TestDynamicCompanyCapMatchApollo(unittest.TestCase):
         # Reset batch cache
         with api._batch_seen_companies_lock:
             api._batch_seen_companies.clear()
+
+    @patch("api.get_connection")
+    @patch("api.get_target_table_schema")
+    @patch("api.resolve_company_domains")
+    @patch("api.check_person_and_domains_in_crm_batch")
+    @patch("api.lookup_job_titles_batch")
+    @patch("api.fetch_existing_company_contacts_batch")
+    def test_arbitrary_company_cap_above_ten_is_not_clamped(
+        self, mock_fetch_db, mock_lookup_titles, mock_check_crm, mock_resolve_domains, mock_schema, mock_conn
+    ):
+        mock_conn.return_value.__enter__.return_value = MagicMock()
+        contacts = [
+            api.ApolloContact(
+                key=f"c{i}", name=f"Person {i}", job_title=f"Specialist {i}",
+                company="Acme Corp", company_domain="acme.com"
+            )
+            for i in range(1, 13)
+        ]
+        mock_resolve_domains.return_value = (
+            {contact.key: "acme.com" for contact in contacts},
+            {contact.key: "https://acme.com" for contact in contacts},
+        )
+        mock_check_crm.return_value = {}
+        mock_fetch_db.return_value = {}
+        mock_lookup_titles.return_value = {
+            contact.job_title: {
+                "required": True, "status": "qualified", "segment": "Other", "reason": "Allowed"
+            }
+            for contact in contacts
+        }
+
+        res = api.match_apollo(api.ApolloMatchRequest(
+            contacts=contacts,
+            batch="test_cap_12_batch",
+            max_contacts_per_company=12,
+            title_guardrail_enabled=True,
+            indian_name_guardrail_enabled=False,
+        ))
+
+        self.assertEqual(sum(bool(item["required"]) for item in res["results"].values()), 12)
 
     @patch("api.get_connection")
     @patch("api.get_target_table_schema")
@@ -405,6 +445,22 @@ class TestFilterSyncContactsDynamicCap(unittest.TestCase):
         saved_names = {c.name for c in res}
         self.assertEqual(saved_names, {"Alice", "Bob", "Charlie"})
 
+    def test_sync_accepts_arbitrary_cap_above_ten(self):
+        mock_cur = MagicMock()
+        mock_cur.fetchall.return_value = []
+        contacts = [
+            api.SyncSavedLeadItem(
+                apollo_id=f"c{i}", name=f"Person {i}", job_title=f"Specialist {i}",
+                company="Acme Corp", company_domain="acme.com"
+            )
+            for i in range(1, 13)
+        ]
+
+        res = api._filter_sync_contacts_dynamic_cap(
+            contacts, "test_batch", mock_cur, max_contacts_per_company=12
+        )
+
+        self.assertEqual(len(res), 12)
     def test_sync_rejects_duplicate_canonical_title(self):
         mock_cur = MagicMock()
         mock_cur.fetchall.return_value = []
@@ -486,6 +542,20 @@ class TestFilterSyncContactsDynamicCap(unittest.TestCase):
         res = api._filter_sync_contacts_one_per_domain(contacts, "test_batch", mock_cur)
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0].name, "Alice")
+
+
+class TestCompanyCapConfiguration(unittest.TestCase):
+    def test_set_company_cap_accepts_any_positive_integer(self):
+        original = os.environ.get("MAX_CONTACTS_PER_COMPANY")
+        try:
+            result = api.set_company_cap(27)
+            self.assertEqual(result["max_contacts_per_company"], 27)
+            self.assertEqual(api.get_company_cap()["max_contacts_per_company"], 27)
+        finally:
+            if original is None:
+                os.environ.pop("MAX_CONTACTS_PER_COMPANY", None)
+            else:
+                os.environ["MAX_CONTACTS_PER_COMPANY"] = original
 
 
 if __name__ == "__main__":

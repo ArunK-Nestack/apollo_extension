@@ -1128,11 +1128,26 @@ def _try_domain_layers(
     norm_c_name: str,
     matched_records: dict,
     matched_domains: set,
+    matched_apollo_ids: set[str] | None = None,
+    matched_titles: dict[str, set[str]] | None = None,
+    title_aware_exact_domain: bool = False,
     connection=None,
     domain_source: str = "",
 ) -> dict | None:
     """Run L1-L4 for one candidate domain. Returns result dict or None."""
     source_suffix = f" [{domain_source}]" if domain_source else ""
+
+    apollo_id = str(getattr(contact, "apollo_id", "") or "").strip()
+    if apollo_id and apollo_id in (matched_apollo_ids or set()):
+        return {
+            "exists": True, "required": False, "ignored": True,
+            "guardrail_status": "apollo_id_already_enriched",
+            "guardrail_reason": (
+                f"[L1] Apollo person ID '{apollo_id}' was already enriched in an earlier run."
+            ),
+            "matched_domain": prim_d, "matched_db_domain": "",
+            "domain_source": domain_source,
+        }
 
     if (norm_c_name, prim_d) in matched_records:
         matched_crm_name = matched_records[(norm_c_name, prim_d)]
@@ -1148,15 +1163,30 @@ def _try_domain_layers(
         }
 
     if prim_d in matched_domains:
-        return {
-            "exists": True, "required": False, "ignored": True,
-            "guardrail_status": "domain_already_in_db",
-            "guardrail_reason": (
-                f"[L1] Company domain '{prim_d}' already exists in CRM database.{source_suffix}"
-            ),
-            "matched_domain": prim_d, "matched_db_domain": prim_d,
-            "domain_source": domain_source,
-        }
+        if title_aware_exact_domain:
+            incoming_title = get_canonical_title_key(getattr(contact, "job_title", "") or "")
+            existing_titles = (matched_titles or {}).get(prim_d, set())
+            if incoming_title and incoming_title in existing_titles:
+                return {
+                    "exists": True, "required": False, "ignored": True,
+                    "guardrail_status": "duplicate_title_for_company",
+                    "guardrail_reason": (
+                        f"[L1] Company domain '{prim_d}' already has the job title "
+                        f"'{contact.job_title}' in CRM or a previous batch.{source_suffix}"
+                    ),
+                    "matched_domain": prim_d, "matched_db_domain": prim_d,
+                    "domain_source": domain_source,
+                }
+        else:
+            return {
+                "exists": True, "required": False, "ignored": True,
+                "guardrail_status": "domain_already_in_db",
+                "guardrail_reason": (
+                    f"[L1] Company domain '{prim_d}' already exists in CRM database.{source_suffix}"
+                ),
+                "matched_domain": prim_d, "matched_db_domain": prim_d,
+                "domain_source": domain_source,
+            }
 
     # Candidate permutations are only checked for direct CRM existence (Layer 1)
     if domain_source == "company_candidate":
@@ -1480,10 +1510,20 @@ def check_company_names_in_crm_batch(company_names: list[str], connection=None) 
             return do_query(conn)
 
 
-def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain: dict[str, str], connection=None, active_batch: str | None = None, active_table: str = "apollo_saved_leads") -> dict[str, dict]:
+def check_person_and_domains_in_crm_batch(
+    contacts: list,
+    contact_primary_domain: dict[str, str],
+    connection=None,
+    active_batch: str | None = None,
+    active_table: str = "apollo_saved_leads",
+    title_aware_exact_domain: bool = False,
+) -> dict[str, dict]:
     """
     4-Layer Deduplication Engine:
-      Layer 1 – Exact domain match in emails, saved leads, and successful enrichment ledger rows.
+      Layer 1 – Previously enriched Apollo ID plus exact domain/person/title matches in
+                CRM, saved leads, and successful enrichment ledger rows.
+                When title_aware_exact_domain=True, an existing domain blocks only an exact
+                person or canonical job-title match; novel titles continue through Layers 2-4.
       Layer 2 – Person-name anchor: looks up full_name in DB and computes LCS ratio
                 between the DB email domain and the Apollo-displayed domain.
       Layer 3 – Database-driven prefix trie: checks if the incoming domain slug is
@@ -1496,6 +1536,12 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
 
     contact_candidates: dict[str, list[tuple[str, str]]] = {}
     candidate_domains_set: set[str] = set()
+    incoming_apollo_ids = {
+        str(getattr(c, "apollo_id", "") or "").strip()
+        for c in contacts
+        if str(getattr(c, "apollo_id", "") or "").strip()
+        and not str(getattr(c, "apollo_id", "") or "").startswith("apollo-row-")
+    }
     for c in contacts:
         cands = _domain_lookup_candidates(c)
         comp = getattr(c, "company", None) or getattr(c, "company_name", None) or ""
@@ -1511,7 +1557,7 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
             candidate_domains_set.add(dom)
 
     candidate_domains = list(candidate_domains_set)
-    if not candidate_domains:
+    if not candidate_domains and not incoming_apollo_ids:
         return {}
 
     # Parallel asynchronous DNS MX prefetch (only prefetch authentic domains, never tens of thousands of candidate strings)
@@ -1533,16 +1579,43 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
 
         matched_records = {}  # (norm_name, domain) -> raw_full_name
         matched_domains = set()
+        matched_apollo_ids: set[str] = set()
+        matched_titles: dict[str, set[str]] = {}
+
+        def remember_title(domain: str, title: str) -> None:
+            if not title_aware_exact_domain:
+                return
+            canonical_title = get_canonical_title_key(title or "")
+            if domain and canonical_title:
+                matched_titles.setdefault(domain, set()).add(canonical_title)
 
         try:
             with conn.cursor() as cur:
                 chunk_size = 1000
+                apollo_ids_list = list(incoming_apollo_ids)
+                for i in range(0, len(apollo_ids_list), chunk_size):
+                    id_chunk = apollo_ids_list[i:i + chunk_size]
+                    id_placeholders = ",".join(["%s"] * len(id_chunk))
+                    try:
+                        cur.execute(
+                            f"SELECT DISTINCT `apollo_id` FROM `batch_enrichment_ledger` "
+                            f"WHERE `apollo_id` IN ({id_placeholders}) "
+                            "AND `outcome` = 'email_found' AND `email` != '';",
+                            tuple(id_chunk),
+                        )
+                        matched_apollo_ids.update(
+                            str(row[0] or "").strip() for row in cur.fetchall() if row[0]
+                        )
+                    except Exception as ex_id:
+                        print(f"[ContactChecker] Notice: Apollo ID ledger lookup error: {ex_id}", flush=True)
+
                 for i in range(0, len(candidate_domains), chunk_size):
                     chunk = candidate_domains[i:i + chunk_size]
                     format_strings = ",".join(["%s"] * len(chunk))
 
                     # Layer 1a: Query CRM emails table by exact domain
-                    query1 = f"SELECT `{domain_col}`, `{name_col}` FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings});"
+                    title_select = ", `job_title`" if title_aware_exact_domain else ""
+                    query1 = f"SELECT `{domain_col}`, `{name_col}`{title_select} FROM `{tbl_name}` WHERE `{domain_col}` IN ({format_strings});"
                     cur.execute(query1, tuple(chunk))
                     rows1 = cur.fetchall()
                     for r in rows1:
@@ -1553,13 +1626,15 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                             matched_domains.add(dom)
                             if norm_nm:
                                 matched_records[(norm_nm, dom)] = raw_nm
+                            if len(r) > 2:
+                                remember_title(dom, str(r[2] or ""))
 
                     # Layer 1b: Query apollo_saved_leads by exact domain (exclude active batch if auditing apollo_saved_leads)
                     if active_batch and active_table == "apollo_saved_leads":
-                        query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) AND `batch` != %s;"
+                        query2 = f"SELECT `company_domain`, `name`{', `job_title`' if title_aware_exact_domain else ''} FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings}) AND `batch` != %s;"
                         params2 = tuple(chunk) + (active_batch,)
                     else:
-                        query2 = f"SELECT `company_domain`, `name` FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings});"
+                        query2 = f"SELECT `company_domain`, `name`{', `job_title`' if title_aware_exact_domain else ''} FROM `apollo_saved_leads` WHERE `company_domain` IN ({format_strings});"
                         params2 = tuple(chunk)
                     try:
                         cur.execute(query2, params2)
@@ -1572,16 +1647,18 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                                 matched_domains.add(dom)
                                 if norm_nm:
                                     matched_records[(norm_nm, dom)] = raw_nm
+                                if len(r) > 2:
+                                    remember_title(dom, str(r[2] or ""))
                     except Exception as ex2:
                         print(f"[ContactChecker] Notice: apollo_saved_leads lookup error: {ex2}", flush=True)
 
                     # Layer 1c: Query enrich_saved_leads by exact domain (exclude active batch if auditing enrich_saved_leads)
                     try:
                         if active_batch and active_table == "enrich_saved_leads":
-                            query3 = f"SELECT `company_domain`, `name` FROM `enrich_saved_leads` WHERE `company_domain` IN ({format_strings}) AND `batch` != %s;"
+                            query3 = f"SELECT `company_domain`, `name`{', `job_title`' if title_aware_exact_domain else ''} FROM `enrich_saved_leads` WHERE `company_domain` IN ({format_strings}) AND `batch` != %s;"
                             params3 = tuple(chunk) + (active_batch,)
                         else:
-                            query3 = f"SELECT `company_domain`, `name` FROM `enrich_saved_leads` WHERE `company_domain` IN ({format_strings});"
+                            query3 = f"SELECT `company_domain`, `name`{', `job_title`' if title_aware_exact_domain else ''} FROM `enrich_saved_leads` WHERE `company_domain` IN ({format_strings});"
                             params3 = tuple(chunk)
                         cur.execute(query3, params3)
                         rows3 = cur.fetchall()
@@ -1593,6 +1670,8 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                                 matched_domains.add(dom)
                                 if norm_nm:
                                     matched_records[(norm_nm, dom)] = raw_nm
+                                if len(r) > 2:
+                                    remember_title(dom, str(r[2] or ""))
                     except Exception as ex3:
                         pass
 
@@ -1612,16 +1691,44 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
                     except Exception as ex4:
                         print(f"[ContactChecker] Notice: enrichment ledger lookup error: {ex4}", flush=True)
 
+                    # Recover titles for successful attempts in the active batch only. The
+                    # active saved-lead table itself is excluded above so candidates are not
+                    # compared against their own unattempted rows.
+                    if title_aware_exact_domain and active_batch:
+                        try:
+                            ledger_source = (
+                                "enrich_saved_leads"
+                                if active_table == "enrich_saved_leads"
+                                else "apollo_saved_leads"
+                            )
+                            cur.execute(
+                                f"SELECT DISTINCT e.`company_domain`, l.`job_title` "
+                                f"FROM `batch_enrichment_ledger` e "
+                                f"JOIN `{ledger_source}` l ON l.`id` = e.`saved_lead_id` "
+                                f"AND l.`batch` = e.`batch` "
+                                f"WHERE e.`company_domain` IN ({format_strings}) "
+                                "AND e.`batch` = %s AND e.`outcome` = 'email_found' "
+                                "AND e.`email` != '';",
+                                tuple(chunk) + (active_batch,),
+                            )
+                            for raw_dom, raw_title in cur.fetchall():
+                                remember_title(
+                                    str(raw_dom or "").strip().lower(),
+                                    str(raw_title or ""),
+                                )
+                        except Exception as ex5:
+                            print(f"[ContactChecker] Notice: active ledger title lookup error: {ex5}", flush=True)
+
         except Exception as e:
             print(f"[ContactChecker] Notice: CRM lookup error: {e}", flush=True)
 
-        return matched_records, matched_domains
+        return matched_records, matched_domains, matched_apollo_ids, matched_titles
 
     if connection:
-        matched_records, matched_domains = do_query(connection)
+        matched_records, matched_domains, matched_apollo_ids, matched_titles = do_query(connection)
     else:
         with get_connection() as conn:
-            matched_records, matched_domains = do_query(conn)
+            matched_records, matched_domains, matched_apollo_ids, matched_titles = do_query(conn)
 
     # ----------------------------------------------------------
     # LAYER 2 PREP: Fetch DB domains for each contact's full name
@@ -1633,8 +1740,16 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
         if not c.name or not cands:
             continue
         norm_nm = normalize_text(c.name)
+        incoming_title = get_canonical_title_key(getattr(c, "job_title", "") or "")
         any_l1_hit = any(
-            (norm_nm, dom) in matched_records or dom in matched_domains
+            (norm_nm, dom) in matched_records
+            or (
+                dom in matched_domains
+                and (
+                    not title_aware_exact_domain
+                    or (incoming_title and incoming_title in matched_titles.get(dom, set()))
+                )
+            )
             for _, dom in cands
         )
         if not any_l1_hit:
@@ -1738,9 +1853,13 @@ def check_person_and_domains_in_crm_batch(contacts: list, contact_primary_domain
     results = {}
     for c in contacts:
         norm_c_name = normalize_text(c.name)
-        for source, prim_d in contact_candidates.get(c.key, []):
+        candidates = contact_candidates.get(c.key, []) or [("", "")]
+        for source, prim_d in candidates:
             hit = _try_domain_layers(
                 c, prim_d, norm_c_name, matched_records, matched_domains,
+                matched_apollo_ids=matched_apollo_ids,
+                matched_titles=matched_titles,
+                title_aware_exact_domain=title_aware_exact_domain,
                 connection=connection, domain_source=source,
             )
             if hit:
@@ -3039,7 +3158,7 @@ def health_check():
 
 @app.post("/set-company-cap")
 def set_company_cap(cap: int = 3):
-    os.environ["MAX_CONTACTS_PER_COMPANY"] = str(max(1, min(10, cap)))
+    os.environ["MAX_CONTACTS_PER_COMPANY"] = str(max(1, cap))
     return {"status": "ok", "max_contacts_per_company": int(os.environ["MAX_CONTACTS_PER_COMPANY"])}
 
 
@@ -3782,7 +3901,7 @@ def _filter_sync_contacts_dynamic_cap(
       3. Seniority Outranking: Higher seniority replaces lower seniority if cap is full.
       4. Credit Lock Protection: Leads with spent credits or revealed emails in DB cannot be evicted.
     """
-    cap = max(1, min(10, int(max_contacts_per_company or 3)))
+    cap = max(1, int(max_contacts_per_company or 3))
 
     # 1. Group incoming contacts by company identifier (domain or normalized company name)
     grouped_incoming: dict[str, list[Any]] = {}
@@ -4149,7 +4268,7 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
                     cap_val = int(os.getenv("MAX_CONTACTS_PER_COMPANY", "3"))
                 except Exception:
                     cap_val = 3
-            cap_val = max(1, min(10, int(cap_val)))
+            cap_val = max(1, int(cap_val))
 
             contacts_to_sync = _filter_sync_contacts_dynamic_cap(
                 request.contacts,
@@ -4344,7 +4463,7 @@ def match_apollo(request: ApolloMatchRequest):
             for k in oldest_keys:
                 _batch_seen_companies.pop(k, None)
 
-    max_contacts_per_comp = max(1, min(10, int(request.max_contacts_per_company or os.getenv("MAX_CONTACTS_PER_COMPANY", "3"))))
+    max_contacts_per_comp = max(1, int(request.max_contacts_per_company or os.getenv("MAX_CONTACTS_PER_COMPANY", "3")))
 
     unique_domains_seen = set()
     existing_domain_contacts = 0
@@ -4418,7 +4537,9 @@ def match_apollo(request: ApolloMatchRequest):
 
         for idx, contact in enumerate(contacts, 1):
             hit = crm_matches.get(contact.key)
-            if hit and hit.get("guardrail_status") in ("contact_already_in_db", "person_domain_overlap"):
+            if hit and hit.get("guardrail_status") in (
+                "contact_already_in_db", "person_domain_overlap", "apollo_id_already_enriched"
+            ):
                 existing_domain_contacts += 1
                 existing_count += 1
                 ignored_count += 1
@@ -4480,7 +4601,7 @@ def match_apollo(request: ApolloMatchRequest):
         indian_filter_active = request.indian_name_guardrail_enabled
 
         # --------------------------------------------------------
-        # STEP 4: DECISION LOGIC, DEMOGRAPHIC & COMPANY CAP (1-10)
+        # STEP 4: DECISION LOGIC, DEMOGRAPHIC & COMPANY CAP
         # --------------------------------------------------------
         prefetched_indian_db = {}
         if indian_filter_active and net_new_contacts:
@@ -4618,7 +4739,7 @@ def match_apollo(request: ApolloMatchRequest):
                         }
                         continue
 
-                    # RULE: Company Capacity (1-10) & Seniority Outranking Check
+                    # RULE: Company Capacity & Seniority Outranking Check
                     max_cap = max_contacts_per_comp
                     db_contacts_sorted = sorted(db_contacts, key=lambda c: c.get("score", 0))
                     free_slots = max(0, max_cap - db_count)

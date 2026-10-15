@@ -495,6 +495,7 @@ def run_interactive_enricher():
     parser.add_argument("--action", choices=["enrich", "carry", "later"], help="Preselect the decision for automation/tests")
     parser.add_argument("--credit-reserve", type=int, default=DEFAULT_CREDIT_RESERVE, help="Credits that must remain unused")
     parser.add_argument("--all-cycles", action="store_true", help="Include legacy and historical batches instead of only the active canonical cycle")
+    parser.add_argument("--max-leads-per-domain", "-c", "--cap", type=int, default=None, help="Any positive maximum contacts per domain/company for Layer 0 (default: 1 or $MAX_LEADS_PER_DOMAIN)")
     args = parser.parse_args()
 
     print("\n" + "=" * 95)
@@ -659,9 +660,25 @@ def run_interactive_enricher():
     print(f"\n✓ Selected Batch: '{selected_batch}' (Source: {source_label} | Table: `{target_table}`)")
 
     # -------------------------------------------------------------
-    # FILTER TO UNIQUE DOMAINS (1 LEAD PER COMPANY POLICY)
+    # LAYER 0 DOMAIN CAPACITY & DEDUPLICATION (ANY POSITIVE INTEGER)
     # -------------------------------------------------------------
-    print(f"Loading unattempted leads from `{target_table}` (ledger) and isolating 1 highest-ranking lead per domain...")
+    domain_cap = max(1, args.max_leads_per_domain) if args.max_leads_per_domain is not None else None
+    if domain_cap is None:
+        env_cap = (
+            os.getenv("MAX_LEADS_PER_DOMAIN")
+            or os.getenv("MAX_CONTACTS_PER_COMPANY")
+            or os.getenv("LEAD_GUARDRAILS_MAX_PER_DOMAIN")
+        )
+        if env_cap and str(env_cap).strip().isdigit():
+            domain_cap = max(1, int(str(env_cap).strip()))
+        elif not args.action and not args.batch:
+            default_hint = f"Enter for {domain_cap}" if domain_cap else "Enter for 1"
+            cap_input = input(f"\n>> Enter any positive max contacts per domain/company (Layer 0 capacity; {default_hint}): ").strip()
+            domain_cap = int(cap_input) if cap_input.isdigit() and int(cap_input) >= 1 else (domain_cap or 1)
+        else:
+            domain_cap = 1
+
+    print(f"\nLoading unattempted leads from `{target_table}` (ledger) with Layer 0 capacity = {domain_cap} lead(s) per domain...")
     with get_connection() as conn:
         raw_leads = fetch_unattempted_leads_for_batch(conn, selected_batch, table_name=target_table)
         ledger_before = get_batch_enrichment_summary(conn, selected_batch)
@@ -669,21 +686,13 @@ def run_interactive_enricher():
             conn, target_table, selected_batch, ensure_table=not args.dry_run
         )
 
-    domain_to_lead = {}
-    for lead_dict in raw_leads:
-        dom = (lead_dict["company_domain"] or "").lower().strip()
-        if not dom:
-            continue
-        score = get_seniority_score(lead_dict["job_title"] or "")
-        if dom not in domain_to_lead or score > domain_to_lead[dom]["score"]:
-            domain_to_lead[dom] = {"lead": lead_dict, "score": score}
-
-    raw_eligible = [v["lead"] for v in domain_to_lead.values()]
     print(f"✓ {ledger_before['attempted']} lead(s) already attempted in this batch (ledger).")
-    print(f"✓ {len(raw_leads)} unattempted row(s); {len(raw_eligible)} unique domains ready.")
+    print(f"✓ {len(raw_leads)} unattempted row(s) ready for 5-layer guardrails evaluation.")
 
-    # Run through full 4-layer defense guardrails
-    eligible_leads, metrics = apply_4_layer_guardrails(raw_eligible, selected_batch, verbose=True, table_name=target_table)
+    # Run through full 5-layer defense guardrails (Layer 0 capacity + Layers 1-4 CRM checks)
+    eligible_leads, metrics = apply_4_layer_guardrails(
+        raw_leads, selected_batch, verbose=True, table_name=target_table, max_leads_per_domain=domain_cap
+    )
 
     if not eligible_leads:
         print("\nNo unattempted leads left in this batch (ledger) or all collided with CRM. Nothing to do.")

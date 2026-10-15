@@ -578,6 +578,13 @@ def export_batch_action(batches, conn, table_name="apollo_saved_leads"):
     use_75_col_format = (mode_choice in ("1", "2"))
     dedup_domains = (mode_choice in ("1", "3"))
 
+    guardrail_cap = 1
+    if use_4_layer_guardrails:
+        env_cap = os.getenv("MAX_LEADS_PER_DOMAIN") or os.getenv("LEAD_GUARDRAILS_MAX_PER_DOMAIN")
+        def_cap = int(env_cap.strip()) if env_cap and env_cap.strip().isdigit() else 1
+        cap_in = input(f"Max contacts per company (any positive integer, default: {def_cap}): ").strip()
+        guardrail_cap = int(cap_in) if cap_in.isdigit() and int(cap_in) >= 1 else def_cap
+
     print("\nQuerying leads from database...")
     try:
         with conn.cursor() as cur:
@@ -658,7 +665,9 @@ def export_batch_action(batches, conn, table_name="apollo_saved_leads"):
 
         if use_4_layer_guardrails:
             # Apply all 4 layers: Intra-batch, CRM exact, Person LCS, MARISA Trie, DNS MX
-            final_leads, metrics = apply_4_layer_guardrails(dict_rows, batch_name, conn, verbose=True)
+            final_leads, metrics = apply_4_layer_guardrails(
+                dict_rows, batch_name, conn, verbose=True, max_leads_per_domain=guardrail_cap
+            )
             export_rows = [format_apollo_lead_row(lead) for lead in final_leads]
             headers = APOLLO_75_HEADERS
             dedup_count = len(dict_rows) - len(final_leads)

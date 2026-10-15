@@ -2373,7 +2373,7 @@
 
         if (result?.[COMPANY_CAP_STORAGE_KEY] !== undefined) {
           const capVal = parseInt(result[COMPANY_CAP_STORAGE_KEY], 10);
-          state.maxContactsPerCompany = (capVal >= 1 && capVal <= 10) ? capVal : 3;
+          state.maxContactsPerCompany = capVal >= 1 ? capVal : 3;
         } else {
           state.maxContactsPerCompany = 3;
         }
@@ -3471,11 +3471,9 @@
           <input id="contact-checker-batch-input" type="text" value="${state.batchName || 'batch_1'}" style="display:none !important;" tabindex="-1" />
         </div>
         <span id="contact-checker-required-count"></span>
-        <div id="cc-cap-selector-wrap" class="cc-cap-selector-wrap" title="Maximum contacts saved per company (1 to 10)">
+        <div id="cc-cap-selector-wrap" class="cc-cap-selector-wrap" title="Maximum contacts saved per company (any positive integer)">
           <span>👥 Cap:</span>
-          <select id="contact-checker-company-cap" class="cc-cap-select">
-            ${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<option value="${n}" ${n === (state.maxContactsPerCompany || 3) ? 'selected' : ''}>${n}/co</option>`).join("")}
-          </select>
+          <input id="contact-checker-company-cap" class="cc-cap-select" type="number" min="1" step="1" value="${state.maxContactsPerCompany || 3}" aria-label="Maximum contacts per company">
         </div>
         <button
           id="contact-checker-rescan-btn"
@@ -3802,7 +3800,8 @@
         ?.addEventListener(
           "change",
           (e) => {
-            const val = parseInt(e.target.value, 10) || 3;
+            const val = Math.max(1, parseInt(e.target.value, 10) || 3);
+            e.target.value = String(val);
             state.maxContactsPerCompany = val;
             if (chrome?.storage?.local) {
               chrome.storage.local.set({ [COMPANY_CAP_STORAGE_KEY]: val });
@@ -4488,7 +4487,7 @@
       sendResponse({ success: true, active: state.active });
       return true;
     } else if (message.type === "UPDATE_COMPANY_CAP") {
-      const val = parseInt(message.cap, 10) || 3;
+      const val = Math.max(1, parseInt(message.cap, 10) || 3);
       state.maxContactsPerCompany = val;
       const select = document.getElementById("contact-checker-company-cap");
       if (select) select.value = String(val);
