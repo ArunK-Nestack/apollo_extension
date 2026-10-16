@@ -175,60 +175,118 @@ def resolve_account_by_login_or_badge(login_str: str = "", account_str: str = ""
             if a.get("email", "").strip().lower() == l_low:
                 return a
 
+    # Normalize spelling discrepancies for matching
+    # nestaktechnology <-> nestacktechnology, machava -> madhava, varaghavan/vraghvan -> vraghavan
+    def normalize_aliases(s: str) -> str:
+        s = s.replace("nestacktechnology", "nestaktechnology")
+        s = s.replace("nestack_technology", "nestaktechnology")
+        s = s.replace("machava", "madhava")
+        s = s.replace("varaghavan", "vraghavan")
+        s = s.replace("vraghvan", "vraghavan")
+        return s
+
+    b_norm = normalize_aliases(b_low)
+    l_norm = normalize_aliases(l_low)
+
     # Priority 2: Email substring in login_str or batch_str
     for a in accs:
         em = a.get("email", "").strip().lower()
-        if (l_low and em in l_low) or (b_low and em in b_low):
+        em_norm = normalize_aliases(em)
+        if (l_low and (em in l_low or em_norm in l_norm)) or (b_low and (em in b_low or em_norm in b_norm)):
             return a
 
-    # Priority 3: Prefer the most specific email prefix, then the strongest
-    # domain-token match. This prevents generic users such as "rahul" or
-    # "vijay" from stealing batches owned by rahul_chandran/vijay_raghavan.
-    identity_context = re.sub(r"[^a-z0-9]+", "_", f"{b_low} {l_low}").strip("_")
-    identity_candidates = []
-    ignored_domain_tokens = {"com", "net", "info", "biz", "co", "in", "org"}
-    for a in accs:
-        em = a.get("email", "").strip().lower()
-        if "@" in em:
-            user_p = re.sub(r"[^a-z0-9]+", "_", em.split("@")[0]).strip("_")
-            if user_p and user_p in identity_context:
-                domain_tokens = [
-                    token for token in re.split(r"[^a-z0-9]+", em.split("@", 1)[1])
-                    if token and token not in ignored_domain_tokens
-                ]
-                matched_tokens = [token for token in domain_tokens if token in identity_context]
-                identity_candidates.append((len(user_p), len(matched_tokens), sum(map(len, matched_tokens)), a))
-    if identity_candidates:
-        return max(identity_candidates, key=lambda item: item[:3])[3]
+    # Priority 3: Explicit / Known Aliases (check specific domain & full identity before generic prefix)
+    comb = f"{l_norm} {a_low} {b_norm}"
+
+    # Account 9: Rahul nestaktechnology / nestacktechnology
+    if "rahul" in comb and ("nestaktechnology" in comb or "technology" in comb):
+        return next((a for a in accs if a["id"] == 9), None)
+
+    # Account 19: VRaghav nestacktechnology
+    if "vraghav" in comb and ("nestaktechnology" in comb or "technology" in comb):
+        return next((a for a in accs if a["id"] == 19), None)
+
+    # Account 2: Vijay Raghavan nestacktechnologies
+    if ("vijay" in comb or "raghavan" in comb) and "technologies" in comb:
+        return next((a for a in accs if a["id"] == 2), None)
+
+    # Account 1: Abel Abraham nestacktechnologies
+    if "abel" in comb:
+        return next((a for a in accs if a["id"] == 1), None)
+
+    # Account 5: Jith nestack.info
+    if "jith" in comb:
+        return next((a for a in accs if a["id"] == 5), None)
+
+    # Account 8: Recruiting
+    if "recruiting" in comb:
+        return next((a for a in accs if a["id"] == 8), None)
+
+    # Account 18: Vijay Raghavan nestack.net
+    if ("vijay" in comb or "raghavan" in comb) and "net" in comb:
+        return next((a for a in accs if a["id"] == 18), None)
+
+    # Account 17: Vijay Raghavan nestacktech.com
+    if ("vijay.raghavan" in comb or "vijay_raghavan" in comb) and ("nestacktech" in comb or "tech" in comb):
+        return next((a for a in accs if a["id"] == 17), None)
+
+    # Account 7: Vijay Raghavan nestack.com
+    if ("vijay.raghavan" in comb or "vijay_raghavan" in comb) and "nestack_com" in comb:
+        return next((a for a in accs if a["id"] == 7), None)
+    if ("vijay.raghavan" in comb or "vijay_raghavan" in comb):
+        return next((a for a in accs if a["id"] == 7), None)
+
+    # Account 4: Vijay nestacktech.com
+    if "vijay" in comb and ("nestacktech" in comb or "tech" in comb):
+        return next((a for a in accs if a["id"] == 4), None)
+    if "vijay" in comb:
+        return next((a for a in accs if a["id"] == 4 or a["id"] == 7), None)
+
+    # Account 3: Rahul Chandran nestack-tech
+    if "rahul" in comb and "chandran" in comb:
+        return next((a for a in accs if a["id"] == 3), None)
+
+    # Account 6: Rahul nestack.co.in
+    if "rahul" in comb and ("co.in" in comb or "co_in" in comb):
+        return next((a for a in accs if a["id"] == 6), None)
+
+    # Account 10: Rahul nestack-tech.com
+    if "rahul" in comb and ("nestack-tech" in comb or "tech" in comb):
+        return next((a for a in accs if a["id"] == 10), None)
+
+    # Account 15: R Chandran nestack.info
+    if "rchandran" in comb and "info" in comb:
+        return next((a for a in accs if a["id"] == 15), None)
+    if "rchandran-pulled" in comb:
+        return next((a for a in accs if a["id"] == 15), None)
+
+    # Account 11: R Chandran nestack.biz
+    if "rchandran" in comb and "biz" in comb:
+        return next((a for a in accs if a["id"] == 11), None)
+    if "rchandran" in comb:
+        return next((a for a in accs if a["id"] == 11 or a["id"] == 15), None)
+
+    # Account 13: V Raghavan nestacktech.com
+    if "vraghavan" in comb and ("nestacktech" in comb or "tech" in comb):
+        return next((a for a in accs if a["id"] == 13), None)
+
+    # Account 12: V Raghavan nestack.com
+    if "vraghavan" in comb:
+        return next((a for a in accs if a["id"] == 12), None)
+
+    # Account 14 & 16: Madhava Reddy
+    if "madhava" in comb and "nestack-tech" in comb:
+        return next((a for a in accs if a["id"] == 14), None)
+    if "madhava" in comb and ("nestacktech" in comb or "tech" in comb):
+        return next((a for a in accs if a["id"] == 14 or a["id"] == 16), None)
+    if "madhava" in comb:
+        return next((a for a in accs if a["id"] == 14 or a["id"] == 16), None)
 
     # Priority 4: Exact account name match
     if a_low:
         for a in accs:
             if a.get("name", "").strip().lower() == a_low:
                 return a
-
-    # Priority 5: Known aliases
-    comb = f"{l_low} {a_low} {b_low}"
-    if "jith" in comb: return next((a for a in accs if a["id"] == 5), None)
-    if "madhava" in comb and "tech" in comb and "nestack-tech" in comb: return next((a for a in accs if a["id"] == 14), None)
-    if "madhava" in comb: return next((a for a in accs if a["id"] == 16 or a["id"] == 14), None)
-    if "recruiting" in comb: return next((a for a in accs if a["id"] == 8), None)
-    if "abel" in comb: return next((a for a in accs if a["id"] == 1), None)
-    if "rchandran" in comb and "biz" in comb: return next((a for a in accs if a["id"] == 11), None)
-    if "rchandran" in comb: return next((a for a in accs if a["id"] == 15 or a["id"] == 11), None)
-    if "vraghav" in comb and "technology" in comb: return next((a for a in accs if a["id"] == 19), None)
-    if "vraghavan" in comb and "net" in comb: return next((a for a in accs if a["id"] == 18), None)
-    if "vraghavan" in comb and "tech" in comb: return next((a for a in accs if a["id"] == 13), None)
-    if "vraghavan" in comb and "technologies" in comb: return next((a for a in accs if a["id"] == 2), None)
-    if "vraghavan" in comb: return next((a for a in accs if a["id"] == 12), None)
-    if "vijay" in comb and "technologies" in comb: return next((a for a in accs if a["id"] == 2), None)
-    if "vijay" in comb and "net" in comb: return next((a for a in accs if a["id"] == 18), None)
-    if "vijay" in comb and "tech" in comb: return next((a for a in accs if a["id"] == 4 or a["id"] == 17), None)
-    if "vijay" in comb: return next((a for a in accs if a["id"] == 4 or a["id"] == 7), None)
-    if "rahul" in comb and "co.in" in comb: return next((a for a in accs if a["id"] == 6), None)
-    if "rahul" in comb and "nestak" in comb: return next((a for a in accs if a["id"] == 9), None)
-    if "rahul" in comb and "chandran" in comb: return next((a for a in accs if a["id"] == 3), None)
-    if "rahul" in comb and "tech" in comb: return next((a for a in accs if a["id"] == 10 or a["id"] == 3), None)
 
     return None
 
@@ -503,7 +561,7 @@ def get_logins():
                 batch for batch in current_month_batches
                 if _analytics_normalized(batch.get("batch")) == mv_batch_key
             ),
-            (current_month_batches or [{}])[0],
+            (current_month_batches or batches_by_email.get(em, []) or [{}])[0],
         )
         current_batch_name = current_batch.get("batch") or mv_current.get("batch") or ""
         current_batch_leads = int(current_batch.get("leads", 0) or 0)
@@ -1087,15 +1145,18 @@ def get_login_pipeline_analytics(
     except (TypeError, ValueError):
         selected_year = None
 
+    email_alt = email.replace("nestak", "nestack") if "nestak" in email.lower() else email.replace("nestack", "nestak")
+
     def _where(
         account_sql: str,
         cycle_sql: str = "",
         date_sql: str = "",
         year_column: str = "created_at",
         batch_sql: str = "",
+        account_params: tuple = None,
     ):
         clauses = [account_sql]
-        params: List[Any] = [email]
+        params: List[Any] = list(account_params if account_params is not None else [email])
         if batch_sql and selected_batch:
             clauses.append(batch_sql)
             params.append(selected_batch)
@@ -1159,20 +1220,36 @@ def get_login_pipeline_analytics(
         from backend.api import get_connection
         with get_connection() as conn:
             with conn.cursor() as cur:
-                # Batch names are the stable join key across Apollo, enrichment,
-                # MillionVerifier, and the Freshsales tag ledger. Prefer the
-                # explicitly selected batch; otherwise use the latest saved batch
-                # for this login instead of relying on a date-derived cycle label.
-                batch_rows = _rows(cur, """
+                # Load account definitions to resolve batches via canonical alias matching
+                accs_file = CONFIG_DIR / "apollo_accounts.json"
+                accs = []
+                if accs_file.exists():
+                    try:
+                        with open(accs_file, "r", encoding="utf-8") as f:
+                            accs = json.load(f)
+                    except Exception:
+                        pass
+                target_acc = resolve_account_by_login_or_badge(email, "", "", accs)
+                target_aid = target_acc.get("id") if target_acc else None
+
+                all_saved_batches = _rows(cur, """
                     SELECT batch, MAX(created_at) AS last_added
                     FROM apollo_saved_leads
-                    WHERE (
-                        LOWER(account_used) = LOWER(%s)
-                        OR LOWER(batch) LIKE CONCAT(LOWER(%s), '%%')
-                    ) AND COALESCE(batch, '') <> ''
+                    WHERE COALESCE(batch, '') <> ''
                     GROUP BY batch
                     ORDER BY last_added DESC
-                """, (email, email))
+                """)
+                batch_rows = [
+                    row for row in all_saved_batches
+                    if (
+                        target_aid is not None
+                        and resolve_account_by_login_or_badge("", "", str(row[0] or ""), accs)
+                        and resolve_account_by_login_or_badge("", "", str(row[0] or ""), accs).get("id") == target_aid
+                    ) or (
+                        str(row[0] or "").lower().startswith(email.lower())
+                        or str(row[0] or "").lower().startswith(email_alt.lower())
+                    )
+                ]
                 batch_options = [str(row[0]) for row in batch_rows if row and row[0]]
                 if not selected_batch and batch_options:
                     current_month_batches = [
@@ -1189,9 +1266,10 @@ def get_login_pipeline_analytics(
                         saved_params += (selected_year,)
                 else:
                     saved_where, saved_params = _where(
-                        "LOWER(account_used) = LOWER(%s)",
+                        "(LOWER(account_used) = LOWER(%s) OR LOWER(account_used) = LOWER(%s))",
                         "cycle = %s",
                         "created_at >= %s AND created_at < %s",
+                        account_params=(email, email_alt),
                     )
                 summary["extension_saved"] = _analytics_int(_scalar(
                     cur,
@@ -1199,11 +1277,12 @@ def get_login_pipeline_analytics(
                     saved_params,
                 ))
                 enriched_where, enriched_params = _where(
-                    "LOWER(login_email) = LOWER(%s)",
+                    "(LOWER(login_email) = LOWER(%s) OR LOWER(login_email) = LOWER(%s))",
                     "",
                     "attempted_at >= %s AND attempted_at < %s",
                     year_column="attempted_at",
                     batch_sql="batch = %s",
+                    account_params=(email, email_alt),
                 )
                 summary["enriched_email"] = _analytics_int(_scalar(
                     cur,
@@ -1223,9 +1302,10 @@ def get_login_pipeline_analytics(
                 ))
 
                 people_where, people_params = _where(
-                    "LOWER(account_email) = LOWER(%s)",
+                    "(LOWER(account_email) = LOWER(%s) OR LOWER(account_email) = LOWER(%s))",
                     "",
                     "created_at >= %s AND created_at < %s",
+                    account_params=(email, email_alt),
                 )
                 summary["people_search"] = _analytics_int(_scalar(
                     cur,
@@ -1239,14 +1319,12 @@ def get_login_pipeline_analytics(
                 ))
 
                 mv_where, mv_params = _where(
-                    "(LOWER(login_name) = LOWER(%s) OR LOWER(log_name) = LOWER(%s))",
+                    "(LOWER(login_name) IN (LOWER(%s), LOWER(%s)) OR LOWER(log_name) IN (LOWER(%s), LOWER(%s)))",
                     "cycle = %s",
                     "created_at >= %s AND created_at < %s",
                     batch_sql="batch_name = %s",
+                    account_params=(email, email_alt, email, email_alt),
                 )
-                # The account predicate has two placeholders; replace the single
-                # email parameter added by _where with the pair expected above.
-                mv_params = (email, email) + tuple(mv_params[1:])
                 mv_row = _rows(cur, f"""
                     SELECT COALESCE(SUM(leads_entered),0), COALESCE(SUM(good_leads),0),
                            COALESCE(SUM(bad_leads),0), COALESCE(SUM(risky_leads),0),
@@ -1268,17 +1346,20 @@ def get_login_pipeline_analytics(
                     if summary["crm_sent"]:
                         summary["crm_breakdown_available"] = True
 
-                if selected_batch:
-                    batch_where = "batch = %s"
-                    batch_params: tuple[Any, ...] = (selected_batch,)
+                scope_batches = [selected_batch] if (batch_name and selected_batch) else (batch_options or ([selected_batch] if selected_batch else []))
+                if scope_batches:
+                    placeholders = ", ".join(["%s"] * len(scope_batches))
+                    batch_where = f"batch IN ({placeholders})"
+                    batch_params = tuple(scope_batches)
                     if selected_year:
                         batch_where += " AND YEAR(created_at) = %s"
                         batch_params += (selected_year,)
                 else:
                     batch_where, batch_params = _where(
-                        "LOWER(account_used) = LOWER(%s)",
+                        "(LOWER(account_used) = LOWER(%s) OR LOWER(account_used) = LOWER(%s))",
                         "cycle = %s",
                         "created_at >= %s AND created_at < %s",
+                        account_params=(email, email_alt),
                     )
                 batch_rows = _rows(cur, f"""
                     SELECT batch, COUNT(*) AS leads, COUNT(email) AS emails,
@@ -1294,8 +1375,8 @@ def get_login_pipeline_analytics(
                 } for row in batch_rows]
 
                 for sql, params in [
-                    ("SELECT DISTINCT cycle_tag FROM extension_activity_log WHERE LOWER(account_email)=LOWER(%s) AND cycle_tag <> '' ORDER BY cycle_tag DESC", (email,)),
-                    ("SELECT DISTINCT cycle FROM apollo_saved_leads WHERE LOWER(account_used)=LOWER(%s) AND cycle <> '' ORDER BY cycle DESC", (email,)),
+                    ("SELECT DISTINCT cycle_tag FROM extension_activity_log WHERE (LOWER(account_email)=LOWER(%s) OR LOWER(account_email)=LOWER(%s)) AND cycle_tag <> '' ORDER BY cycle_tag DESC", (email, email_alt)),
+                    ("SELECT DISTINCT cycle FROM apollo_saved_leads WHERE (LOWER(account_used)=LOWER(%s) OR LOWER(account_used)=LOWER(%s)) AND cycle <> '' ORDER BY cycle DESC", (email, email_alt)),
                 ]:
                     for row in _rows(cur, sql, params):
                         if row and row[0] and row[0] not in cycle_options:
@@ -1305,7 +1386,7 @@ def get_login_pipeline_analytics(
                     ("apollo_saved_leads", "created_at", "account_used"),
                     ("batch_enrichment_ledger", "attempted_at", "login_email"),
                 ]:
-                    for row in _rows(cur, f"SELECT DISTINCT YEAR({col}) FROM {table} WHERE LOWER({account_col})=LOWER(%s) AND {col} IS NOT NULL ORDER BY 1 DESC", (email,)):
+                    for row in _rows(cur, f"SELECT DISTINCT YEAR({col}) FROM {table} WHERE (LOWER({account_col})=LOWER(%s) OR LOWER({account_col})=LOWER(%s)) AND {col} IS NOT NULL ORDER BY 1 DESC", (email, email_alt)):
                         if row and row[0]:
                             year_options.add(int(row[0]))
     except Exception as exc:
@@ -3461,7 +3542,7 @@ def get_crm_sync_summary(filter_cycle: Optional[str] = "all"):
         for em in ("vraghavan@nestack.com", "madhava.reddy@nestack-tech.com",
                    "vraghav@nestacktechnology.com", "vijay.raghavan@nestacktech.com",
                    "vijay.raghavan@nestack.net", "madhava.reddy@nestacktech.com",
-                   "rchandran@nestack.info", "rahul@nestaktechnology.com",
+                   "rchandran@nestack.info", "rahul@nestacktechnology.com",
                    "rahul@nestack-tech.com", "vraghavan@nestacktech.com",
                    "rahul@nestack.co.in", "rahul.chandran@nestack-tech.com"):
             clean_em = em.lower()

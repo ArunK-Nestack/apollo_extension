@@ -121,7 +121,7 @@ def get_account_for_batch(batch: str, account_used: str = "") -> str:
         elif "nestack_tech" in b:
             return "rahul@nestack-tech.com"
         elif "nestaktechnology" in b or "nestacktechnology" in b:
-            return "rahul@nestaktechnology.com"
+            return "rahul@nestacktechnology.com"
 
     # Madhava Reddy (nestack-tech vs nestacktech)
     if "madhava" in b or "machava" in b or "madhava" in au:

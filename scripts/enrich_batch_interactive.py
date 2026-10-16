@@ -21,6 +21,7 @@ import time
 import csv
 import uuid
 import argparse
+import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -144,6 +145,36 @@ def _batch_key(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
 
+def _batch_cycle_is_current(batch_name: str, target_date: Optional[datetime] = None) -> bool:
+    """Return whether a batch's explicit date-range label contains target_date."""
+    match = re.search(
+        r"\(([a-z]{3})\s+(\d{1,2})\s*-\s*([a-z]{3})\s+(\d{1,2})\)",
+        str(batch_name or "").strip().lower(),
+    )
+    if not match:
+        return False
+    now = target_date or datetime.now()
+    try:
+        start = datetime.strptime(f"{match.group(1)} {match.group(2)} {now.year}", "%b %d %Y")
+        end = datetime.strptime(f"{match.group(3)} {match.group(4)} {now.year}", "%b %d %Y")
+    except ValueError:
+        return False
+    if end < start:
+        end = end.replace(year=end.year + 1)
+    if now.date() < start.date() and end.year == now.year + 1:
+        start = start.replace(year=start.year - 1)
+    return start.date() <= now.date() <= end.date()
+
+
+def _account_email_aliases(email: str) -> set[str]:
+    """Return the canonical email plus legacy spellings used by old batches."""
+    normalized = str(email or "").strip().lower()
+    aliases = {normalized} if normalized else set()
+    if normalized == "rahul@nestacktechnology.com":
+        aliases.add("rahul@nestaktechnology.com")
+    return aliases
+
+
 def filter_canonical_cycle_batches(
     accounts: List[Dict[str, Any]],
     batches: List[Dict[str, Any]],
@@ -164,7 +195,10 @@ def filter_canonical_cycle_batches(
             cycle = cycle_resolver(email)
         except Exception:
             continue
-        canonical_keys.add(_batch_key(f"{email}({cycle})"))
+        canonical_keys.update(
+            _batch_key(f"{alias}({cycle})")
+            for alias in _account_email_aliases(email)
+        )
 
     return [batch for batch in batches if _batch_key(batch.get("batch", "")) in canonical_keys]
 
@@ -178,24 +212,27 @@ def print_account_overview(
     from scripts.apollo_saved_search_inspector import get_account_cycle_window
 
     print("\n[19-LOGIN SAVED LEAD & CREDIT OVERVIEW]")
-    print(f"{'#':<3} {'Login':<38} {'Cycle':<22} {'Saved':>8} {'Pending':>9} {'Credits':>9}")
-    print("-" * 95)
+    print(f"{'#':<3} {'Login':<32} {'Status':<10} {'Cycle':<18} {'Saved':>8} {'Pending':>9} {'Credits':>9}")
+    print("-" * 92)
     for idx, account in enumerate(accounts, 1):
         email = str(account.get("email") or "").strip()
         email_key = email.lower()
+        email_aliases = _account_email_aliases(email)
         owned = [
             batch for batch in batches
-            if str(batch.get("account_used") or "").strip().lower() == email_key
-            or email_key in str(batch.get("batch") or "").lower()
+            if str(batch.get("account_used") or "").strip().lower() in email_aliases
+            or any(alias in str(batch.get("batch") or "").lower() for alias in email_aliases)
         ]
         saved = sum(int(batch.get("total_leads") or 0) for batch in owned)
         pending = sum(int(batch.get("unenriched_count") or 0) for batch in owned)
-        credits = int(credit_map.get(email_key, {}).get("credits_remaining", 0) or 0)
+        credit_snapshot = credit_map.get(email_key, {})
+        status = str(credit_snapshot.get("status") or "unknown").strip().lower()
+        credits = int(credit_snapshot.get("credits_remaining", 0) or 0)
         try:
             _, _, cycle = get_account_cycle_window(email)
         except Exception:
             cycle = "unknown"
-        print(f"[{idx:02d}] {email[:38]:<38} {cycle[:22]:<22} {saved:>8,d} {pending:>9,d} {credits:>9,d}")
+        print(f"[{idx:02d}] {email[:32]:<32} {status[:10]:<10} {cycle[:18]:<18} {saved:>8,d} {pending:>9,d} {credits:>9,d}")
     print("  Credits come from the last free account report; the selected login is probed again before a real run.")
 
 # =====================================================================
@@ -490,11 +527,9 @@ def update_leads_in_db(
 def run_interactive_enricher():
     parser = argparse.ArgumentParser(description="Interactive Multi-Account Apollo Enrichment Cycle Manager")
     parser.add_argument("--dry-run", action="store_true", help="Simulate execution without spending Apollo credits or calling external API")
-    parser.add_argument("--table", "-t", default="all", choices=["all", "apollo", "enrich"], help="Source table filter: 'all', 'apollo', or 'enrich' (default: all)")
     parser.add_argument("--batch", "-b", default=None, help="Batch name to enrich directly")
     parser.add_argument("--action", choices=["enrich", "carry", "later"], help="Preselect the decision for automation/tests")
     parser.add_argument("--credit-reserve", type=int, default=DEFAULT_CREDIT_RESERVE, help="Credits that must remain unused")
-    parser.add_argument("--all-cycles", action="store_true", help="Include legacy and historical batches instead of only the active canonical cycle")
     parser.add_argument("--max-leads-per-domain", "-c", "--cap", type=int, default=None, help="Any positive maximum contacts per domain/company for Layer 0 (default: 1 or $MAX_LEADS_PER_DOMAIN)")
     args = parser.parse_args()
 
@@ -509,6 +544,7 @@ def run_interactive_enricher():
     # -------------------------------------------------------------
     print("\n[STEP 1: SELECT BATCH FROM DATABASE]")
     with get_connection() as conn:
+        extension_activity_batch_keys = set()
         if not args.dry_run:
             ensure_batch_enrichment_ledger_table(conn)
             ensure_enrichment_run_audit_table(conn)
@@ -556,6 +592,17 @@ def run_interactive_enricher():
             """)
             raw_enrich = cur.fetchall()
 
+            # Keep batches with recorded extension activity selectable even when
+            # their cycle has rolled over since the activity was recorded.
+            cur.execute("""
+                SELECT DISTINCT batch
+                FROM extension_activity_log
+                WHERE batch IS NOT NULL AND TRIM(batch) <> ''
+            """)
+            extension_activity_batch_keys = {
+                _batch_key(row[0]) for row in cur.fetchall() if row[0]
+            }
+
     all_batches_data = []
     for r in raw_apollo:
         all_batches_data.append({
@@ -587,38 +634,40 @@ def run_interactive_enricher():
     accounts = load_apollo_accounts()
     credit_map = load_cached_credit_report()
     current_cycle_batches = filter_canonical_cycle_batches(accounts, all_batches_data)
-    selectable_batches = all_batches_data if args.all_cycles else current_cycle_batches
-    print_account_overview(accounts, selectable_batches, credit_map)
-    print(
-        "  Batch scope: "
-        + ("all legacy and historical batches (--all-cycles)" if args.all_cycles else "active canonical cycle batches only")
+    canonical_keys = {_batch_key(batch.get("batch", "")) for batch in current_cycle_batches}
+    selectable_batches = [
+        batch for batch in current_cycle_batches
+        if batch["source_table"] == "apollo_saved_leads"
+        and _batch_key(batch.get("batch", "")) in extension_activity_batch_keys
+    ]
+    selectable_keys = {_batch_key(batch.get("batch", "")) for batch in selectable_batches}
+    selectable_batches.extend(
+        batch for batch in all_batches_data
+        if batch["source_table"] == "apollo_saved_leads"
+        and _batch_key(batch.get("batch", "")) in extension_activity_batch_keys
+        and _batch_key(batch.get("batch", "")) not in selectable_keys
+        and _batch_cycle_is_current(batch.get("batch", ""))
+        and _batch_key(batch.get("batch", "")) not in canonical_keys
     )
-
-    active_filter = args.table.lower()
+    print_account_overview(accounts, selectable_batches, credit_map)
+    print("  Batch scope: active, non-expired Apollo cycle batches with extension activity only")
 
     # Pre-selection if --batch is provided
     selected_item = None
     if args.batch:
-        match = next((b for b in all_batches_data if b["batch"].lower() == args.batch.lower()), None)
+        match = next((b for b in selectable_batches if b["batch"].lower() == args.batch.lower()), None)
         if match:
             selected_item = match
         else:
             print(f"[!] Batch '{args.batch}' not found. Falling back to interactive selection.")
 
     while not selected_item:
-        if active_filter == "apollo":
-            visible = [b for b in selectable_batches if b["source_table"] == "apollo_saved_leads"]
-            filter_desc = "Apollo Only (`apollo_saved_leads`)"
-        elif active_filter == "enrich":
-            visible = [b for b in selectable_batches if b["source_table"] == "enrich_saved_leads"]
-            filter_desc = "Enrich.so Only (`enrich_saved_leads`)"
-        else:
-            visible = selectable_batches
-            filter_desc = "All Tables (Apollo + Enrich.so)"
+        visible = selectable_batches
+        filter_desc = "Apollo saved leads with extension activity"
 
         print(f"\nActive Filter: {filter_desc}")
         if not visible:
-            print("No batches match the active cycle scope. Use --all-cycles to inspect historical batches.")
+            print("No active, non-expired Apollo batches with extension activity were found.")
             return
         print(f"{'#':<3} {'Source':<12} {'Batch Identifier':<42} {'Total':<8} {'Unique Doms':<12} {'Ready to Enrich':<15}")
         print("-" * 96)
@@ -628,18 +677,8 @@ def run_interactive_enricher():
                 name_disp = name_disp[:39] + "..."
             print(f"[{idx:02d}] [{b['source_label']:<8}] {name_disp:<42} {b['total_leads']:<8,d} {b['unique_domains']:<12,d} {b['unenriched_count']:<15,d}")
 
-        prompt = f"\n>> Select Batch Number [1-{len(visible)}] (or 'T' to toggle filter): "
+        prompt = f"\n>> Select Batch Number [1-{len(visible)}]: "
         user_choice = input(prompt).strip()
-
-        if user_choice.upper() == "T":
-            # Cycle filter: all -> enrich -> apollo -> all
-            if active_filter == "all":
-                active_filter = "enrich"
-            elif active_filter == "enrich":
-                active_filter = "apollo"
-            else:
-                active_filter = "all"
-            continue
 
         if user_choice.isdigit() and 1 <= int(user_choice) <= len(visible):
             selected_item = visible[int(user_choice) - 1]
@@ -651,7 +690,7 @@ def run_interactive_enricher():
             selected_item = matched_by_name[0]
             break
 
-        print("Invalid choice. Please enter a valid batch number or 'T' to toggle.")
+        print("Invalid choice. Please enter a valid batch number.")
 
     selected_batch = selected_item["batch"]
     target_table = selected_item["source_table"]
@@ -933,9 +972,10 @@ def run_interactive_enricher():
         bar_len = 30
         filled = int(bar_len * processed_so_far // len(leads_to_process))
         bar = "█" * filled + "░" * (bar_len - filled)
+        credits_display = f"{total_credits_spent:.2f}".rstrip("0").rstrip(".")
 
         print(f"\r[{bar}] {processed_so_far}/{len(leads_to_process)} ({pct:4.1f}%) | "
-              f"Emails: {total_enriched_emails} (Credits: {total_credits_spent}) | "
+              f"Emails: {total_enriched_emails} (Credits: {credits_display}) | "
               f"No Email: {total_free_companies_saved}", end="", flush=True)
 
         # Rate-limiting pause between chunks (0.9 seconds)

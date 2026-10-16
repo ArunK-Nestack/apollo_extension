@@ -1,6 +1,6 @@
 """
 Export and deduplicate 641 contacts from Apollo list 'arun' (List ID: 6aad8f3e649c1c0020cf79fe)
-under account RAHUL@NESTAKTECHNOLOGY.COM into the canonical 75-column Apollo CSV schema.
+under account RAHUL@NESTACKTECHNOLOGY.COM into the canonical 75-column Apollo CSV schema.
 """
 
 import os
@@ -20,7 +20,7 @@ from scripts.apollo_export_formatter import APOLLO_75_HEADERS, format_apollo_lea
 
 API_KEY = "BAu4z6CXZrmTSWtza807mg"
 LIST_ID = "6aad8f3e649c1c0020cf79fe"
-ACCOUNT_EMAIL = "RAHUL@NESTAKTECHNOLOGY.COM"
+ACCOUNT_EMAIL = "RAHUL@NESTACKTECHNOLOGY.COM"
 LIST_NAME = "arun"
 
 DOWNLOADS_DIR = r"C:\Users\test\Downloads"

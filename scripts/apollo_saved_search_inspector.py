@@ -52,9 +52,9 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def format_cycle_tag(start_dt: datetime, end_dt: datetime) -> str:
-    start_ist = start_dt.astimezone(IST)
-    end_ist = end_dt.astimezone(IST)
-    return f"{start_ist.strftime('%b %d').lower()} - {end_ist.strftime('%b %d').lower()}"
+    start_utc = start_dt.astimezone(timezone.utc)
+    end_utc = end_dt.astimezone(timezone.utc)
+    return f"{start_utc.strftime('%b %d').lower()} - {end_utc.strftime('%b %d').lower()}"
 
 
 def get_account_cycle_window(account_email: str, target_date: Optional[datetime] = None) -> Tuple[datetime, datetime, str]:

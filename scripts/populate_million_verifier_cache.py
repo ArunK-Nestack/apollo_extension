@@ -52,7 +52,7 @@ LOGINS = [
     'rahul.chandran@nestack-tech.com',
     'jith@nestack.info',
     'recruiting@nestack.com',
-    'rahul@nestaktechnology.com',
+    'rahul@nestacktechnology.com',
     'rahul@nestack-tech.com'
 ]
 

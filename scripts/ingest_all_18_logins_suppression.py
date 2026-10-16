@@ -127,7 +127,7 @@ def main():
                     if em and "@" in em and q in ("bad", "invalid", "risky", "catch_all", "catch-all"):
                         st = "bad" if q in ("bad", "invalid") else "risky"
                         dom = em.split("@")[-1]
-                        new_suppression[em] = ("rahul@nestaktechnology.com", dom, st)
+                        new_suppression[em] = ("rahul@nestacktechnology.com", dom, st)
 
     # B. Input - OK_ONLY diffs
     diff_pairs = [

@@ -3113,7 +3113,7 @@ class ApolloMatchRequest(BaseModel):
     title_guardrail_enabled: bool = True
     indian_name_guardrail_enabled: bool = True
     page_number: int | None = None
-    max_contacts_per_company: int = 3
+    max_contacts_per_company: int = 1
 
 
 
@@ -3142,7 +3142,7 @@ class SyncSavedLeadsRequest(BaseModel):
     cycle: str | None = ""
     account_used: str | None = ""
     page_number: int | None = None
-    max_contacts_per_company: int | None = 3
+    max_contacts_per_company: int | None = 1
 
 
 class EvaluatePendingTitlesRequest(BaseModel):
@@ -3157,14 +3157,14 @@ def health_check():
 
 
 @app.post("/set-company-cap")
-def set_company_cap(cap: int = 3):
+def set_company_cap(cap: int = 1):
     os.environ["MAX_CONTACTS_PER_COMPANY"] = str(max(1, cap))
     return {"status": "ok", "max_contacts_per_company": int(os.environ["MAX_CONTACTS_PER_COMPANY"])}
 
 
 @app.get("/get-company-cap")
 def get_company_cap():
-    return {"status": "ok", "max_contacts_per_company": int(os.getenv("MAX_CONTACTS_PER_COMPANY", "3"))}
+    return {"status": "ok", "max_contacts_per_company": int(os.getenv("MAX_CONTACTS_PER_COMPANY", "1"))}
 
 
 @app.post("/evaluate-pending-titles")
@@ -3892,7 +3892,7 @@ def _filter_sync_contacts_dynamic_cap(
     contacts: list,
     batch_tag: str,
     cur,
-    max_contacts_per_company: int = 3
+    max_contacts_per_company: int = 1
 ) -> list:
     """
     Filter and resolve contacts to sync into apollo_saved_leads for a batch:
@@ -4265,9 +4265,9 @@ def sync_saved_leads(request: SyncSavedLeadsRequest):
             cap_val = request.max_contacts_per_company
             if cap_val is None:
                 try:
-                    cap_val = int(os.getenv("MAX_CONTACTS_PER_COMPANY", "3"))
+                    cap_val = int(os.getenv("MAX_CONTACTS_PER_COMPANY", "1"))
                 except Exception:
-                    cap_val = 3
+                    cap_val = 1
             cap_val = max(1, int(cap_val))
 
             contacts_to_sync = _filter_sync_contacts_dynamic_cap(
@@ -4463,7 +4463,7 @@ def match_apollo(request: ApolloMatchRequest):
             for k in oldest_keys:
                 _batch_seen_companies.pop(k, None)
 
-    max_contacts_per_comp = max(1, int(request.max_contacts_per_company or os.getenv("MAX_CONTACTS_PER_COMPANY", "3")))
+    max_contacts_per_comp = max(1, int(request.max_contacts_per_company or os.getenv("MAX_CONTACTS_PER_COMPANY", "1")))
 
     unique_domains_seen = set()
     existing_domain_contacts = 0
@@ -5074,5 +5074,5 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print(">>> [ContactChecker API] Starting Lead Processing Engine (Port 8000)")
     print("=" * 70 + "\n")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("backend.api:app", host="0.0.0.0", port=8000, reload=True)
 

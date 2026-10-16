@@ -96,7 +96,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       title_guardrail_enabled: message.title_guardrail_enabled !== false,
       indian_name_guardrail_enabled: message.indian_name_guardrail_enabled !== false,
       page_number: message.page_number || null,
-      max_contacts_per_company: message.max_contacts_per_company || 3
+      max_contacts_per_company: message.max_contacts_per_company || 1
     };
   } else if (message.type === "SYNC_SAVED_LEADS") {
     endpoint = "/sync-saved-leads";
@@ -107,7 +107,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       cycle: message.cycle || "",
       account_used: message.account_used || "",
       page_number: message.page_number || null,
-      max_contacts_per_company: message.max_contacts_per_company || 3
+      max_contacts_per_company: message.max_contacts_per_company || 1
     };
   } else if (message.type === "EVALUATE_PENDING_TITLES" || message.type === "EVALUATE_PENDING_BATCH") {
     endpoint = "/evaluate-pending-titles";
