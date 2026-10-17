@@ -25,7 +25,7 @@
     { name: "Rahul", email: "RAHUL@NESTACK.CO.IN", renewalDay: 13, expiryUtc: "2026-10-13T11:58:27+00:00" },
     { name: "Vijay Raghavan", email: "VIJAY.RAGHAVAN@NESTACK.COM", renewalDay: 14, expiryUtc: "2026-10-14T08:43:05+00:00" },
     { name: "Recruiting", email: "RECRUITING@NESTACK.COM", renewalDay: 16, expiryUtc: "2026-10-16T14:15:47+00:00" },
-    { name: "Rahul", email: "RAHUL@NESTAKTECHNOLOGY.COM", renewalDay: 18, expiryUtc: "2026-10-18T19:06:10+00:00" },
+    { name: "Rahul", email: "RAHUL@NESTACKTECHNOLOGY.COM", renewalDay: 18, expiryUtc: "2026-10-18T19:06:10+00:00" },
     { name: "Rahul", email: "RAHUL@NESTACK-TECH.COM", renewalDay: 30, expiryUtc: "2026-10-30T05:18:10+00:00" },
     { name: "R Chandran", email: "RCHANDRAN@NESTACK.BIZ", renewalDay: 19, expiryUtc: "2026-10-19T16:46:27+00:00" },
     { name: "V Raghavan", email: "VRAGHAVAN@NESTACK.COM", renewalDay: 20, expiryUtc: "2026-10-20T07:44:54+00:00" },
@@ -246,7 +246,7 @@
     currentContacts: new Map(),
     requiredContactsAll: new Map(),
     requiredCompanyMap: new Map(), // compKey -> Array<lead>
-    maxContactsPerCompany: 3,
+    maxContactsPerCompany: 1,
     syncedLeadKeys: new Set(),
     syncingLeadKeys: new Set(),
     highlightedRows: new Set(),
@@ -2373,9 +2373,9 @@
 
         if (result?.[COMPANY_CAP_STORAGE_KEY] !== undefined) {
           const capVal = parseInt(result[COMPANY_CAP_STORAGE_KEY], 10);
-          state.maxContactsPerCompany = (capVal >= 1 && capVal <= 10) ? capVal : 3;
+          state.maxContactsPerCompany = capVal >= 1 ? capVal : 1;
         } else {
-          state.maxContactsPerCompany = 3;
+          state.maxContactsPerCompany = 1;
         }
 
         const stored =
@@ -2464,7 +2464,7 @@
         cycle: state.cycleTag || "",
         account_used: state.accountEmail || "",
         page_number: currentApolloPage,
-        max_contacts_per_company: state.maxContactsPerCompany || 3
+        max_contacts_per_company: state.maxContactsPerCompany || 1
       }, (res) => {
         const lastErr = chrome.runtime?.lastError;
         if (!lastErr && res?.success) {
@@ -2647,7 +2647,7 @@
     const incomingScore = getSeniorityScore(contact.job_title);
 
     const incomingCanonTitle = getCanonicalTitleKey(contact.job_title);
-    const cap = state.maxContactsPerCompany || 3;
+    const cap = state.maxContactsPerCompany || 1;
 
     // Seniority-based Lead Election: up to N leads per company with title uniqueness & outranking
     if (compKey) {
@@ -2848,9 +2848,9 @@
       badgeBg = "#64748b";
       badgeTitle = result.guardrail_reason || "Excluded: Title belongs to non-required segment.";
     } else if (result?.guardrail_status === "company_limit_reached") {
-      badgeText = `⊘ Cap Reached (${state.maxContactsPerCompany || 3}/co)`;
+      badgeText = `⊘ Cap Reached (${state.maxContactsPerCompany || 1}/co)`;
       badgeBg = "#6b7280";
-      badgeTitle = result.guardrail_reason || `Company cap reached (max ${state.maxContactsPerCompany || 3} allowed).`;
+      badgeTitle = result.guardrail_reason || `Company cap reached (max ${state.maxContactsPerCompany || 1} allowed).`;
     } else if (result?.guardrail_status === "duplicate_title_for_company") {
       badgeText = "⊘ Duplicate Title";
       badgeBg = "#f59e0b";
@@ -2886,7 +2886,7 @@
       if (!Array.isArray(pool)) {
         pool = pool ? [pool] : [];
       }
-      const cap = state.maxContactsPerCompany || 3;
+      const cap = state.maxContactsPerCompany || 1;
       const incomingScore = getSeniorityScore(contact.job_title);
       const incomingCanonTitle = getCanonicalTitleKey(contact.job_title);
       const normCurrentKey = String(contact.key || "").replace(/^apollo-/, "").toLowerCase();
@@ -2988,7 +2988,7 @@
     );
 
     // Pre-Export Multi-Pass Sweep: Up to N Leads per Company & Unique Job Titles
-    const cap = state.maxContactsPerCompany || 3;
+    const cap = state.maxContactsPerCompany || 1;
     const companyGroups = new Map();
     rawRows.forEach(row => {
       const rootDom = extractRootDomain(row.domain);
@@ -3261,7 +3261,7 @@
       return;
     }
 
-    const cap = state.maxContactsPerCompany || 3;
+    const cap = state.maxContactsPerCompany || 1;
     const companyGroups = new Map(); // compKey -> Array<{ key, contact, score, canonical_title, is_credit_spent }>
     const duplicateKeys = [];
 
@@ -3471,11 +3471,9 @@
           <input id="contact-checker-batch-input" type="text" value="${state.batchName || 'batch_1'}" style="display:none !important;" tabindex="-1" />
         </div>
         <span id="contact-checker-required-count"></span>
-        <div id="cc-cap-selector-wrap" class="cc-cap-selector-wrap" title="Maximum contacts saved per company (1 to 10)">
+        <div id="cc-cap-selector-wrap" class="cc-cap-selector-wrap" title="Maximum contacts saved per company (any positive integer)">
           <span>👥 Cap:</span>
-          <select id="contact-checker-company-cap" class="cc-cap-select">
-            ${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<option value="${n}" ${n === (state.maxContactsPerCompany || 3) ? 'selected' : ''}>${n}/co</option>`).join("")}
-          </select>
+          <input id="contact-checker-company-cap" class="cc-cap-select" type="number" min="1" step="1" value="${state.maxContactsPerCompany || 1}" aria-label="Maximum contacts per company">
         </div>
         <button
           id="contact-checker-rescan-btn"
@@ -3802,7 +3800,8 @@
         ?.addEventListener(
           "change",
           (e) => {
-            const val = parseInt(e.target.value, 10) || 3;
+            const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+            e.target.value = String(val);
             state.maxContactsPerCompany = val;
             if (chrome?.storage?.local) {
               chrome.storage.local.set({ [COMPANY_CAP_STORAGE_KEY]: val });
@@ -4117,7 +4116,7 @@
           type: "MATCH_APOLLO",
           batch: state.batchName || `batch_${state.batchNumber || 1}`,
           page_number: currentPageNumber,
-          max_contacts_per_company: state.maxContactsPerCompany || 3,
+          max_contacts_per_company: state.maxContactsPerCompany || 1,
           title_guardrail_enabled: state.titleGuardrailEnabled === true,
           indian_name_guardrail_enabled: state.indianGuardrailEnabled === true,
           contacts: contactsToCheck.map(contact => {
@@ -4488,7 +4487,7 @@
       sendResponse({ success: true, active: state.active });
       return true;
     } else if (message.type === "UPDATE_COMPANY_CAP") {
-      const val = parseInt(message.cap, 10) || 3;
+      const val = Math.max(1, parseInt(message.cap, 10) || 1);
       state.maxContactsPerCompany = val;
       const select = document.getElementById("contact-checker-company-cap");
       if (select) select.value = String(val);
