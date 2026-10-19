@@ -51,6 +51,46 @@ from scripts.lead_guardrails import apply_4_layer_guardrails
 
 load_dotenv()
 
+_TELEGRAM_RUN_CONTEXT: Dict[str, Any] = {}
+_TELEGRAM_RATE_LIMIT_ALERTED = False
+
+
+def send_telegram_alert(message: str) -> bool:
+    """Send a best-effort Telegram alert without interrupting enrichment."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat_id:
+        return False
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": message},
+            timeout=15,
+        )
+        return response.ok
+    except Exception as exc:
+        print(f"\n[Telegram Warning] {exc}", flush=True)
+        return False
+
+
+def get_past_three_day_enriched(login_email: str) -> Optional[int]:
+    """Return email_found count for the current and previous two DB-local days."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT COUNT(*)
+                       FROM batch_enrichment_ledger
+                       WHERE LOWER(login_email) = LOWER(%s)
+                         AND attempted_at >= CURDATE() - INTERVAL 2 DAY
+                         AND attempted_at < CURDATE() + INTERVAL 1 DAY
+                         AND outcome = 'email_found'""",
+                    (login_email,),
+                )
+                return int(cur.fetchone()[0] or 0)
+    except Exception:
+        return None
+
 CONFIG_PATH = os.path.join("config", "apollo_accounts.json")
 TEMPLATE_PATH = os.path.join("config", "apollo_accounts.template.json")
 EXPORTS_DIR = os.path.join("dist", "exports")
@@ -350,6 +390,19 @@ def enrich_leads_chunk(api_key: str, chunk: List[Dict[str, Any]], dry_run: bool 
             if res.status_code == 429:
                 wait_sec = int(res.headers.get("Retry-After", 10))
                 print(f"\n[Apollo Rate Limit 429] Backing off for {wait_sec}s...")
+                global _TELEGRAM_RATE_LIMIT_ALERTED
+                if not _TELEGRAM_RATE_LIMIT_ALERTED:
+                    _TELEGRAM_RATE_LIMIT_ALERTED = True
+                    recent_enriched = get_past_three_day_enriched(
+                        _TELEGRAM_RUN_CONTEXT.get("login_email", "")
+                    )
+                    send_telegram_alert(
+                        "Apollo enrichment rate limit hit (429). "
+                        "Alerts paused until the cooldown clears.\n"
+                        f"Login: {_TELEGRAM_RUN_CONTEXT.get('login_email', 'unknown')}\n"
+                        f"Credits remaining: {_TELEGRAM_RUN_CONTEXT.get('credits_remaining', 'unknown')}\n"
+                        f"Enriched past 3 days: {recent_enriched if recent_enriched is not None else 'unknown'}"
+                    )
                 time.sleep(wait_sec)
                 continue
 
@@ -894,6 +947,22 @@ def run_interactive_enricher():
     print(f">>> STARTING ENRICHMENT STREAM: {len(leads_to_process)} LEADS ({total_chunks} CHUNKS)")
     print("=" * 95)
 
+    _TELEGRAM_RUN_CONTEXT.update({
+        "login_email": login_email,
+        "credits_remaining": float(credits_before),
+    })
+    global _TELEGRAM_RATE_LIMIT_ALERTED
+    _TELEGRAM_RATE_LIMIT_ALERTED = False
+    recent_enriched = get_past_three_day_enriched(login_email)
+    send_telegram_alert(
+        "Apollo enrichment queue started.\n"
+        f"Login: {login_email}\n"
+        f"Batch: {selected_batch}\n"
+        f"Queue: {len(leads_to_process):,} leads\n"
+        f"Credits remaining: {float(credits_before):.2f}\n"
+        f"Enriched past 3 days: {recent_enriched if recent_enriched is not None else 'unknown'}"
+    )
+
     total_enriched_emails = 0
     total_credits_spent = 0.0
     total_free_companies_saved = 0
@@ -936,6 +1005,9 @@ def run_interactive_enricher():
                 total_free_companies_saved += 1
 
         total_credits_spent += float(getattr(results, "credits_consumed", 0) or 0)
+        _TELEGRAM_RUN_CONTEXT.update({
+            "credits_remaining": max(0.0, float(credits_before) - total_credits_spent),
+        })
 
         if not args.dry_run:
             with get_connection() as conn:

@@ -39,11 +39,10 @@ for p in [str(PROJECT_ROOT), str(MV_DIR)]:
 from backend.api import get_connection, extract_root_domain
 from scripts.apollo_export_formatter import APOLLO_75_HEADERS, format_apollo_lead_row
 from scripts.clean_enriched_export import (
-    fetch_enriched_logins_summary,
-    fetch_batches_for_login,
     fetch_enriched_leads_for_login,
     clean_apollo_dataframe,
     get_default_downloads_dir,
+    _current_cycle_scope_sql,
 )
 
 # MillionVerifier agent imports
@@ -67,6 +66,62 @@ def ensure_millionverifier_api_key() -> str:
             os.environ["MILLIONVERIFIER_API_KEY"] = key_input
             return key_input
         raise RuntimeError("MillionVerifier API key is required to run verification.")
+
+
+def fetch_pending_current_cycle_batches(conn, table_name: str = "all", include_all_cycles: bool = False) -> List[Dict[str, Any]]:
+    """Return enriched batches not yet recorded as sent to MillionVerifier."""
+    if table_name == "apollo_saved_leads":
+        target_tables = [("apollo_saved_leads", "Apollo")]
+    elif table_name == "enrich_saved_leads":
+        target_tables = [("enrich_saved_leads", "Enrich.so")]
+    else:
+        target_tables = [("apollo_saved_leads", "Apollo"), ("enrich_saved_leads", "Enrich.so")]
+
+    cycle_sql, cycle_params = _current_cycle_scope_sql() if not include_all_cycles else ("", [])
+    pending: List[Dict[str, Any]] = []
+    with conn.cursor() as cur:
+        for tbl, source_label in target_tables:
+            cycle_clause = f" AND ({cycle_sql})" if cycle_sql else ""
+            try:
+                cur.execute(
+                    f"""
+                    SELECT
+                        l.batch,
+                        COALESCE(NULLIF(e.login_email, ''), NULLIF(l.account_used, ''), 'Unknown') AS login_id,
+                        COUNT(DISTINCT l.id) AS total_enriched,
+                        COUNT(DISTINCT CASE WHEN l.email IS NOT NULL AND l.email != '' AND l.email != 'nan' THEN l.id END) AS verified_emails,
+                        MAX(l.created_at) AS last_added
+                    FROM `{tbl}` l
+                    LEFT JOIN batch_enrichment_ledger e
+                      ON e.batch COLLATE utf8mb4_unicode_ci = l.batch COLLATE utf8mb4_unicode_ci
+                     AND e.saved_lead_id = l.id
+                    WHERE (l.enriched_at IS NOT NULL OR (l.email IS NOT NULL AND l.email != ''))
+                      {cycle_clause}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM million_verifier_log mv
+                          WHERE LOWER(TRIM(mv.batch_name)) COLLATE utf8mb4_unicode_ci = LOWER(TRIM(l.batch)) COLLATE utf8mb4_unicode_ci
+                            AND LOWER(COALESCE(mv.status, 'completed')) NOT IN ('failed', 'error', 'cancelled')
+                      )
+                    GROUP BY l.batch, login_id
+                    ORDER BY MAX(l.created_at) DESC
+                    """,
+                    tuple(cycle_params),
+                )
+                for row in cur.fetchall():
+                    pending.append({
+                        "batch": str(row[0] or ""),
+                        "login_id": str(row[1] or "Unknown"),
+                        "total_enriched": int(row[2] or 0),
+                        "verified_emails": int(row[3] or 0),
+                        "last_added": str(row[4])[:16] if row[4] else "N/A",
+                        "source_table": tbl,
+                        "source_label": source_label,
+                    })
+            except Exception as ex:
+                print(f"[Notice] Could not query pending batches from `{tbl}`: {ex}")
+    return pending
+
+
 def preserve_batch_filename(name: str) -> str:
     r"""
     Ensures the exact batch name is used, preserving all symbols
@@ -89,106 +144,57 @@ def send_to_millionverifier_action(
     Select enriched leads by login/batch, run 14-step cleaning & CRM guardrails,
     upload to MillionVerifier, monitor progress, categorize, and prompt download.
     """
-    ensure_millionverifier_api_key()
-
     print("\n" + "=" * 95)
     scope_tag = f"Table: `{table_name}`" if table_name != "all" else "All Tables (Apollo + Enrich.so)"
     print(f"        SEND ENRICHED LEADS TO MILLIONVERIFIER (BULK VERIFICATION) [{scope_tag}]")
     print("=" * 95)
 
-    # 1. Discover and select enriched login
+    # 1. Discover current-cycle batches that have not been sent to MillionVerifier.
     current_cycle_only = not include_all_cycles
-    logins = fetch_enriched_logins_summary(
+    pending_batches = fetch_pending_current_cycle_batches(
         conn,
         table_name=table_name,
-        current_cycle_only=current_cycle_only,
+        include_all_cycles=include_all_cycles,
     )
-    if not logins and table_name != "all":
-        print(f"\n[NOTICE] No enriched leads found in `{table_name}`. Checking all tables...")
-        logins = fetch_enriched_logins_summary(
-            conn,
-            table_name="all",
-            current_cycle_only=current_cycle_only,
-        )
-        table_name = "all"
-
-    if not logins:
-        print("\n[NOTICE] No enriched leads found in `apollo_saved_leads` or `enrich_saved_leads`.")
-        print("Run `python scripts/enrich_batch_interactive.py` first to enrich a batch.")
+    if not pending_batches:
+        print("\n[NOTICE] No unsent enriched batches are available for the current cycle.")
         return
 
-    total_all_leads = sum(L["total_enriched"] for L in logins)
-    total_all_verified = sum(L["verified_emails"] for L in logins)
-
-    print(f"\n{'#':<4} | {'Enriched Login / Account':<35} | {'Enriched Leads':<15} | {'Verified Emails':<16} | {'Batches'}")
-    print("-" * 95)
-    if current_cycle_only:
-        print("  Scope: account cycles ending this month only (use --all-cycles for historical data)")
-    for idx, L in enumerate(logins, 1):
-        display_label = f"{L['login_id']} ({L['account_name']})" if L['login_id'] != L['account_name'] else L['login_id']
-        batches_preview = L['batches'] if len(L['batches']) <= 32 else L['batches'][:29] + "..."
-        print(f"[{idx:<2}] | {display_label:<35} | {L['total_enriched']:<15,d} | {L['verified_emails']:<16,d} | {batches_preview}")
-    print(f"[A ] | {'[ALL ENRICHED LOGINS COMBINED]':<35} | {total_all_leads:<15,d} | {total_all_verified:<16,d} | (all batches)")
-    print("=" * 95)
+    print(f"\n{'#':<4} | {'Login / Account':<35} | {'Batch':<42} | {'Enriched Leads':<15} | {'Emails':<12} | {'Last Added'}")
+    print("-" * 125)
+    print("  Scope: current-cycle batches not yet sent to MillionVerifier")
+    for idx, b in enumerate(pending_batches, 1):
+        login = b["login_id"]
+        batch_name = b["batch"] if len(b["batch"]) <= 42 else b["batch"][:39] + "..."
+        print(f"[{idx:<2}] | {login:<35} | {batch_name:<42} | {b['total_enriched']:<15,d} | {b['verified_emails']:<12,d} | {b['last_added']}")
+    print("-" * 125)
 
     while True:
-        sel = input(f"\n>> Select Enriched Login Number [1-{len(logins)}] or 'A' for all: ").strip()
-        if sel.upper() == "A":
-            selected_login = "__ALL__"
-            selected_acc_name = "All_Logins"
-            label = "All Enriched Logins Combined"
+        sel = input(f"\n>> Select batch to send [1-{len(pending_batches)}]: ").strip()
+        if sel.isdigit() and 1 <= int(sel) <= len(pending_batches):
+            picked_b = pending_batches[int(sel) - 1]
             break
-        elif sel.isdigit() and 1 <= int(sel) <= len(logins):
-            picked = logins[int(sel) - 1]
-            selected_login = picked["login_id"]
-            selected_acc_name = picked["account_name"]
-            label = f"{picked['login_id']} ({picked['account_name']})" if picked['login_id'] != picked['account_name'] else picked['login_id']
-            break
-        print("Invalid choice, please select a valid number or 'A'.")
+        print("Invalid choice, please select a valid batch number.")
 
-    print(f"\n✓ Selected Login: '{label}'")
-
-    # 2. Discover and select batch
-    batches = fetch_batches_for_login(
-        conn,
-        selected_login,
-        selected_acc_name,
-        table_name=table_name,
-        current_cycle_only=current_cycle_only,
-    )
-    if not batches:
-        print(f"[NOTICE] No batches found with enriched leads for login '{label}'.")
-        return
-
-    total_batch_leads = sum(b["total_enriched"] for b in batches)
-    total_batch_emails = sum(b["verified_emails"] for b in batches)
+    selected_login = picked_b["login_id"]
+    selected_acc_name = selected_login
+    selected_batch = picked_b["batch"]
+    batch_label = f"{picked_b['batch']} [{picked_b.get('source_label', 'Apollo')}]"
+    batch_target_table = picked_b.get("source_table", table_name)
 
     print("\n" + "-" * 95)
-    print(f"BATCH SELECTION FOR LOGIN: {label}")
+    print("SELECTED CURRENT-CYCLE BATCH")
     print("-" * 95)
-    print(f"{'#':<4} | {'Batch Name':<38} | {'Source':<10} | {'Enriched Leads':<15} | {'Verified Emails':<16} | {'Last Added'}")
+    print(f"  Login:            {selected_login}")
+    print(f"  Batch:            {batch_label}")
+    print(f"  Enriched leads:   {picked_b['total_enriched']:,d}")
+    print(f"  Emails to send:   {picked_b['verified_emails']:,d}")
     print("-" * 95)
-    print(f"[A ] | {'[ALL BATCHES COMBINED]':<38} | {'[All]':<10} | {total_batch_leads:<15,d} | {total_batch_emails:<16,d} | (all batches)")
-    for b_idx, b in enumerate(batches, 1):
-        b_name_disp = b['batch'] if len(b['batch']) <= 38 else b['batch'][:35] + "..."
-        src_disp = f"[{b.get('source_label', 'Apollo')}]"
-        print(f"[{b_idx:<2}] | {b_name_disp:<38} | {src_disp:<10} | {b['total_enriched']:<15,d} | {b['verified_emails']:<16,d} | {b['last_added']}")
-    print("-" * 95)
-
-    while True:
-        b_sel = input(f"\n>> Select Batch [1-{len(batches)}] or 'A' for all batches (default A): ").strip()
-        if not b_sel or b_sel.upper() == "A":
-            selected_batch = "__ALL__"
-            batch_label = "All Batches Combined"
-            batch_target_table = table_name
-            break
-        elif b_sel.isdigit() and 1 <= int(b_sel) <= len(batches):
-            picked_b = batches[int(b_sel) - 1]
-            selected_batch = picked_b["batch"]
-            batch_label = f"{picked_b['batch']} [{picked_b.get('source_label', 'Apollo')}]"
-            batch_target_table = picked_b.get("source_table", table_name)
-            break
-        print("Invalid choice, please select a valid batch number or 'A'.")
+    proceed = input("Proceed with this batch to MillionVerifier? [Y/n]: ").strip().lower()
+    if proceed in ("n", "no"):
+        print("MillionVerifier send cancelled.")
+        return
+    ensure_millionverifier_api_key()
 
     print(f"\n✓ Selected Batch: '{batch_label}'")
     print("  Fetching lead records and firmographic payloads from database...")
