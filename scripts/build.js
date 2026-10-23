@@ -81,7 +81,10 @@ function buildExtension(name, srcDir, destDir, additionalFiles = []) {
   let totalBytes = 0;
   for (const asset of assetsToCopy) {
     const src = path.join(srcDir, asset);
-    if (!fs.existsSync(src)) continue;
+    if (!fs.existsSync(src)) {
+      console.error(`  ✗ Required bundle asset missing: ${asset}`);
+      process.exit(1);
+    }
     const dest = path.join(destDir, asset);
     fs.copyFileSync(src, dest);
     const stat = fs.statSync(dest);

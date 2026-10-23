@@ -22,6 +22,13 @@ require('./build.js');
 console.log('Packaging extension bundles into zip archives...');
 
 function packageZip(zipFile, filesList, folderCwd) {
+  for (const file of filesList) {
+    const filePath = path.join(folderCwd, file);
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Cannot package missing file: ${filePath}`);
+    }
+  }
+
   if (fs.existsSync(zipFile)) {
     fs.unlinkSync(zipFile);
   }
@@ -42,10 +49,18 @@ function packageZip(zipFile, filesList, folderCwd) {
 
 try {
   // Package Apollo
-  packageZip(APOLLO_ZIP, ['manifest.json', 'content.js', 'background.js'], DIST_DIR);
+  packageZip(
+    APOLLO_ZIP,
+    ['manifest.json', 'content.js', 'background.js', 'options.html', 'options.js'],
+    DIST_DIR,
+  );
 
   // Package Enrich.so
-  packageZip(ENRICH_ZIP, ['manifest.json', 'content.js', 'background.js', 'styles.css'], ENRICH_DIST);
+  packageZip(
+    ENRICH_ZIP,
+    ['manifest.json', 'content.js', 'background.js', 'styles.css', 'options.html', 'options.js'],
+    ENRICH_DIST,
+  );
 
   console.log('\n======================================================================');
   console.log('ALL PACKAGING COMPLETED SUCCESSFULLY!');
