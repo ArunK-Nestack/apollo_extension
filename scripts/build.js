@@ -111,12 +111,13 @@ for (const f of existingDistFiles) {
 }
 
 // 1. Build Apollo Extension into dist/ (and dist/apollo/)
-const apolloBytes = buildExtension('Apollo.io', APOLLO_SRC, DIST_DIR);
+const optionsAssets = ['options.html', 'options.js'];
+const apolloBytes = buildExtension('Apollo.io', APOLLO_SRC, DIST_DIR, optionsAssets);
 const apolloSubDir = path.join(DIST_DIR, 'apollo');
-buildExtension('Apollo.io (Subfolder)', APOLLO_SRC, apolloSubDir);
+buildExtension('Apollo.io (Subfolder)', APOLLO_SRC, apolloSubDir, optionsAssets);
 
 // 2. Build Enrich.so Extension into dist/enrich/
-const enrichBytes = buildExtension('Enrich.so', ENRICH_SRC, ENRICH_DIST, ['styles.css']);
+const enrichBytes = buildExtension('Enrich.so', ENRICH_SRC, ENRICH_DIST, ['styles.css', ...optionsAssets]);
 
 const elapsed = Date.now() - t0;
 

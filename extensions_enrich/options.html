@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Enrich Matcher Connection</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 620px; margin: 40px auto; padding: 0 20px; color: #172033; }
+    label { display: block; margin-top: 18px; font-weight: 650; }
+    input { box-sizing: border-box; width: 100%; margin-top: 6px; padding: 10px; border: 1px solid #aeb8c8; border-radius: 6px; }
+    button { margin-top: 20px; padding: 10px 18px; border: 0; border-radius: 6px; background: #2457d6; color: white; cursor: pointer; }
+    small { display: block; margin-top: 5px; color: #5c667a; }
+    #status { margin-top: 14px; min-height: 20px; }
+  </style>
+</head>
+<body>
+  <h1>Backend connection</h1>
+  <p>Leave the defaults for local use. For deployment, enter the HTTPS backend URL and your individual member token.</p>
+  <label for="backendUrl">Backend URL</label>
+  <input id="backendUrl" type="url" placeholder="http://127.0.0.1:8000">
+  <small>No trailing slash. Production URLs should use HTTPS.</small>
+  <label for="apiToken">API token</label>
+  <input id="apiToken" type="password" autocomplete="off" placeholder="Optional for local mode">
+  <small>The token is stored in this extension's local Chrome storage.</small>
+  <button id="save" type="button">Save connection</button>
+  <div id="status" role="status"></div>
+  <script src="options.js"></script>
+</body>
+</html>

@@ -31,7 +31,12 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 async function callBackendApi(endpoint, body) {
-  const hosts = ["http://127.0.0.1:8000", "http://localhost:8000"];
+  const stored = await chrome.storage.local.get(["contactCheckerBackendUrl", "contactCheckerApiToken"]);
+  const configuredHost = String(stored.contactCheckerBackendUrl || "").trim().replace(/\/+$/, "");
+  const hosts = configuredHost
+    ? [configuredHost]
+    : ["http://127.0.0.1:8000", "http://localhost:8000"];
+  const apiToken = String(stored.contactCheckerApiToken || "").trim();
   let lastError = null;
 
   for (const host of hosts) {
@@ -40,7 +45,10 @@ async function callBackendApi(endpoint, body) {
     try {
       const response = await fetch(`${host}${endpoint}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiToken ? { "X-Contact-Checker-Token": apiToken } : {})
+        },
         body: JSON.stringify(body),
         signal: controller.signal
       });
@@ -61,10 +69,18 @@ async function callBackendApi(endpoint, body) {
 }
 
 async function fetchAccountRenewals() {
+  const stored = await chrome.storage.local.get(["contactCheckerBackendUrl", "contactCheckerApiToken"]);
+  const configuredHost = String(stored.contactCheckerBackendUrl || "").trim().replace(/\/+$/, "");
+  const hosts = configuredHost
+    ? [configuredHost]
+    : ["http://127.0.0.1:8000", "http://localhost:8000"];
+  const apiToken = String(stored.contactCheckerApiToken || "").trim();
   let lastError = null;
-  for (const host of ["http://127.0.0.1:8000", "http://localhost:8000"]) {
+  for (const host of hosts) {
     try {
-      const response = await fetch(`${host}/api/v1/account-renewals`);
+      const response = await fetch(`${host}/api/v1/account-renewals`, {
+        headers: apiToken ? { "X-Contact-Checker-Token": apiToken } : {}
+      });
       if (!response.ok) throw new Error(`API error: ${response.status}`);
       return await response.json();
     } catch (err) {

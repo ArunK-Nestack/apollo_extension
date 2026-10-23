@@ -1,5 +1,6 @@
 import csv
 import io
+import hmac
 import json
 import os
 import re
@@ -30,7 +31,8 @@ if hasattr(sys.stdout, "reconfigure"):
 import pymysql
 from dotenv import load_dotenv
 from openai import OpenAI
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
@@ -53,6 +55,43 @@ DB_NAME = os.getenv("DB_NAME", "apollo_scrapers").strip()
 DB_USER = os.getenv("DB_USER", "nestack").strip()
 DB_PASSWORD = os.getenv("DB_PASSWORD", "").strip()
 DB_TABLE = os.getenv("DB_TABLE", "emails").strip()
+
+APP_ENV = os.getenv("APP_ENV", "local").strip().lower()
+API_HOST = os.getenv("API_HOST", "127.0.0.1").strip() or "127.0.0.1"
+API_PORT = int(os.getenv("API_PORT", "8000").strip() or "8000")
+CONTACT_CHECKER_API_TOKEN = os.getenv("CONTACT_CHECKER_API_TOKEN", "").strip()
+
+
+def _parse_member_api_tokens(value: str) -> dict[str, str]:
+    """Parse `member=token;member2=token2` without logging token values."""
+    parsed: dict[str, str] = {}
+    for item in str(value or "").split(";"):
+        member, separator, token = item.partition("=")
+        member = member.strip()
+        token = token.strip()
+        if separator and member and token:
+            parsed[member] = token
+    return parsed
+
+
+API_MEMBER_TOKENS = _parse_member_api_tokens(os.getenv("CONTACT_CHECKER_MEMBER_TOKENS", ""))
+_auth_required_value = os.getenv("AUTH_REQUIRED", "").strip().lower()
+AUTH_REQUIRED = (
+    _auth_required_value in {"1", "true", "yes", "on"}
+    if _auth_required_value
+    else APP_ENV in {"production", "prod"}
+)
+
+_default_origins = "http://127.0.0.1:8000,http://localhost:8000"
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", _default_origins).split(",")
+    if origin.strip()
+]
+CHROME_EXTENSION_ORIGIN_REGEX = os.getenv(
+    "CHROME_EXTENSION_ORIGIN_REGEX",
+    r"^chrome-extension://[a-p]{32}$" if APP_ENV == "local" else "",
+).strip() or None
 
 GUARDRAILS_ENABLED = os.getenv("GUARDRAILS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -558,11 +597,56 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=CHROME_EXTENSION_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "X-Contact-Checker-Token"],
 )
+
+_PUBLIC_AUTH_PATHS = {"/health", "/docs", "/redoc", "/openapi.json"}
+_PUBLIC_AUTH_PREFIXES = ("/static/",)
+
+
+def get_api_auth_error(path: str, method: str, supplied_token: str) -> tuple[int, str] | None:
+    """Return an HTTP authentication error, or None when the request may proceed."""
+    is_public = path in _PUBLIC_AUTH_PATHS or path.startswith(_PUBLIC_AUTH_PREFIXES)
+    if not AUTH_REQUIRED or method == "OPTIONS" or is_public:
+        return None
+    configured_tokens = [CONTACT_CHECKER_API_TOKEN, *API_MEMBER_TOKENS.values()]
+    configured_tokens = [token for token in configured_tokens if token]
+    if not configured_tokens:
+        return 503, "API authentication is required but no server token is configured."
+    if not any(hmac.compare_digest(supplied_token, token) for token in configured_tokens):
+        return 401, "Invalid or missing API token."
+    return None
+
+
+def resolve_api_member(supplied_token: str) -> str:
+    """Resolve an authenticated token to its member label for request auditing."""
+    for member, token in API_MEMBER_TOKENS.items():
+        if token and hmac.compare_digest(supplied_token, token):
+            return member
+    if CONTACT_CHECKER_API_TOKEN and hmac.compare_digest(supplied_token, CONTACT_CHECKER_API_TOKEN):
+        return "shared"
+    return "local" if not AUTH_REQUIRED else ""
+
+
+@app.middleware("http")
+async def require_contact_checker_token(request: Request, call_next):
+    """Require a shared API token when AUTH_REQUIRED is enabled."""
+    auth_error = get_api_auth_error(
+        request.url.path,
+        request.method,
+        request.headers.get("X-Contact-Checker-Token", ""),
+    )
+    if auth_error:
+        status_code, detail = auth_error
+        return JSONResponse(status_code=status_code, content={"detail": detail})
+    request.state.api_member = resolve_api_member(
+        request.headers.get("X-Contact-Checker-Token", "")
+    )
+    return await call_next(request)
 
 
 # ============================================================
@@ -4531,15 +4615,30 @@ def match_apollo(request: ApolloMatchRequest):
         # --------------------------------------------------------
         # STEP 2: DUAL DEDUPLICATION: FULL NAME + DOMAIN & DOMAIN IN CRM
         # --------------------------------------------------------
-        crm_matches = check_person_and_domains_in_crm_batch(contacts, contact_primary_domain, connection=conn, active_batch=batch_tag)
+        # Stage 1 must apply the same duplicate policy as the enrichment gate.
+        # With multiple contacts allowed per domain, retain only genuinely new
+        # titles at an existing company; with a one-contact cap, an existing
+        # domain remains a hard duplicate.  Previously this call used the
+        # default title-unaware mode, allowing records that enrichment later
+        # rejected as duplicate-title/domain matches.
+        title_aware_layer1 = max_contacts_per_comp > 1
+        crm_matches = check_person_and_domains_in_crm_batch(
+            contacts,
+            contact_primary_domain,
+            connection=conn,
+            active_batch=batch_tag,
+            title_aware_exact_domain=title_aware_layer1,
+        )
 
         net_new_contacts: list[ApolloContact] = []
 
         for idx, contact in enumerate(contacts, 1):
             hit = crm_matches.get(contact.key)
-            if hit and hit.get("guardrail_status") in (
-                "contact_already_in_db", "person_domain_overlap", "apollo_id_already_enriched"
-            ):
+            # Any positive guardrail result is a confirmed duplicate or
+            # existing-company match.  Do not admit it to the collection
+            # batch; unresolved cases return no hit and remain eligible for
+            # the enrichment/review stage.
+            if hit:
                 existing_domain_contacts += 1
                 existing_count += 1
                 ignored_count += 1
@@ -5074,5 +5173,5 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print(">>> [ContactChecker API] Starting Lead Processing Engine (Port 8000)")
     print("=" * 70 + "\n")
-    uvicorn.run("backend.api:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.api:app", host=API_HOST, port=API_PORT, reload=APP_ENV == "local")
 

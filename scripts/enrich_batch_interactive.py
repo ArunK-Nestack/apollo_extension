@@ -688,10 +688,13 @@ def run_interactive_enricher():
     credit_map = load_cached_credit_report()
     current_cycle_batches = filter_canonical_cycle_batches(accounts, all_batches_data)
     canonical_keys = {_batch_key(batch.get("batch", "")) for batch in current_cycle_batches}
+    # Current-cycle Apollo batches are selectable from the saved-lead inventory
+    # itself.  Requiring extension_activity_log here hides valid batches that
+    # were imported from a CSV or saved outside the extension, even though they
+    # are eligible for enrichment under the active login cycle.
     selectable_batches = [
         batch for batch in current_cycle_batches
         if batch["source_table"] == "apollo_saved_leads"
-        and _batch_key(batch.get("batch", "")) in extension_activity_batch_keys
     ]
     selectable_keys = {_batch_key(batch.get("batch", "")) for batch in selectable_batches}
     selectable_batches.extend(
@@ -703,7 +706,7 @@ def run_interactive_enricher():
         and _batch_key(batch.get("batch", "")) not in canonical_keys
     )
     print_account_overview(accounts, selectable_batches, credit_map)
-    print("  Batch scope: active, non-expired Apollo cycle batches with extension activity only")
+    print("  Batch scope: active, non-expired Apollo cycle batches from saved-lead inventory")
 
     # Pre-selection if --batch is provided
     selected_item = None
@@ -716,7 +719,7 @@ def run_interactive_enricher():
 
     while not selected_item:
         visible = selectable_batches
-        filter_desc = "Apollo saved leads with extension activity"
+        filter_desc = "Apollo saved leads in the active cycle"
 
         print(f"\nActive Filter: {filter_desc}")
         if not visible:

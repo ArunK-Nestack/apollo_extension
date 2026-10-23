@@ -15,6 +15,9 @@
     "http://localhost:8000/*",
     "https://dash.enrich.so/*"
   ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
   "content_scripts": [
     {
       "matches": ["https://dash.enrich.so/*"],
@@ -26,6 +29,7 @@
   "background": {
     "service_worker": "background.js"
   },
+  "options_page": "options.html",
   "action": {
     "default_title": "Toggle Enrich.so Matcher (ON / OFF)"
   }

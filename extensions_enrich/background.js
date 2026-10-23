@@ -41,7 +41,11 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 // Call backend API on port 8000 with clean timeout handling
 async function callBackendApi(endpoint, body) {
-  const host = "http://127.0.0.1:8000";
+  const stored = await chrome.storage.local.get(["contactCheckerBackendUrl", "contactCheckerApiToken"]);
+  const host = String(stored.contactCheckerBackendUrl || "http://127.0.0.1:8000")
+    .trim()
+    .replace(/\/+$/, "");
+  const apiToken = String(stored.contactCheckerApiToken || "").trim();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort(new Error("Timeout: Backend took longer than 30 seconds"));
@@ -50,7 +54,10 @@ async function callBackendApi(endpoint, body) {
   try {
     const response = await fetch(`${host}${endpoint}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiToken ? { "X-Contact-Checker-Token": apiToken } : {})
+      },
       body: JSON.stringify(body),
       signal: controller.signal
     });

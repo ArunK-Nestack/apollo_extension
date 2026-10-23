@@ -19,7 +19,7 @@ import os
 import sys
 import json
 import unittest
-from unittest.mock import mock_open, patch
+from unittest.mock import Mock, mock_open, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -46,9 +46,76 @@ from scripts.apollo_search_direct import (
     apply_search_tab,
 )
 from backend.api import ApolloContact, get_connection
+import backend.api as api
 
 
 class TestApolloSearchDirect(unittest.TestCase):
+
+    def test_stage_one_blocks_all_confirmed_guardrail_hits(self):
+        """Stage 1 must not collect a lead already rejected by any guardrail."""
+        class FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, *args, **kwargs):
+                return None
+
+            def fetchall(self):
+                return []
+
+            def executemany(self, *args, **kwargs):
+                return None
+
+        class FakeConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def cursor(self):
+                return FakeCursor()
+
+        checker = Mock(return_value={
+            "lead-1": {
+                "exists": True,
+                "required": False,
+                "ignored": True,
+                "guardrail_status": "duplicate_title_for_company",
+                "guardrail_reason": "[L1] duplicate title",
+            }
+        })
+        contact = ApolloContact(
+            key="lead-1",
+            apollo_id="apollo-1",
+            name="Alex Smith",
+            job_title="VP Sales",
+            company="Example Corp",
+            company_domain="example.com",
+        )
+
+        with patch.object(api, "get_connection", return_value=FakeConnection()), \
+             patch.object(api, "ensure_apollo_saved_leads_table"), \
+             patch.object(api, "get_target_table_schema", return_value={"table_name": "emails", "email_domain": "domain", "name": "full_name"}), \
+             patch.object(api, "resolve_company_domains", return_value=({"lead-1": "example.com"}, {"lead-1": "https://example.com"})), \
+             patch.object(api, "check_person_and_domains_in_crm_batch", checker), \
+             patch.object(api, "lookup_job_titles_batch", return_value={}), \
+             patch.object(api, "fetch_existing_company_contacts_batch", return_value={}):
+            response = api.match_apollo(api.ApolloMatchRequest(
+                contacts=[contact],
+                batch="stage-one-guardrail-test",
+                title_guardrail_enabled=False,
+                indian_name_guardrail_enabled=False,
+                max_contacts_per_company=3,
+            ))
+
+        self.assertEqual(response["summary"]["required"], 0)
+        self.assertEqual(response["summary"]["ignored"], 1)
+        checker.assert_called_once()
+        self.assertTrue(checker.call_args.kwargs["title_aware_exact_domain"])
 
     def test_clean_domain(self):
         self.assertEqual(clean_domain("https://www.example.com/about"), "example.com")
