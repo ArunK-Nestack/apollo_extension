@@ -39,6 +39,9 @@ def apply_4_layer_guardrails(
     if conn is None:
         conn = api.get_connection()
 
+    if not api._domain_trie.loaded:
+        api.load_domain_trie(connection=conn)
+
     # Layer 0: Dynamic N leads per canonical domain (or company fallback)
     # Allows any positive contact limit per domain based on outreach capacity.
     domain_to_leads: dict[str, list[dict]] = {}

@@ -1312,21 +1312,24 @@ def _try_domain_layers(
                     "domain_source": domain_source,
                 }
 
-    if prim_d and _domain_trie.loaded:
-        incoming_slug = _clean_slug(prim_d)
-        if incoming_slug:
-            trie_match_domain, common_prefix = _domain_trie.find_prefix_match(incoming_slug, min_prefix_len=4)
-            if trie_match_domain and trie_match_domain != prim_d and _is_valid_branch_match(trie_match_domain, common_prefix, incoming_slug):
-                return {
-                    "exists": True, "required": False, "ignored": True,
-                    "guardrail_status": "trie_brand_stem_match",
-                    "guardrail_reason": (
-                        f"[L3] Domain '{prim_d}' is a branch of known DB domain '{trie_match_domain}' "
-                        f"(shared stem: '{common_prefix}').{source_suffix}"
-                    ),
-                    "matched_domain": prim_d, "matched_db_domain": trie_match_domain,
-                    "domain_source": domain_source,
-                }
+    if prim_d:
+        if not _domain_trie.loaded:
+            load_domain_trie(connection=connection)
+        if _domain_trie.loaded:
+            incoming_slug = _clean_slug(prim_d)
+            if incoming_slug:
+                trie_match_domain, common_prefix = _domain_trie.find_prefix_match(incoming_slug, min_prefix_len=4)
+                if trie_match_domain and trie_match_domain != prim_d and _is_valid_branch_match(trie_match_domain, common_prefix, incoming_slug):
+                    return {
+                        "exists": True, "required": False, "ignored": True,
+                        "guardrail_status": "trie_brand_stem_match",
+                        "guardrail_reason": (
+                            f"[L3] Domain '{prim_d}' is a branch of known DB domain '{trie_match_domain}' "
+                            f"(shared stem: '{common_prefix}').{source_suffix}"
+                        ),
+                        "matched_domain": prim_d, "matched_db_domain": trie_match_domain,
+                        "domain_source": domain_source,
+                    }
 
     if prim_d and _DNS_AVAILABLE:
         with _mx_cache_lock:
@@ -1643,6 +1646,10 @@ def check_person_and_domains_in_crm_batch(
     candidate_domains = list(candidate_domains_set)
     if not candidate_domains and not incoming_apollo_ids:
         return {}
+
+    # Ensure Layer 3 domain prefix trie is loaded
+    if not _domain_trie.loaded:
+        load_domain_trie(connection=connection)
 
     # Parallel asynchronous DNS MX prefetch (only prefetch authentic domains, never tens of thousands of candidate strings)
     mx_prefetch_thread = None

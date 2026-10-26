@@ -199,6 +199,9 @@ def check_enrich_contacts_in_crm_4_layers(
     if not candidate_domains:
         return {}
 
+    if not api_mod._domain_trie.loaded:
+        api_mod.load_domain_trie(connection=connection)
+
     # Layer 1: Query CRM master emails table, apollo_saved_leads, and enrich_saved_leads
     schema = api_mod.get_target_table_schema(connection)
     tbl_name = schema["table_name"]
