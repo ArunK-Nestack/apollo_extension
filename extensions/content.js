@@ -257,6 +257,7 @@
     lastBackendSummary: null,
     renewalsRequestInFlight: false,
     renewalsLoaded: false,
+    matchRequestInFlight: false,
     isEvaluatingBatch: false,
     lastEvaluatedPendingTimestamp: 0,
     lastNavigatedKey: "",
@@ -4094,6 +4095,12 @@
       return;
     }
 
+    // Only one Apollo batch may be in flight at a time. DOM mutations can
+    // trigger overlapping scans while the previous request is still running.
+    if (state.matchRequestInFlight) {
+      return;
+    }
+
     // Mark contacts as pending with current timestamp
     contactsToCheck.forEach(contact =>
       state.pendingContacts.set(contact.key, Date.now())
@@ -4122,6 +4129,7 @@
 
     // Send batch to backend
     try {
+      state.matchRequestInFlight = true;
       const currentPageNumber = getApolloPageNumber();
       chrome.runtime.sendMessage(
         {
@@ -4152,6 +4160,7 @@
           })
         },
         response => {
+          state.matchRequestInFlight = false;
           contactsToCheck.forEach(contact => state.pendingContacts.delete(contact.key));
 
           if (chrome.runtime.lastError) {
@@ -4275,6 +4284,7 @@
         }
       );
     } catch (sendErr) {
+      state.matchRequestInFlight = false;
       contactsToCheck.forEach(contact => state.pendingContacts.delete(contact.key));
       contactsToCheck.forEach(contact => state.retryBlockedUntil.set(contact.key, Date.now() + 30000));
       console.error("Contact Checker: sendMessage threw synchronously:", sendErr);
