@@ -33,44 +33,40 @@ chrome.action.onClicked.addListener(async (tab) => {
 async function callBackendApi(endpoint, body) {
   const stored = await chrome.storage.local.get(["contactCheckerBackendUrl", "contactCheckerApiToken"]);
   const configuredHost = String(stored.contactCheckerBackendUrl || "").trim().replace(/\/+$/, "");
-  const hosts = configuredHost
-    ? [configuredHost]
-    : ["http://127.0.0.1:8000", "http://localhost:8000"];
+  const host = configuredHost || "http://127.0.0.1:8000";
   const apiToken = String(stored.contactCheckerApiToken || "").trim();
-  let lastError = null;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`${host}${endpoint}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiToken ? { "X-Contact-Checker-Token": apiToken } : {})
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
 
-  for (const host of hosts) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
-    try {
-      const response = await fetch(`${host}${endpoint}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(apiToken ? { "X-Contact-Checker-Token": apiToken } : {})
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        let detail = "";
-        try {
-          const payload = await response.json();
-          detail = payload?.detail || payload?.error || "";
-        } catch (_) { /* response may not contain JSON */ }
-        throw new Error(`API error: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`);
-      }
-
-      return await response.json();
-    } catch (err) {
-      clearTimeout(timeoutId);
-      lastError = err;
+    if (!response.ok) {
+      let detail = "";
+      try {
+        const payload = await response.json();
+        detail = payload?.detail || payload?.error || "";
+      } catch (_) { /* response may not contain JSON */ }
+      throw new Error(`API error: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`);
     }
-  }
 
-  throw lastError || new Error("Unable to connect to Contact Checker Backend on port 8000.");
+    return await response.json();
+  } catch (error) {
+    if (error?.message?.startsWith("API error:")) throw error;
+    if (error?.name === "AbortError") {
+      throw new Error(`Backend timed out after 15s at ${host}. Confirm the API is running and /health responds.`);
+    }
+    throw new Error(`Cannot reach backend at ${host}. Start the API and confirm ${host}/health responds.`);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 let accountRenewalsCache = null;
@@ -81,25 +77,15 @@ async function fetchAccountRenewals() {
   }
   const stored = await chrome.storage.local.get(["contactCheckerBackendUrl", "contactCheckerApiToken"]);
   const configuredHost = String(stored.contactCheckerBackendUrl || "").trim().replace(/\/+$/, "");
-  const hosts = configuredHost
-    ? [configuredHost]
-    : ["http://127.0.0.1:8000", "http://localhost:8000"];
+  const host = configuredHost || "http://127.0.0.1:8000";
   const apiToken = String(stored.contactCheckerApiToken || "").trim();
-  let lastError = null;
-  for (const host of hosts) {
-    try {
-      const response = await fetch(`${host}/api/v1/account-renewals`, {
-        headers: apiToken ? { "X-Contact-Checker-Token": apiToken } : {}
-      });
-      if (!response.ok) throw new Error(`API error: ${response.status}`);
-      const data = await response.json();
-      accountRenewalsCache = { data, timestamp: Date.now() };
-      return data;
-    } catch (err) {
-      lastError = err;
-    }
-  }
-  throw lastError || new Error("Unable to reach backend on port 8000.");
+  const response = await fetch(`${host}/api/v1/account-renewals`, {
+    headers: apiToken ? { "X-Contact-Checker-Token": apiToken } : {}
+  });
+  if (!response.ok) throw new Error(`API error: ${response.status}`);
+  const data = await response.json();
+  accountRenewalsCache = { data, timestamp: Date.now() };
+  return data;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

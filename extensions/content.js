@@ -4491,7 +4491,8 @@
     }
 
     console.log("Contact Database Checker enabled — Apollo mode.");
-    addActivity("EXTENSION_STARTED", "Contact Database Checker enabled in Apollo mode.");
+    const extensionVersion = chrome.runtime.getManifest?.().version || "unknown";
+    addActivity("EXTENSION_STARTED", `Contact Database Checker v${extensionVersion} enabled in Apollo mode.`);
     ensureStylesInjected();
     renderExportControls();
     showStatus("Contact Checker ON");
