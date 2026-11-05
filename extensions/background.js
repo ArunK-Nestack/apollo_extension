@@ -3,6 +3,8 @@ function contactCheckerBackgroundLog(event, details = {}) {
   console.log(`[ContactChecker BG] ${timestamp} ${event}`, details);
 }
 
+const BACKEND_REQUEST_TIMEOUT_MS = 60000;
+
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab.id) return;
 
@@ -36,7 +38,7 @@ async function callBackendApi(endpoint, body) {
   const host = configuredHost || "http://127.0.0.1:8000";
   const apiToken = String(stored.contactCheckerApiToken || "").trim();
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  const timeoutId = setTimeout(() => controller.abort(), BACKEND_REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch(`${host}${endpoint}`, {
       method: "POST",
@@ -61,7 +63,7 @@ async function callBackendApi(endpoint, body) {
   } catch (error) {
     if (error?.message?.startsWith("API error:")) throw error;
     if (error?.name === "AbortError") {
-      throw new Error(`Backend timed out after 15s at ${host}. Confirm the API is running and /health responds.`);
+      throw new Error(`Backend timed out after ${BACKEND_REQUEST_TIMEOUT_MS / 1000}s at ${host}. Confirm the API is running and /health responds.`);
     }
     throw new Error(`Cannot reach backend at ${host}. Start the API and confirm ${host}/health responds.`);
   } finally {

@@ -3984,10 +3984,10 @@
       return;
     }
 
-    // Keep pending state longer than the backend's two 15s host attempts.
+    // Keep pending state longer than the backend request timeout.
     const now = Date.now();
     for (const [k, ts] of state.pendingContacts.entries()) {
-      if (now - ts > 45000) {
+      if (now - ts > 75000) {
         state.pendingContacts.delete(k);
       }
     }
