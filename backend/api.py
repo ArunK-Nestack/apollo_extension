@@ -1217,6 +1217,7 @@ def _try_domain_layers(
     title_aware_exact_domain: bool = False,
     connection=None,
     domain_source: str = "",
+    allow_sync_dns: bool = True,
 ) -> dict | None:
     """Run L1-L4 for one candidate domain. Returns result dict or None."""
     source_suffix = f" [{domain_source}]" if domain_source else ""
@@ -1334,7 +1335,7 @@ def _try_domain_layers(
     if prim_d and _DNS_AVAILABLE:
         with _mx_cache_lock:
             mx_root = _mx_cache.get(prim_d)
-        if mx_root is None:
+        if mx_root is None and allow_sync_dns:
             mx_root = _resolve_mx_root_domain(prim_d, timeout=0.2)
         if mx_root and mx_root != prim_d:
             with _crm_domain_cache_lock:
@@ -1952,6 +1953,7 @@ def check_person_and_domains_in_crm_batch(
                 matched_titles=matched_titles,
                 title_aware_exact_domain=title_aware_exact_domain,
                 connection=connection, domain_source=source,
+                allow_sync_dns=False,
             )
             if hit:
                 results[c.key] = hit
@@ -3444,9 +3446,19 @@ def ensure_apollo_saved_leads_table(conn):
         print(f"[ContactChecker] Notice: ensure apollo_saved_leads table: {e}", flush=True)
 
 
+_ledger_schema_ready = False
+_ledger_schema_lock = threading.Lock()
+
+
 def ensure_batch_enrichment_ledger_table(conn) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
+    global _ledger_schema_ready
+    if _ledger_schema_ready:
+        return
+    with _ledger_schema_lock:
+        if _ledger_schema_ready:
+            return
+        with conn.cursor() as cur:
+            cur.execute(
             """
             CREATE TABLE IF NOT EXISTS `batch_enrichment_ledger` (
                 `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -3469,11 +3481,28 @@ def ensure_batch_enrichment_ledger_table(conn) -> None:
                 INDEX `idx_session` (`session_id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """
-        )
-        try:
-            cur.execute("ALTER TABLE `batch_enrichment_ledger` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
-        except Exception:
-            pass
+            )
+            cur.execute("SHOW INDEX FROM `batch_enrichment_ledger`;")
+            existing_indexes = {str(row[2]) for row in cur.fetchall()}
+            if "idx_ledger_apollo_outcome" not in existing_indexes:
+                try:
+                    cur.execute(
+                        "CREATE INDEX `idx_ledger_apollo_outcome` "
+                        "ON `batch_enrichment_ledger` (`apollo_id`, `outcome`);"
+                    )
+                except pymysql.err.OperationalError as error:
+                    if error.args[0] != 1061:
+                        raise
+            if "idx_company_domain_outcome" not in existing_indexes:
+                try:
+                    cur.execute(
+                        "CREATE INDEX `idx_company_domain_outcome` "
+                        "ON `batch_enrichment_ledger` (`company_domain`, `outcome`);"
+                    )
+                except pymysql.err.OperationalError as error:
+                    if error.args[0] != 1061:
+                        raise
+        _ledger_schema_ready = True
 
 
 def ensure_enrichment_run_audit_table(conn) -> None:
@@ -4537,6 +4566,14 @@ def match_apollo(request: ApolloMatchRequest):
     _batch_counter += 1
     batch_num = _batch_counter
     t0 = time.perf_counter()
+    stage_started = t0
+    stage_timings_ms: dict[str, float] = {}
+
+    def mark_stage(name: str) -> None:
+        nonlocal stage_started
+        now = time.perf_counter()
+        stage_timings_ms[name] = round((now - stage_started) * 1000, 1)
+        stage_started = now
 
     contacts = request.contacts
     total_received = len(contacts)
@@ -4574,6 +4611,7 @@ def match_apollo(request: ApolloMatchRequest):
     with get_connection() as conn:
         # Pre-initialize table schema
         get_target_table_schema(conn)
+        ensure_batch_enrichment_ledger_table(conn)
 
         # Preload existing batch saved leads into memory if not already cached
         with _batch_seen_companies_lock:
@@ -4606,6 +4644,8 @@ def match_apollo(request: ApolloMatchRequest):
                     print(f"[ContactChecker] WARNING: Could not preload batch_seen_companies for {batch_tag}: {ex_preload}", flush=True)
             seen_required_companies = _batch_seen_companies[batch_tag]
 
+        mark_stage("setup_and_batch_preload")
+
         # Load domain prefix trie on first request (lazy, thread-safe, ~2-5 seconds once)
         if not _domain_trie.loaded:
             threading.Thread(target=load_domain_trie, daemon=True).start()
@@ -4614,6 +4654,7 @@ def match_apollo(request: ApolloMatchRequest):
         # STEP 1: REFINED DOMAIN LOOKUP CHAIN (company_domains)
         # --------------------------------------------------------
         contact_primary_domain, contact_website_link = resolve_company_domains(contacts, connection=conn)
+        mark_stage("domain_resolution")
 
         for d in contact_primary_domain.values():
             if d:
@@ -4636,6 +4677,7 @@ def match_apollo(request: ApolloMatchRequest):
             active_batch=batch_tag,
             title_aware_exact_domain=title_aware_layer1,
         )
+        mark_stage("crm_deduplication")
 
         net_new_contacts: list[ApolloContact] = []
 
@@ -4703,6 +4745,8 @@ def match_apollo(request: ApolloMatchRequest):
             else:
                 db_title_hits += 1
 
+        mark_stage("title_lookup")
+
         title_filter_active = request.title_guardrail_enabled
         indian_filter_active = request.indian_name_guardrail_enabled
 
@@ -4720,6 +4764,7 @@ def match_apollo(request: ApolloMatchRequest):
         company_db_contacts = fetch_existing_company_contacts_batch(
             all_batch_domains, all_batch_companies, connection=conn, active_batch=batch_tag
         )
+        mark_stage("name_and_company_lookup")
 
         for idx, contact in enumerate(net_new_contacts, 1):
             comp_name = contact.company.strip()
@@ -4968,6 +5013,9 @@ def match_apollo(request: ApolloMatchRequest):
                             }
 
 
+        mark_stage("qualification")
+
+
         # --------------------------------------------------------
         # STEP 5: AUTO-PERSIST REQUIRED LEADS TO MYSQL BATCH TABLE
         # --------------------------------------------------------
@@ -5031,6 +5079,8 @@ def match_apollo(request: ApolloMatchRequest):
             except Exception as e:
                 print(f"[ContactChecker] Notice: Auto-save leads batch error: {e}", flush=True)
 
+        mark_stage("persistence")
+
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
     pred_dom_ms = len(unique_domains_seen) * 0.5
@@ -5058,6 +5108,7 @@ def match_apollo(request: ApolloMatchRequest):
         print("Token Matrix     : 0 tokens consumed ($0.00 USD - 100% Resolved from Database Cache)", flush=True)
 
     print(f"Execution Latency: Actual: {elapsed_ms:.1f}ms | Predicted: ~{predicted_latency_ms:.1f}ms ({elapsed_ms/max(1, total_received):.1f} ms/contact)", flush=True)
+    print(f"Stage Timings    : {stage_timings_ms}", flush=True)
     print("=" * 80 + "\n", flush=True)
 
     return {
@@ -5075,6 +5126,7 @@ def match_apollo(request: ApolloMatchRequest):
             "novel_titles_sent_to_llm": novel_titles_sent,
             "tokens_consumed": token_stats["total_tokens"],
             "estimated_cost_usd": page_cost_usd,
+            "stage_timings_ms": stage_timings_ms,
         },
         "activity": [],
     }
