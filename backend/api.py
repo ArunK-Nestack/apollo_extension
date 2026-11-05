@@ -3415,6 +3415,7 @@ def ensure_apollo_saved_leads_table(conn):
                     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     INDEX `idx_batch` (`batch`),
                     INDEX `idx_company_domain` (`company_domain`),
+                    INDEX `idx_name_batch` (`name`, `batch`),
                     UNIQUE KEY `unique_batch_lead` (`batch`(64), `apollo_id`(64), `company_domain`(128))
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
@@ -3440,6 +3441,10 @@ def ensure_apollo_saved_leads_table(conn):
                 pass
             try:
                 cur.execute("ALTER TABLE `apollo_saved_leads` ADD INDEX `idx_batch_page` (`batch`, `page_number`);")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE `apollo_saved_leads` ADD INDEX `idx_name_batch` (`name`, `batch`);")
             except Exception:
                 pass
     except Exception as e:

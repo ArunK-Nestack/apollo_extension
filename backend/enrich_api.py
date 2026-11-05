@@ -81,9 +81,14 @@ def ensure_enrich_saved_leads_table(conn):
                     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     INDEX `idx_batch` (`batch`),
                     INDEX `idx_company_domain` (`company_domain`),
+                    INDEX `idx_name_batch` (`name`, `batch`),
                     UNIQUE KEY `unique_batch_lead` (`batch`, `name`(128), `company_domain`(128))
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """)
+            try:
+                cur.execute("ALTER TABLE `enrich_saved_leads` ADD INDEX `idx_name_batch` (`name`, `batch`);")
+            except Exception:
+                pass
     except Exception as e:
         print(f"[EnrichMatcher] Notice: ensure enrich_saved_leads table: {e}", flush=True)
 
