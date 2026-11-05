@@ -55,7 +55,12 @@ async function callBackendApi(endpoint, body) {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        throw new Error(`API error: ${response.status} ${response.statusText}`);
+        let detail = "";
+        try {
+          const payload = await response.json();
+          detail = payload?.detail || payload?.error || "";
+        } catch (_) { /* response may not contain JSON */ }
+        throw new Error(`API error: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`);
       }
 
       return await response.json();
@@ -68,7 +73,12 @@ async function callBackendApi(endpoint, body) {
   throw lastError || new Error("Unable to connect to Contact Checker Backend on port 8000.");
 }
 
+let accountRenewalsCache = null;
+
 async function fetchAccountRenewals() {
+  if (accountRenewalsCache && Date.now() - accountRenewalsCache.timestamp < 60000) {
+    return accountRenewalsCache.data;
+  }
   const stored = await chrome.storage.local.get(["contactCheckerBackendUrl", "contactCheckerApiToken"]);
   const configuredHost = String(stored.contactCheckerBackendUrl || "").trim().replace(/\/+$/, "");
   const hosts = configuredHost
@@ -82,7 +92,9 @@ async function fetchAccountRenewals() {
         headers: apiToken ? { "X-Contact-Checker-Token": apiToken } : {}
       });
       if (!response.ok) throw new Error(`API error: ${response.status}`);
-      return await response.json();
+      const data = await response.json();
+      accountRenewalsCache = { data, timestamp: Date.now() };
+      return data;
     } catch (err) {
       lastError = err;
     }

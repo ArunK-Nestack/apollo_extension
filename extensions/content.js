@@ -243,6 +243,7 @@
     settleRetryAttempts: 0,
     checkedContacts: new Map(),
     pendingContacts: new Map(), // key -> timestamp (supports TTL auto-expiration)
+    retryBlockedUntil: new Map(), // key -> timestamp after a failed request
     currentContacts: new Map(),
     requiredContactsAll: new Map(),
     requiredCompanyMap: new Map(), // compKey -> Array<lead>
@@ -254,6 +255,8 @@
     activityPanelOpen: false,
     lastLoggedPageSignature: "",
     lastBackendSummary: null,
+    renewalsRequestInFlight: false,
+    renewalsLoaded: false,
     isEvaluatingBatch: false,
     lastEvaluatedPendingTimestamp: 0,
     lastNavigatedKey: "",
@@ -3704,8 +3707,12 @@
 
       // Replace the hardcoded renewal days with the live-fetched report's expiry day per login
       try {
-        chrome.runtime.sendMessage({ type: "GET_ACCOUNT_RENEWALS" }, (res) => {
+        if (!state.renewalsLoaded && !state.renewalsRequestInFlight) {
+          state.renewalsRequestInFlight = true;
+          chrome.runtime.sendMessage({ type: "GET_ACCOUNT_RENEWALS" }, (res) => {
+          state.renewalsRequestInFlight = false;
           if (chrome.runtime.lastError || !res?.success) return;
+          state.renewalsLoaded = true;
           let changed = false;
           for (const acc of APOLLO_19_LOGINS) {
             const exp = res.renewals[acc.email.toLowerCase()];
@@ -3719,7 +3726,8 @@
             updateTriggerDisplay();
             renderCards(searchInput?.value || "");
           }
-        });
+          });
+        }
       } catch (_) { /* fall back to hardcoded renewal days */ }
 
       if (batchSelect && batchInput) {
@@ -3975,10 +3983,10 @@
       return;
     }
 
-    // Auto-expire pending requests older than 10s to prevent stuck/frozen rows
+    // Keep pending state longer than the backend's two 15s host attempts.
     const now = Date.now();
     for (const [k, ts] of state.pendingContacts.entries()) {
-      if (now - ts > 10000) {
+      if (now - ts > 45000) {
         state.pendingContacts.delete(k);
       }
     }
@@ -4027,6 +4035,10 @@
 
       // Currently in flight
       if (state.pendingContacts.has(contact.key)) {
+        return;
+      }
+
+      if ((state.retryBlockedUntil.get(contact.key) || 0) > now) {
         return;
       }
 
@@ -4143,6 +4155,7 @@
           contactsToCheck.forEach(contact => state.pendingContacts.delete(contact.key));
 
           if (chrome.runtime.lastError) {
+            contactsToCheck.forEach(contact => state.retryBlockedUntil.set(contact.key, Date.now() + 30000));
             console.error("Contact Checker runtime error:", chrome.runtime.lastError.message);
             addActivity("EXTENSION_RUNTIME_ERROR", chrome.runtime.lastError.message, "error");
             const liveStatusErr = document.getElementById("contact-checker-live-status");
@@ -4150,11 +4163,12 @@
               liveStatusErr.className = "contact-checker-live-badge";
               liveStatusErr.textContent = "⚠ Runtime Error";
             }
-            showStatus("Extension runtime error — will retry on next scan", 3000, false);
+            showStatus("Extension runtime error — retry paused for 30s", 3000, false);
             return;
           }
 
           if (!response?.success) {
+            contactsToCheck.forEach(contact => state.retryBlockedUntil.set(contact.key, Date.now() + 30000));
             console.error("Contact Checker API error:", response);
             addActivity("API_ERROR", response?.error || "Unknown API error", "error");
             const liveStatusErr = document.getElementById("contact-checker-live-status");
@@ -4162,7 +4176,7 @@
               liveStatusErr.className = "contact-checker-live-badge";
               liveStatusErr.textContent = "⚠ API Error";
             }
-            showStatus("Database connection error", 3000, false);
+            showStatus(`API error — retry paused for 30s${response?.error ? `: ${response.error}` : ""}`, 5000, false);
             return;
           }
 
@@ -4175,6 +4189,7 @@
           let ignoredCount = 0;
 
           contactsToCheck.forEach(contact => {
+            state.retryBlockedUntil.delete(contact.key);
             const result = response.results?.[contact.key];
             if (!result) return;
 
@@ -4261,6 +4276,7 @@
       );
     } catch (sendErr) {
       contactsToCheck.forEach(contact => state.pendingContacts.delete(contact.key));
+      contactsToCheck.forEach(contact => state.retryBlockedUntil.set(contact.key, Date.now() + 30000));
       console.error("Contact Checker: sendMessage threw synchronously:", sendErr);
       addActivity("EXTENSION_RUNTIME_ERROR", `sendMessage failed: ${sendErr?.message || sendErr}`, "error");
       const liveEl = document.getElementById("contact-checker-live-status");
@@ -4268,7 +4284,7 @@
         liveEl.className = "contact-checker-live-badge";
         liveEl.textContent = "⚠ Reconnecting...";
       }
-      showStatus("Extension disconnected — will retry on next scan", 3000, false);
+      showStatus("Extension disconnected — retry paused for 30s", 3000, false);
     }
   }
 
